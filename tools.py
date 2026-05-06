@@ -462,8 +462,10 @@ def _camera_grab_frame() -> str | None:
         if frame:
             _log.info(f"camera: frame via WebSocket ({len(frame)} chars)")
             return frame
-    except (ImportError, Exception):
-        pass
+        else:
+            _log.info("camera: WS path returned no frame (no client / not connected / permission denied), falling back to OpenCV")
+    except (ImportError, Exception) as e:
+        _log.warning(f"camera: WS path errored ({e}), falling back to OpenCV")
 
     # Try 2: OpenCV persistent camera
     with _camera_lock:
@@ -514,6 +516,26 @@ def _camera_grab_frame() -> str | None:
             _camera_cap = None
             return None
 
+        # Black-frame guard — Windows / DirectShow gotcha. When another
+        # process (Settings preview via getUserMedia, Skype, browser
+        # tab) recently held the camera, OpenCV opens the device but
+        # initial frames come back nearly-uniform black. The 5-frame
+        # warmup at open-time isn't always enough on cold sensors.
+        # Symptom: tiny base64 (~1.5KB for "640x480" because heavy JPEG
+        # compression on uniform pixels) and the LLM reports "all black".
+        # Retry up to 25 reads with 0.05s spacing — typically clears in
+        # 5-15 frames once the auto-exposure kicks in.
+        if img is not None and img.mean() < 6:
+            _log.warning(f"camera: black frame (mean={img.mean():.1f}), waiting for sensor warmup")
+            for attempt in range(25):
+                time.sleep(0.05)
+                ret, img = _camera_cap.read()
+                if ret and img is not None and img.mean() >= 6:
+                    _log.info(f"camera: warmup cleared after {attempt + 1} retries (mean={img.mean():.1f})")
+                    break
+            else:
+                _log.warning(f"camera: still black after warmup retries (mean={img.mean() if img is not None else 'None'}), returning anyway")
+
         # Resize to ~49K pixels
         h, w = img.shape[:2]
         max_area = 49152
@@ -525,7 +547,7 @@ def _camera_grab_frame() -> str | None:
         frame = base64.b64encode(buf).decode()
         _camera_last_frame = frame
         _camera_last_ts = time.time()
-        _log.info(f"camera: frame via OpenCV ({len(frame)} chars)")
+        _log.info(f"camera: frame via OpenCV ({len(frame)} chars, mean={img.mean():.1f})")
         return frame
 
 
