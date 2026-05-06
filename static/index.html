@@ -679,6 +679,33 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
 
 /* Composer */
 .composer { padding: 14px 0 20px; background: var(--bg); position: sticky; bottom: 0; }
+
+/* Floating "scroll to latest" button — appears in the chat column when
+   the user has scrolled up away from the bottom. Sticky so it floats
+   inside the chat-scroll viewport (relative to chat-scroll's visible
+   bottom edge); negative margin-bottom keeps it out of the flex flow
+   so it doesn't push the composer up. */
+.scroll-bottom-btn {
+  position: sticky; bottom: 96px;
+  align-self: center;
+  margin-bottom: -36px;
+  z-index: 50;
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  color: var(--fg-2);
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition: opacity 0.18s, transform 0.18s, background 0.12s, border-color 0.12s, color 0.12s;
+}
+.scroll-bottom-btn.visible { opacity: 0.9; pointer-events: auto; transform: translateY(0); }
+.scroll-bottom-btn:hover { background: var(--surface-3); border-color: var(--accent); color: var(--fg); opacity: 1; }
+
 .composer .hint { display: flex; gap: 6px; margin-bottom: 8px; font-size: 11px; font-family: var(--font-mono); color: var(--fg-4); flex-wrap: wrap; }
 .composer .hint .slash { color: var(--accent); cursor: pointer; }
 .composer .box {
@@ -3729,9 +3756,20 @@ function renderChatView() {
         '</div>' +
       '</div>' +
     '</div>';
+  // Floating scroll-to-latest button — sits between the messages list
+  // and the composer in DOM order so its sticky bottom positions it
+  // just above the composer in the chat-scroll viewport. Visibility is
+  // toggled in wireEvents() based on distance from the scroll bottom.
+  const scrollBtn =
+    '<button class="scroll-bottom-btn" id="scroll-bottom-btn" data-act="scroll-to-bottom"' +
+      ' aria-label="Scroll to latest message" title="Scroll to latest">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+      '<polyline points="6 9 12 15 18 9"></polyline></svg>' +
+    '</button>';
   return '<div class="scroll-col" id="chat-scroll"><div class="inner">' + header +
     '<div style="flex:1;display:flex;flex-direction:column">' + (state.messages.map(renderMessage).join('') || empty) + '</div>' +
-    composer + '</div></div>';
+    scrollBtn + composer + '</div></div>';
 }
 
 function renderInspector() {
@@ -5972,6 +6010,31 @@ function wireEvents() {
       } catch { toast('abort failed', 'err'); }
     };
   });
+
+  // Scroll-to-latest button — clicking smooth-scrolls the chat to bottom.
+  // Visibility is driven by a scroll listener attached once per chat-scroll
+  // instance (the element is recreated on every render() so the _scrollWired
+  // marker is fresh each time and the listener attaches exactly once).
+  document.querySelectorAll('[data-act="scroll-to-bottom"]').forEach(b => {
+    b.onclick = () => {
+      const col = document.getElementById('chat-scroll');
+      if (col) col.scrollTo({ top: col.scrollHeight, behavior: 'smooth' });
+    };
+  });
+  const _chatCol = document.getElementById('chat-scroll');
+  if (_chatCol && !_chatCol._scrollWired) {
+    _chatCol._scrollWired = true;
+    const updateBtn = () => {
+      const btn = document.getElementById('scroll-bottom-btn');
+      if (!btn) return;
+      const dist = _chatCol.scrollHeight - _chatCol.scrollTop - _chatCol.clientHeight;
+      btn.classList.toggle('visible', dist > 200);
+    };
+    _chatCol.addEventListener('scroll', updateBtn, { passive: true });
+    // Run once after layout settles so the button starts hidden when
+    // the chat is already at the bottom (the common case on thread open)
+    requestAnimationFrame(updateBtn);
+  }
 
   // Composer action buttons
   document.querySelectorAll('[data-act="attach"]').forEach(b => { b.onclick = () => pickAttachments(); });
