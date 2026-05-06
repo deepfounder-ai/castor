@@ -525,16 +525,22 @@ def _camera_grab_frame() -> str | None:
         # compression on uniform pixels) and the LLM reports "all black".
         # Retry up to 25 reads with 0.05s spacing — typically clears in
         # 5-15 frames once the auto-exposure kicks in.
-        if img is not None and img.mean() < 6:
-            _log.warning(f"camera: black frame (mean={img.mean():.1f}), waiting for sensor warmup")
-            for attempt in range(25):
-                time.sleep(0.05)
+        # Threshold 25 is empirical: mean<6 is pitch-black, 6-25 is a
+        # dim/auto-exposure-warming sensor (which the LLM still reports
+        # as "all black"), 25+ is a usable frame in even a dim room.
+        # Genuinely dark rooms with the light off legitimately sit
+        # around 10-20 — we'll burn the retries there but still return
+        # the frame, so the user sees "it's dark" not "tool failed".
+        if img is not None and img.mean() < 25:
+            _log.warning(f"camera: dim/black frame (mean={img.mean():.1f}), waiting for sensor warmup")
+            for attempt in range(30):
+                time.sleep(0.07)
                 ret, img = _camera_cap.read()
-                if ret and img is not None and img.mean() >= 6:
+                if ret and img is not None and img.mean() >= 25:
                     _log.info(f"camera: warmup cleared after {attempt + 1} retries (mean={img.mean():.1f})")
                     break
             else:
-                _log.warning(f"camera: still black after warmup retries (mean={img.mean() if img is not None else 'None'}), returning anyway")
+                _log.warning(f"camera: still dark after {30} warmup retries (mean={img.mean() if img is not None else 'None'}), returning anyway — likely actual dark scene OR another process holds the camera")
 
         # Resize to ~49K pixels
         h, w = img.shape[:2]
