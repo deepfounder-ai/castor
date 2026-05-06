@@ -490,8 +490,16 @@ def _camera_grab_frame() -> str | None:
                     _camera_cap = None
                     return None
             else:
-                # Auto-detect: try indexes 0-3, pick first with real frames
-                _log.info("camera: auto-detecting...")
+                # Auto-detect: probe indexes 0-3, score each by frame
+                # brightness (mean pixel value), pick the brightest
+                # working camera. Old logic took the first index with
+                # mean > 3 — but on multi-camera Windows boxes (e.g.
+                # built-in laptop cam + USB webcam) that often picks a
+                # virtual/dim camera instead of the real one. The user
+                # would see "all black" even though a working USB cam
+                # was sitting at index 1.
+                _log.info("camera: auto-detecting (scoring all 4 indexes by brightness)...")
+                candidates = []
                 for cam_idx in range(4):
                     cap = cv2.VideoCapture(cam_idx)
                     if not cap.isOpened():
@@ -499,11 +507,24 @@ def _camera_grab_frame() -> str | None:
                     for _ in range(5): cap.read()
                     time.sleep(0.3)
                     ret, test_frame = cap.read()
-                    if ret and test_frame.mean() > 3:
-                        _camera_cap = cap
-                        _log.info(f"camera: auto-selected index {cam_idx} ({test_frame.shape[1]}x{test_frame.shape[0]})")
-                        break
-                    cap.release()
+                    if not ret or test_frame is None:
+                        cap.release()
+                        continue
+                    mean = float(test_frame.mean())
+                    h, w = test_frame.shape[:2]
+                    _log.info(f"camera: probe index {cam_idx}: {w}x{h}, mean={mean:.1f}")
+                    if mean > 3:
+                        candidates.append((mean, cam_idx, cap, w, h))
+                    else:
+                        cap.release()
+                # Pick brightest candidate, release the rest
+                if candidates:
+                    candidates.sort(key=lambda c: -c[0])
+                    best_mean, best_idx, best_cap, best_w, best_h = candidates[0]
+                    _camera_cap = best_cap
+                    _log.info(f"camera: auto-selected index {best_idx} ({best_w}x{best_h}, mean={best_mean:.1f}) — set camera_index in settings to pin a different one")
+                    for _, _, cap, _, _ in candidates[1:]:
+                        cap.release()
             if _camera_cap is None or not _camera_cap.isOpened():
                 _log.warning("camera: no working camera found")
                 _camera_cap = None
