@@ -470,6 +470,14 @@ def _camera_grab_frame() -> str | None:
     # Try 2: OpenCV persistent camera
     with _camera_lock:
         try:
+            # Silence OpenCV's noisy videoio backend probing on Windows
+            # before importing cv2 — it prints "Failed list devices for
+            # backend dshow" to stderr during VideoCapture init even
+            # though the open succeeds. Cosmetic only; doesn't suppress
+            # real errors. Must be set before first cv2 import in this
+            # process to take effect.
+            os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+            os.environ.setdefault("OPENCV_VIDEOIO_DEBUG", "0")
             import cv2  # lazy: opencv-python is an optional heavy dep
         except ImportError:
             _log.warning("camera: opencv-python not installed")
