@@ -441,6 +441,36 @@ _camera_cap = None      # cv2.VideoCapture instance (stays open)
 _camera_last_frame = None  # latest base64 JPEG
 _camera_last_ts = 0.0   # timestamp of last capture
 
+# Camera resolution presets — (width, height, max_pixels_after_resize).
+# `max_pixels_after_resize` is the soft cap for the JPEG sent to the
+# vision LLM; higher resolutions get a proportionally larger budget so
+# users picking 1080p don't end up with the 256x192 default cap.
+_CAMERA_PRESETS = {
+    "auto":  (None, None,    49152),    # camera default, current cap
+    "480p":  (640,  480,     49152),    # standard, current cap
+    "720p":  (1280, 720,    196608),    # 4x cap
+    "1080p": (1920, 1080,   786432),    # 16x cap (≈1024x768 max)
+}
+
+
+def _apply_camera_resolution(cap):
+    """Apply user's camera_resolution setting to an open VideoCapture.
+
+    Cheap to call repeatedly — cv2 silently picks closest supported
+    mode if the camera doesn't expose the exact resolution. Returns
+    the (width, height, max_pixels) tuple for use by the encoder.
+    """
+    import cv2  # already imported by caller, but keep local for clarity
+    setting = (config.get("camera_resolution") or "auto").strip().lower()
+    w, h, cap_max = _CAMERA_PRESETS.get(setting, _CAMERA_PRESETS["auto"])
+    if w and h:
+        try:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        except Exception:
+            pass
+    return w, h, cap_max
+
 
 def _camera_grab_frame() -> str | None:
     """Grab a camera frame. Tries: 1) WebSocket (browser), 2) OpenCV (direct).
@@ -491,6 +521,7 @@ def _camera_grab_frame() -> str | None:
                 _log.info(f"camera: opening index {cam_setting} (from settings)")
                 _camera_cap = cv2.VideoCapture(cam_setting)
                 if _camera_cap.isOpened():
+                    _apply_camera_resolution(_camera_cap)
                     for _ in range(5): _camera_cap.read()
                     time.sleep(0.3)
                 else:
@@ -530,6 +561,7 @@ def _camera_grab_frame() -> str | None:
                     candidates.sort(key=lambda c: -c[0])
                     best_mean, best_idx, best_cap, best_w, best_h = candidates[0]
                     _camera_cap = best_cap
+                    _apply_camera_resolution(_camera_cap)
                     _log.info(f"camera: auto-selected index {best_idx} ({best_w}x{best_h}, mean={best_mean:.1f}) — set camera_index in settings to pin a different one")
                     for _, _, cap, _, _ in candidates[1:]:
                         cap.release()
@@ -573,12 +605,25 @@ def _camera_grab_frame() -> str | None:
 
         # Resize to ~49K pixels
         h, w = img.shape[:2]
-        max_area = 49152
-        if w * h > max_area:
+        # Pull the resize cap from the active resolution preset (auto/
+        # 480p → 49K pixels, 720p → 196K, 1080p → 786K). Falls back to
+        # the legacy 49K cap for unknown values so older configs keep
+        # working unchanged.
+        _res_setting = (config.get("camera_resolution") or "auto").strip().lower()
+        _, _, max_area = _CAMERA_PRESETS.get(_res_setting, _CAMERA_PRESETS["auto"])
+        if max_area and w * h > max_area:
             scale = math.sqrt(max_area / (w * h))
             img = cv2.resize(img, (int(w * scale), int(h * scale)))
 
-        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        # JPEG quality is user-tunable (1-100, default 70). Higher =
+        # sharper detail in the base64 going to vision LLM but bigger
+        # payload + slower turn.
+        try:
+            jpeg_quality = int(config.get("camera_quality") or 70)
+        except (TypeError, ValueError):
+            jpeg_quality = 70
+        jpeg_quality = max(1, min(100, jpeg_quality))
+        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         frame = base64.b64encode(buf).decode()
         _camera_last_frame = frame
         _camera_last_ts = time.time()

@@ -5376,6 +5376,32 @@ function renderTabCamera() {
         '</select>') +
       settingRow('Reset', 'Release all handles and re-detect.', '<button class="btn-secondary" data-act="camera-reset">reset</button>') +
       settingRow('Reload list', '', '<button class="btn-secondary" data-act="camera-reload">scan</button>')
+    ) +
+    // Capture-quality controls — applied at frame grab time. After
+    // changing, click "reset" above so the cv2 instance picks up the
+    // new resolution (the open VideoCapture caches its size). Quality
+    // is read on every encode, no reset needed.
+    settingsSection('Capture quality',
+      settingRow('Resolution', 'Higher = sharper vision but bigger base64 payload to LLM.',
+        (() => {
+          const cur = (state.allSettings && state.allSettings.camera_resolution &&
+                        state.allSettings.camera_resolution.value) || 'auto';
+          const opts = [
+            { v: 'auto',  label: 'auto (camera default)' },
+            { v: '480p',  label: '480p · 640×480 · ~256×192 to LLM' },
+            { v: '720p',  label: '720p · 1280×720 · ~512×384 to LLM' },
+            { v: '1080p', label: '1080p · 1920×1080 · ~1024×768 to LLM' },
+          ];
+          return '<select class="setting-input mono" data-setting-key="camera_resolution" data-setting-type="str">' +
+            opts.map(o => '<option value="' + o.v + '"' + (cur === o.v ? ' selected' : '') + '>' + o.label + '</option>').join('') +
+          '</select>';
+        })()
+      ) +
+      settingRow('JPEG quality',
+        'Encoder quality 1-100 (default 70). Higher = sharper detail, larger payload, slower turn. Effective immediately.',
+        '<input type="number" class="setting-input mono" data-setting-key="camera_quality" data-setting-type="int" min="1" max="100" value="' +
+          esc(((state.allSettings && state.allSettings.camera_quality && state.allSettings.camera_quality.value) || 70)) + '">'
+      )
     );
 }
 

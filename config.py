@@ -170,6 +170,8 @@ EDITABLE_SETTINGS = {
     "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. qwe-qwe is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
     # ── Vision (Camera) ──
     "camera_index":         ("setting:camera_index",          int, -1,    "Camera index for agent vision (-1 = auto-detect best, 0/1/2 = specific camera)", -1, 10),
+    "camera_resolution":    ("setting:camera_resolution",     str, "auto", "Capture resolution: auto (camera default), 480p (640x480), 720p (1280x720), 1080p (1920x1080). Higher = sharper vision but bigger payload to LLM.", "", ""),
+    "camera_quality":       ("setting:camera_quality",        int, 70,    "JPEG quality (1-100) for camera frames sent to vision LLM. 70 default; raise for sharper detail at cost of larger base64 size, lower for cheaper/faster vision turns.", 1, 100),
     # ── Voice: STT ──
     "stt_backend":          ("setting:stt_backend",           str, "auto", "STT backend: auto (API if key else local), local, api", "", ""),
     "stt_model":            ("setting:stt_model",             str, "base", "Whisper model size (tiny/base/small/medium) — local only", "", ""),
