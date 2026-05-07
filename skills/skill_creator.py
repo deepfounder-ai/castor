@@ -1290,18 +1290,40 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                     f"- {t['function']['name']}: {t['function'].get('description', '')}"
                     for t in tools_list
                 )
+                # When execute_body is empty (no deterministic mapping
+                # produced anything), the custom block must start with
+                # `if name == "..."`, not `elif` — otherwise the file
+                # has `elif` without preceding `if` and SyntaxErrors.
+                # Tell the LLM the right keyword for the FIRST tool.
+                first_keyword = "if" if not execute_body else "elif"
                 custom_prompt = (
                     f"Skill: {skill_name}\n"
                     f"Tables (already created):\n{tables_info}\n\n"
-                    f"Generate ONLY elif blocks for these tools:\n"
+                    f"Generate Python branches for these tools:\n"
                     + "\n".join(f"- {tn}" for tn in custom_tools)
                     + f"\n\nDescriptions:\n{tool_descriptions}\n"
-                    f"Start each with 'elif name == \"tool_name\":'. Each returns a string."
+                    f"Start the FIRST tool with '{first_keyword} name == \"...\":' "
+                    f"and the rest with 'elif name == \"...\":'. Each branch "
+                    f"contains the FULL implementation (no stub `pass`) and "
+                    f"returns a string. All code for a tool MUST be indented "
+                    f"under its branch — no top-level statements between branches."
                 )
                 custom_raw = _llm_call(STEP3_CODE, custom_prompt, max_tokens=2048)
                 custom_code = _extract_code(custom_raw)
                 custom_code = _fix_indentation(custom_code)
                 custom_code = _fix_empty_blocks(custom_code)
+                # Defensive post-process: even with the prompt fix,
+                # small models sometimes still emit `elif` first when
+                # they're supposed to start with `if`. If our body is
+                # empty and the LLM output starts with `elif` (after
+                # any leading whitespace), rewrite the first `elif` to
+                # `if` so the file parses.
+                if not execute_body:
+                    custom_code = re.sub(
+                        r'^(\s*)elif(\s+name\s*==)',
+                        r'\1if\2',
+                        custom_code, count=1, flags=re.MULTILINE,
+                    )
                 execute_body = execute_body + "\n\n" + custom_code if execute_body else custom_code
 
             # ── Step 4: Generate table DDL ──

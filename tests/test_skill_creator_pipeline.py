@@ -256,6 +256,76 @@ def test_pipeline_retries_when_step1_returns_bad_json(sc_pipeline):
     assert attempt_counter["plan"] == 2
 
 
+def test_pipeline_rewrites_first_elif_to_if_when_body_empty(qwe_temp_data_dir, monkeypatch):
+    """Field-session bug: when ALL tools are custom (deterministic
+    mapping covered none), execute_body is empty and the LLM's custom
+    code starts with 'elif name == ...' — that's a SyntaxError because
+    there's no preceding 'if'. The post-process must rewrite the
+    first 'elif' to 'if'. Regression-shield against the same bug
+    coming back via prompt drift."""
+    import importlib, sys
+    if "skills.skill_creator" in sys.modules:
+        del sys.modules["skills.skill_creator"]
+    if "skills" in sys.modules:
+        importlib.reload(sys.modules["skills"])
+    import skills.skill_creator as sc
+
+    plan = {
+        "docstring": "Test skill",
+        "short_description": "Test",
+        "instruction": "Test",
+        "tables": ["skill_test_thing_data: id INTEGER PRIMARY KEY, ts TEXT"],
+        "tools": ["do_thing: a custom thing"],
+    }
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "do_thing",
+                "description": "Custom op",
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]},
+            },
+        }
+    ]
+    # The buggy LLM output that bit us in the field — stub branch
+    # starting with elif (because the prompt said "Start each with elif")
+    bad_custom_code = '''    elif name == "do_thing":
+        x = args.get("x", "")
+        return f"thing: {x}"
+'''
+
+    def fake_llm(system, user, max_tokens=2048):
+        if "skill architect" in system:
+            return json.dumps(plan, ensure_ascii=False)
+        if "tool definition generator" in system:
+            return json.dumps(tools_list, ensure_ascii=False)
+        if "Generate Python code" in system:
+            return bad_custom_code
+        raise AssertionError(f"unexpected system: {system[:60]}")
+
+    monkeypatch.setattr(sc, "_llm_call", fake_llm)
+    import tasks
+    monkeypatch.setattr(tasks, "register", lambda *a, **kw: 0)
+    monkeypatch.setattr(tasks, "update", lambda *a, **kw: None)
+    monkeypatch.setattr(sc, "_notify", lambda *a, **kw: None)
+    monkeypatch.setattr(sc, "_save_skill_result", lambda *a, **kw: None)
+    monkeypatch.setattr(sc, "_cleanup_debug_logs", lambda *a, **kw: None)
+
+    target = qwe_temp_data_dir / "skills" / "test_thing.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    sc._run_pipeline("test_thing", "test", target, task_id=0)
+    assert target.exists(), "skill should have been written despite the elif-first LLM output"
+
+    code = target.read_text(encoding="utf-8")
+    # The whole skill file must parse cleanly
+    ast.parse(code)
+    # Inside execute(), the first branch must be 'if', not 'elif'
+    assert 'if name == "do_thing"' in code or "if name == 'do_thing'" in code, (
+        "post-process must rewrite first 'elif' to 'if' when body was empty"
+    )
+
+
 def test_generated_skill_actually_loads_via_skill_registry(sc_pipeline):
     """After the pipeline writes the file, the skill loader must be
     able to import it cleanly — no ImportError, no hidden syntax
