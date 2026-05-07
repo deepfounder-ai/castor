@@ -1879,6 +1879,28 @@ function wireMessageSection(root) {
 const handleWsMessage = (msg) => {
   const t = msg.type;
 
+  // Background task progress (skill_creator, sync, etc.) — these are
+  // NOT chat turns and must NOT trigger the "create pending streaming
+  // message" branch below. Without this short-circuit, every pipeline
+  // step ('Step 2/5: generating tools') was creating a new fake
+  // assistant message in the chat and the typing indicator blinked
+  // forever (no `done` event ever followed). Surface as toast instead.
+  if (t === 'task_update') {
+    const name = msg.name || 'task';
+    const text = msg.text || '';
+    const lower = text.toLowerCase();
+    let kind = '';
+    if (text.startsWith('✅') || lower.includes('created and enabled')) kind = 'ok';
+    else if (text.startsWith('❌') || lower.includes('failed') || lower.includes('error')) kind = 'err';
+    toast(`${name}: ${text}`, kind);
+    // If a skill just succeeded — refresh the skills list so the user
+    // sees new tools available without a manual reload
+    if (kind === 'ok') {
+      try { loadSkills && loadSkills(); } catch {}
+    }
+    return;
+  }
+
   // Server-initiated frame request (for camera_capture tool).
   // Accept both event names: server emits "get_frame" but earlier
   // client revisions listened for "frame_request" — keep both for
