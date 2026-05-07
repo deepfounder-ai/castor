@@ -263,7 +263,8 @@ def test_pipeline_rewrites_first_elif_to_if_when_body_empty(qwe_temp_data_dir, m
     there's no preceding 'if'. The post-process must rewrite the
     first 'elif' to 'if'. Regression-shield against the same bug
     coming back via prompt drift."""
-    import importlib, sys
+    import importlib
+    import sys
     if "skills.skill_creator" in sys.modules:
         del sys.modules["skills.skill_creator"]
     if "skills" in sys.modules:
