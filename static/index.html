@@ -5647,10 +5647,6 @@ function renderTelemetryPanel(tel) {
     '<li><span class="mono" style="color:var(--fg-2)">' + esc(e) + '</span></li>'
   ).join('');
 
-  const idDisplay = tel.anonymous_id_set
-    ? '<span class="mono" style="font-size:11px;color:var(--fg-3)">' + esc(tel.anonymous_id_short) + '</span>'
-    : '<span class="mono" style="font-size:11px;color:var(--fg-5)">(none — generated on opt-in)</span>';
-
   return settingsSection('Anonymous telemetry',
     reprompt +
     // Status row + main toggle
@@ -5687,43 +5683,7 @@ function renderTelemetryPanel(tel) {
         '<li>IP / hostname / username / machine id</li>' +
         '<li>API keys, secrets, Telegram tokens</li>' +
       '</ul>' +
-    '</details>' +
-
-    // Identity + endpoint controls (only meaningful if enabled)
-    settingRow('Anonymous ID', 'Random UUID generated on first opt-in. Not derived from any identity. Reset rotates without disabling.',
-      '<div style="display:flex;align-items:center;gap:6px">' + idDisplay +
-        (tel.anonymous_id_set
-          ? '<button class="icon-btn" data-act="telemetry-reset-id" title="Generate fresh anonymous id (telemetry stays enabled)">' + ico('refresh', 12) + '</button>'
-          : '') +
-      '</div>'
-    ) +
-    // Read-only destination — for transparency. Users see WHERE the
-    // data goes but can't change it (project-controlled telemetry,
-    // not user-configurable). Operators who need a different destination
-    // edit config.py directly.
-    settingRow('Data goes to',
-      'The project\'s analytics server, operated by deepfounder.ai.',
-      '<span class="mono" style="font-size:11px;color:var(--fg-3)">' + esc(tel.endpoint || '(none)') + '</span>'
-    ) +
-    settingRow('Queue', 'Events waiting to be sent. Inspect, send manually, or clear.',
-      '<div style="display:flex;align-items:center;gap:6px">' +
-        '<span class="mono" style="font-size:11px;color:var(--fg-3)">' + (tel.queue_size || 0) + ' pending</span>' +
-        '<button class="btn-secondary" data-act="telemetry-preview" style="padding:4px 10px;font-size:11px"' + (tel.queue_size ? '' : ' disabled') + '>view</button>' +
-        '<button class="btn-secondary" data-act="telemetry-flush" style="padding:4px 10px;font-size:11px"' + (tel.queue_size && tel.endpoint ? '' : ' disabled') + '>send now</button>' +
-        '<button class="btn-secondary" data-act="telemetry-clear-queue" style="padding:4px 10px;font-size:11px"' + (tel.queue_size ? '' : ' disabled') + '>clear</button>' +
-      '</div>'
-    ) +
-
-    // Forget me — destructive, separated visually
-    '<div style="margin-top:18px;padding:12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface)">' +
-      '<div style="display:flex;align-items:center;gap:12px">' +
-        '<div style="flex:1">' +
-          '<div style="font-size:12.5px;font-weight:500;color:var(--fg);margin-bottom:3px">Forget me</div>' +
-          '<div style="font-size:11.5px;color:var(--fg-4);line-height:1.5">Disable telemetry, drop the queue, AND wipe the anonymous id. A future re-opt-in gets a fresh id, so nothing ties periods of opt-in together.</div>' +
-        '</div>' +
-        '<button class="btn-secondary" data-act="telemetry-forget-me" style="padding:6px 12px;color:var(--err);border-color:var(--err)">Forget me</button>' +
-      '</div>' +
-    '</div>'
+    '</details>'
   );
 }
 
