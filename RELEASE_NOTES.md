@@ -1,106 +1,118 @@
-# v0.18.4 — Community-driven cleanup + camera tuning + smoke_test fix
+# v0.18.5 — Anonymous opt-in telemetry + first-run consent flow + blog feed in Presets
 
-This release captures everything that was meant to ship as v0.18.3 (which never got tagged because of a CI failure) plus two community-merged PRs that closed long-standing skill_creator gaps. v0.18.4 is the first release after the README rebalanced positioning toward "business-oriented AI agent" — small/local models still fully supported, just no longer the headline.
+The headline in v0.18.5 is the **opt-in anonymous usage telemetry system** — fully built end to end this cycle (Stages 1–9), guarded by a strict whitelist + closed enums + two-gate consent contract. **Default OFF.** Every event is documented in `docs/PRIVACY.md`. There is no UI surface to redirect telemetry elsewhere — this is by design (single trust target, not a buffet of "alternative endpoints").
+
+Three other features round out the release: a `thread_created` event for new-chat volume signal, a "From the blog" RSS strip in the Presets view, and two browser-cache bug fixes that were biting users immediately after opt-in.
+
+## 📊 Anonymous opt-in telemetry — the long arc closes
+
+`telemetry.py` ships with **6 whitelisted event types**, each prop type-strict and string-valued props enum-constrained. A future refactor that accidentally added a free-text field can't smuggle chat content past the validator without explicitly editing `ALLOWED_EVENTS`.
+
+Events:
+
+- `session_start` — version, OS, Python, provider kind, model size bucket, feature flags (booleans), counts (skills, jobs, indexed sources). **Never** the URL, model id, skill names.
+- `turn_complete` — duration, rounds, tool *categories* used (closed enum), token counts, recall hits, source surface.
+- `tool_error` — tool category + error kind (both enums). Never tool name, args, or message text.
+- `skill_creator_pipeline` — outcome enum, attempts, duration, generated tools count.
+- `feature_first_use` — first-time-per-session activation of major features (camera_capture, live_voice, scheduler_create, …) — closed enum.
+- `thread_created` — new this release, see below.
+
+### Wire format: Countly Community Edition
+
+After a Plausible detour, settled on **self-hosted Countly** at `https://qwelytics.deepfounder.ai/i`. Native cross-day per-user retention without persistent server-side state — Plausible's daily-rotating salt would have made retention metrics impossible. Same code anyone could run; same privacy guarantees on the wire; same data inventory in `docs/PRIVACY.md`.
+
+The HTTP sender is **production-grade**:
+
+- Retry with exponential backoff `[1s, 2s, 4s]` on 5xx + network errors
+- 4xx does NOT retry (config error, re-sending just spams)
+- 10s urlopen timeout, single cap (urllib doesn't separate connect/read)
+- Bounded queue (`maxlen=1000`) — never grows unbounded if a never-flushed install sits offline forever
+- Lists become CSV strings on the wire (Countly's segmentation type)
+- `duration_ms` props auto-mapped to Countly's native `dur` field for receiver-side averaging
+
+### First-run consent flow
+
+Two surfaces, same contract:
+
+- **Web** (`static/index.html` boot hook) — modal "Help improve qwe-qwe?" appears once, only when `consent_decision_made` is false. Either button stamps the version. X / ESC fallback fires silent opt-out via `onClose` so the modal can't loop forever.
+- **CLI** (`cli.py:main`) — TTY prompt, defaults to opt-out on no-interactive. Identical wording.
+
+Settings → Privacy → Telemetry stripped to **two choices**: enable / disable. No "alternative endpoint" override surfaced — operators / forks edit `config.py::EDITABLE_SETTINGS` defaults directly.
+
+### Two-gate consent enforcement
+
+Both `track_event()` AND `flush()` refuse when `consent_needs_reprompt()` is true (stored consent version < `_CURRENT_CONSENT_VERSION`). Events queue but don't send. The yellow "policy updated, please re-confirm" banner in Settings → Privacy is now backed by **actual gates**, not advisory text.
+
+Bumped to **consent v2** this release because `ALLOWED_EVENTS` shape changed (`thread_created` added, `SOURCES` enum widened). Existing v1 opt-ins see the re-confirm banner; events queue but don't send until they re-stamp.
+
+### What's NEVER sent
+
+> Chat content. Soul / personality. Memory entries. Knowledge-base text. RAG queries. File paths. Tool args / results. Exact model name. Provider URL. Skill names. IP / hostname / username / machine id. API keys. Telegram tokens.
+
+Audit by grep — every collection goes through `telemetry.track_event()`, single funnel:
+
+```bash
+grep -rn "telemetry.track_event" .
+```
+
+## 💬 `thread_created` event — see how often new chats are created
+
+Single-field event (`source` from a closed enum) firing once per `threads.create()` call. Lets the project see whether new-thread volume is driven by users (web/cli/telegram) or system surfaces (scheduler activations / preset onboarding). The thread name and meta are **never** part of the event — just the source bucket.
+
+Wired into 6 production call sites: `cli.py`, `server.py`, `telegram_bot.py` (topic + DM), `scheduler.py` (create + backfill), `presets.py`. Lazy-imported helper in `threads.py` swallows any telemetry hiccup so a queue full / network blip never breaks thread creation.
+
+## 📰 "From the blog" RSS strip in Presets
+
+The Presets view now renders up to 5 newest project posts above the preset grid, fetched server-side from `https://deepfounder.ai/tag/qwe-qwe/rss/`. Compact list: title + relative date + 2-line description. Empty feed → nothing rendered, no empty box.
+
+Backend is forgiving: 30-min in-process cache, 15s upstream timeout, every parser field length-bounded so a malicious upstream can't blow up the response. On any fetch error the endpoint still returns 200 with the last-known cached items + an `error` field — the Presets view never breaks because deepfounder.ai is down.
+
+This is **project-controlled outbound HTTP, not telemetry** — empty body, no `anonymous_id`. The only signal `deepfounder.ai` receives is "an install asked for the feed" (your IP + `qwe-qwe/<ver>` UA). Documented under a new "Other project-controlled outbound HTTP" section in `docs/PRIVACY.md`.
+
+## 🐛 Browser-cache bugs that were biting users immediately after opt-in
+
+Two related fixes, both rooted in browsers heuristic-caching JSON GET responses (FastAPI doesn't set `Cache-Control` headers):
+
+### #22 — "opt-in did not persist" false-positive toast (`bdcd459`)
+
+The defensive verify-step added during the consent flow build was reading **stale-from-cache** `/status` responses right after a successful POST `/opt-in`. Backend persisted correctly; browser served the cached `cdm:false` to the verify call; UI screamed "did not persist". Removed the verify entirely — POST 2xx is now trusted, and HTTP-flow regression tests pin the actual contract in pytest where it belongs.
+
+### #25 — telemetry modal re-opening on every reload (`f81cd49`)
+
+Same root cause, different code path. Boot's `checkTelemetryFirstRun()` was getting served the cached pre-opt-in `/status` response on every page reload, re-opening the modal forever even though the backend correctly stored `consent_version=2`. **One-line generic fix**: `api()` helper now sets `cache: 'no-store'` on every JSON call. Server is the authoritative source; browsers never replay stale state. Prevents an entire class of "stale UI after POST" bugs across every settings panel.
 
 ## 🤝 Community merges
 
-Three external contributors landed work this cycle:
+### #13 + #18 closed by @forhim007 — timer skill cancel + smoke_test scope (PR #20)
 
-### #13 closed by @forhim007 — `_smoke_test` now scopes param-usage check to `execute()` body (PR #17)
+Combined PR landing two related fixes:
 
-Pre-fix, the smoke test searched the **whole module source** for required param names. Since param names are by definition in the `TOOLS` dict literal, the substring check always passed — even when `execute()` didn't actually use them. The field-session `camera_diagnostics` skill caught itself in this gap: tool def declared `num_samples`, code used `args.get("samples", 30)`, smoke test happily approved.
+- **Smoke-test scope** — `_extract_execute_body()` AST helper scopes `_smoke_test`'s param-usage check to the body of `execute()` only, not the whole module source. Caught the field-session `camera_diagnostics` regression where `tool def: num_samples` / `code: args.get("samples", 30)` slipped through because `num_samples` literally appeared in the `TOOLS` dict.
+- **Timer skill** — `list_timers` + `cancel_timer` tools added, backed by a thread-safe in-memory registry with 8-char UUID ids. Cancel removes from registry; the daemon thread's print-on-fire becomes a no-op.
 
-@forhim007 added `_extract_execute_body(source)` — uses `ast.parse` to locate the `execute` `FunctionDef` and slice the body. The param-usage check now runs against THIS slice only. Returns empty string on failure (unparseable, no execute) so the caller degrades gracefully via simple truthiness.
+13 new unit tests pinning both behaviors.
 
-8 new tests in `tests/test_skill_creator_smoke.py` covering the helper + before/after on the original repro.
+## 🛠️ Build / docs
 
-### #15 closed by @dutchaiagency — `delete_skill` drops orphan tables (PR #19)
+- **Docker** image now publishes to `ghcr.io/deepfounder-ai/qwe-qwe` on every push to main + tags. Playwright/Chromium dependencies added to the image so the browser skill works out of the box.
+- **`CLAUDE.md`** refreshed for the v0.18.x state — new sections for Skill Creator (5-step pipeline) and Telemetry (privacy contract + Countly), updated test count and provider count, soul rules 14 + 16 documented, extended add-a-feature checklist with telemetry + skills/gitignore quirks.
+- **`docs/PRIVACY.md`** is now the single source of truth for what telemetry collects, where it goes, and what the project will never touch.
 
-Before this fix, deleting a user-created skill removed only the `.py` file. The `skill_<name>_*` tables it had created in the shared SQLite stayed forever. Over many regenerate cycles, dead tables accumulated.
+## 🔢 Stats
 
-@dutchaiagency added two helpers:
+- **520+ tests pass**, 3 skip, 0 fail (was 495 in v0.18.4)
+- **520 passed in 60s** in the full suite
+- New test files: `test_blog_feed.py`, expanded `test_telemetry.py` (70 tests, was ~40)
+- Coverage floor 24% holds
 
-- `_extract_skill_owned_tables(source, skill_name)` — regex with handling for backtick / quote / bracket variants of `CREATE TABLE`, optional `IF NOT EXISTS`, `isidentifier()` check. Only returns names matching the `skill_<name>_` prefix exactly (not `skill_name2_*`).
-- `_drop_skill_owned_tables(skill_name, skill_path)` — runs before `target.unlink()` in `_delete_skill`. For each candidate table, verifies presence in `sqlite_master` BEFORE issuing `DROP TABLE`. Wraps the whole thing in try/except so cleanup failure doesn't block the file delete.
-
-`delete_skill` return string now reports the count: `"Deleted skill 'X' (3 skill table(s) dropped)"`. Two tests pin the prefix-matching strictness.
-
-### #18 — new bug from QA campaign
-
-@dutchaiagency also filed #18: timer skill exposes only `set_timer`, no cancel/list path. Tagged `good first issue` with full acceptance criteria.
-
-## 🎯 Repositioning
-
-README rewritten to lead with the business-automation angle and de-emphasize the previous small-model-first framing:
-
-- Tagline: `Self-hosted AI agent for business automation` → `Business-oriented AI agent`
-- Sub-tagline: leads with hosted providers (Azure OpenAI, AWS Bedrock, OpenAI, Groq, OpenRouter), local as on-prem alternative
-- "Why Small Models" section replaced with "Why qwe-qwe" comparing self-hosted vs vendor SaaS agents (data, LLM choice, cost, compliance, extensibility, reliability)
-- "Recommended hardware" → "Hardware" with conditional structure: hosted needs almost nothing, local-LLM table follows
-- "Small-model optimizations" → "Engineering around the LLM" — same techniques, framed as benefiting all model sizes
-- Removed "100% offline" badge — too small-model-coded
-- `soul.py` identity + `pyproject.toml` description updated to match
-
-Local + small models remain a real value prop (on-prem privacy, offline, no per-token billing) — they're now a deployment choice in Quick Start, not the headline.
-
-## 📷 Camera resolution + JPEG quality (the v0.18.3 work)
-
-Two new settings in Settings → Camera → Capture quality:
-
-**`camera_resolution`**: `auto` / `480p` / `720p` / `1080p`. Applied via `CAP_PROP_FRAME_WIDTH`/`HEIGHT` on device open. Each preset carries its own max-pixels cap for the resize step before JPEG encoding:
-
-| Preset | Capture | Sent to LLM |
-|---|---|---|
-| auto | camera default | ≤256×192 (49K pixels, legacy cap) |
-| 480p | 640×480 | ≤256×192 |
-| 720p | 1280×720 | ≤512×384 (196K) |
-| 1080p | 1920×1080 | ≤1024×768 (786K) |
-
-**`camera_quality`**: int 1-100, default 70. Replaces hardcoded `cv2.IMWRITE_JPEG_QUALITY=70`. Read on every encode.
-
-Trade-off the user controls: 1080p + quality 90 sends a sharp ~1MB base64 to the vision LLM (slow, expensive, but readable text + tiny details). auto + quality 50 sends a cheap 256×192 thumbnail.
-
-9 unit tests in `tests/test_camera_settings.py` pin presets, helper behaviour, and config metadata. The 3 tests that import cv2 transitively are now `pytest.importorskip("cv2")`-guarded so CI without OpenCV cleanly skips them — that's what blocked v0.18.3 from auto-releasing. Fixed in this cycle.
-
-## 🤖 Skill creator now generates working engineering skills (the v0.18.3 work, finally shipping)
-
-Three coupled fixes from the field session that took skill_creator from "generates stubs that fail validation" to "generates camera-using engineering skills with raw OpenCV + statistics + time-series SQLite — first try":
-
-- **Soul rule 14 expansion**: agent must STOP after `create_skill`, never `write_file` in `~/.qwe-qwe/skills/`, skills are SINGLE `.py` files (not directories), "run skill_name" = call its tool directly.
-- **Pipeline `elif`→`if` fix**: when execute_body is empty (all tools custom), prompt the LLM to start the FIRST tool with `if name == "..."`. Plus defensive regex post-process. Closed the recurring `syntax error on attempt N: invalid syntax (line 70)` that bit every workspace_meter / camera_diagnostics attempt.
-- **End-to-end pipeline test**: `tests/test_skill_creator_pipeline.py` with mocked LLM, asserts produced `.py` calls `tools.execute("camera_capture")` + `memory.save()` + uses `skill_<name>_` table prefix + parses cleanly.
-
-## 🖱️ task_update no longer ghost-streams the chat
-
-After `create_skill`, the chat indicator stayed in "generating" state with the typing dot blinking forever — `task_update` WS events were falling through to the streaming-message-creation branch. Now handled explicitly: surfaces as toast (`✅`/`❌` styling), auto-refreshes the skills list on success.
-
-## 🔧 CI fix that unblocked everything
-
-`tests/test_camera_settings.py` was importing `cv2` directly in 3 tests. CI doesn't install OpenCV (it's an optional heavy dep) so those tests `ModuleNotFoundError`'d and the whole Tests workflow failed. That meant **release.yml was skipped on every push since v0.18.2** because it gates on Tests success. v0.18.3 was bumped in code but never tagged on GitHub.
-
-Fixed by `pytest.importorskip("cv2")` at the top of those 3 tests. CI without OpenCV now cleanly skips them; CI with OpenCV runs them. Local dev unchanged.
-
-## 🔄 Upgrading
+## 🚀 Upgrade
 
 ```bash
-git pull && pip install -e .
-# restart cli.py --web for camera + skill_creator fixes
-# hard-reload the browser tab (Ctrl+Shift+R) for the UI fix
+pip install -e . --upgrade        # from a checkout
+# or
+pip install --upgrade qwe-qwe     # if installed as a package
 ```
 
-No data migration needed.
+Telemetry stays off unless you opt in. Existing v1 opt-ins will see a yellow "policy updated, please re-confirm" banner the first time they open Settings → Privacy after upgrading — events queue but don't send until you re-stamp.
 
-## 📊 Stats
-
-- 9 commits since v0.18.2 (no v0.18.3 was ever tagged — bumped in code but blocked on CI)
-- **2 community PRs merged** (PR #17 forhim007, PR #19 dutchaiagency)
-- 4 community contributors active this cycle: forhim007, dutchaiagency, snakefood3232, EugeneKorr
-- 394 → 418 tests passing (+24)
-- Full lint + JS-syntax + 3.11/3.12 pytest matrix green
-
-## 🐞 Open for community
-
-- [#8](https://github.com/deepfounder-ai/qwe-qwe/issues/8) onnxruntime-gpu doctor check — claimed by @snakefood3232
-- [#14](https://github.com/deepfounder-ai/qwe-qwe/issues/14) AST fix for code outside if/elif branches — claimed by @snakefood3232 (48h promise)
-- [#18](https://github.com/deepfounder-ai/qwe-qwe/issues/18) timer skill cancel/list — `good first issue` with acceptance criteria
-- [#12](https://github.com/deepfounder-ai/qwe-qwe/issues/12) ongoing QA campaign — find more bugs, file with repro
+Hard-refresh the web UI once after upgrade (Ctrl+Shift+R / Cmd+Shift+R) to drop any stale browser cache from the pre-fix `api()` helper.
