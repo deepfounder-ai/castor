@@ -168,6 +168,14 @@ EDITABLE_SETTINGS = {
     "model_context":        ("setting:model_context",         int, 0,      "Model context window in tokens (0 = auto-detect from provider, else override)", 0, 2000000),
     "yt_cookies_from_browser": ("setting:yt_cookies_from_browser", str, "", "Use browser cookies for YouTube to bypass rate limits. Values: chrome, firefox, edge, safari, brave, chromium, opera, vivaldi. Empty = anonymous (rate-limited after a few videos).", "", ""),
     "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. qwe-qwe is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
+    # ── Privacy / Telemetry ──
+    # All four default to "off / empty" — no telemetry leaves the machine
+    # without explicit opt-in via Settings → Privacy or first-run prompt.
+    # See `docs/PRIVACY.md` for the full data inventory + privacy contract.
+    "telemetry_enabled":      ("setting:telemetry_enabled",     int, 0,     "Send anonymous usage metrics to the configured endpoint. Default OFF. Opt-in only. No chat content / no soul / no PII collected. See Settings → Privacy → Telemetry for the full list of what's sent. See docs/PRIVACY.md for details.", 0, 1),
+    "telemetry_endpoint":     ("setting:telemetry_endpoint",    str, "",    "URL to POST batched telemetry events to. Empty = no network calls (events queue locally for inspection). Self-hosted users can point this at their own PostHog / Plausible / custom collector.", "", ""),
+    "telemetry_anonymous_id": ("setting:telemetry_anonymous_id", str, "",   "Random UUID generated on first opt-in. Read-only (rotate via Settings → Privacy → Reset). Never derived from PII.", "", ""),
+    "telemetry_consent_version": ("setting:telemetry_consent_version", int, 0, "Consent policy version the user agreed to. Bumped when ALLOWED_EVENTS changes shape, triggering a re-prompt. Internal — not user-edited.", 0, 1000),
     # ── Vision (Camera) ──
     "camera_index":         ("setting:camera_index",          int, -1,    "Camera index for agent vision (-1 = auto-detect best, 0/1/2 = specific camera)", -1, 10),
     "camera_resolution":    ("setting:camera_resolution",     str, "auto", "Capture resolution: auto (camera default), 480p (640x480), 720p (1280x720), 1080p (1920x1080). Higher = sharper vision but bigger payload to LLM.", "", ""),
