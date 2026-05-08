@@ -15,10 +15,12 @@ python cli.py --web --ssl --port 7861        # Web UI (HTTPS required for mic/ca
 qwe-qwe --web --doctor                       # If installed as package; doctor runs 30+ checks
 
 # Tests
-pytest tests/                                # All tests (~495 currently)
+pytest tests/                                # All tests (~520 currently)
 pytest tests/test_integration.py -v          # Integration tests (TestClient + mocked LLM)
 pytest tests/test_turn_context.py -v         # Per-request state isolation
-pytest tests/test_telemetry.py -v            # Privacy contract + consent gates
+pytest tests/test_telemetry.py -v            # Privacy contract + consent gates (70 tests)
+pytest tests/test_blog_feed.py -v            # Blog RSS proxy in Presets view
+pytest tests/test_ws_attachments.py -v       # WS image/document round-trip + reload contract
 pytest tests/test_tools.py::test_blocks_sudo # Single test by nodeid
 pytest --cov --cov-report=term               # With coverage (floor: 24% — do not regress)
 
@@ -142,10 +144,11 @@ Soul rule 14 (v0.18.x): when user requests a service integration, agent calls `c
 **Default OFF.** No data leaves the machine until the user explicitly opts in via the first-run modal (web) / TTY prompt (CLI) / Settings → Privacy → Telemetry.
 
 Privacy contract (enforced at `track_event()`):
-- 5 whitelisted events (`session_start`, `turn_complete`, `tool_error`, `skill_creator_pipeline`, `feature_first_use`) with type-strict prop schemas.
-- String props that could carry free text use closed enums (`TOOL_CATEGORIES`, `ERROR_KINDS`, `SOURCES`, `PROVIDER_KINDS`, `MODEL_SIZE_BUCKETS`, `PIPELINE_OUTCOMES`, `FEATURES`). A future refactor adding a string field can't smuggle chat content past the validator.
+- 6 whitelisted events (`session_start`, `turn_complete`, `tool_error`, `skill_creator_pipeline`, `feature_first_use`, `thread_created`) with type-strict prop schemas.
+- String props that could carry free text use closed enums (`TOOL_CATEGORIES`, `ERROR_KINDS`, `SOURCES`, `PROVIDER_KINDS`, `MODEL_SIZE_BUCKETS`, `PIPELINE_OUTCOMES`, `FEATURES`). `SOURCES` widened to include `"preset"` in v0.18.5. A future refactor adding a string field can't smuggle chat content past the validator.
 - Anonymous_id is a random UUID generated on first opt-in. Not derived from any PII. `forget_me()` wipes; `reset_anonymous_id()` rotates without disabling.
 - Two consent gates (`track_event` + `flush`) refuse to accept / send when `consent_needs_reprompt()` is True.
+- `thread_created` (added v0.18.5) emits once per `threads.create()` call — single `source` enum field (web/cli/telegram/scheduler/preset/other). Helper in `threads.py` is lazy-imported and swallows any error so a telemetry hiccup never breaks thread creation. Wired at 6 production call sites — never the thread name or meta.
 
 Wire formats (`telemetry.py::_default_sender` dispatches by `telemetry_format`):
 - `raw` — single batched POST `{"events": [...]}` for custom collectors.
@@ -153,11 +156,21 @@ Wire formats (`telemetry.py::_default_sender` dispatches by `telemetry_format`):
 
 Project defaults ship the Countly path pointing at `https://qwelytics.deepfounder.ai/i` with the project's public Countly app key. End-user UI surfaces only Enable/Disable + transparency lists — endpoint / format / app_key are NOT user-editable (operators / forks edit `config.py` defaults).
 
-Consent versioning (`_CURRENT_CONSENT_VERSION` constant in `telemetry.py`): bump when `ALLOWED_EVENTS` shape changes OR default endpoint changes. Old consent → "policy updated, please re-confirm" banner; events queue but don't send until user re-stamps via opt_in.
+Consent versioning (`_CURRENT_CONSENT_VERSION` constant in `telemetry.py`, currently `2`): bump when `ALLOWED_EVENTS` shape changes OR default endpoint changes. Old consent → "policy updated, please re-confirm" banner; events queue but don't send until user re-stamps via opt_in. v1→v2 was bumped in v0.18.5 when `thread_created` was added + `SOURCES` widened.
 
 Adding a new event: edit `ALLOWED_EVENTS` schema + bump `_CURRENT_CONSENT_VERSION`. Audit by grep `telemetry.track_event` — only path into the queue.
 
 Full data inventory + privacy contract: `docs/PRIVACY.md`.
+
+### Project blog feed (`/api/feed/blog`)
+
+**Added v0.18.5.** Server-side proxy of `https://deepfounder.ai/tag/qwe-qwe/rss/`, rendered as a "From the blog" strip above the preset grid. **NOT telemetry** — empty body, no `anonymous_id`. Only signal deepfounder.ai sees is "an install asked for the feed" (IP + `qwe-qwe/<ver>` UA).
+
+- 30-min in-process cache (`_feed_cache` + lock), 15s urlopen timeout, 10 items max.
+- Parser bounded everywhere: title ≤300, desc ≤500, ≤8 categories, etc. — a malicious upstream can't blow up the response.
+- On any fetch error the endpoint still returns 200 with the last-known cached items + `error` field. **Never raises into the UI.** Cold-cache + upstream-down → empty list + error, Presets view still works.
+- Frontend lazy-loads on Presets view entry; `state.blogFeedLoaded` flag prevents re-fetching on rapid view switches.
+- Documented under "Other project-controlled outbound HTTP" in `docs/PRIVACY.md` so users can audit.
 
 ### Voice / Camera / Knowledge ingest
 
@@ -179,6 +192,10 @@ Single-file SPA, ~5500 lines of vanilla JS. **No build step** — `scripts/check
 - Provider picker with `NEEDS KEY` badges (v0.17.17) + key modal with built-in URL hints per provider.
 
 Render pattern: every state change rebuilds innerHTML. Event handlers attached via `wireEvents()` on each render. Globals attached ONCE (guard: `state._graphGlobalHandlersAttached = true`).
+
+**`api()` helper contract (v0.18.5):** every JSON API call sets `cache: 'no-store'` so browsers never replay stale GET responses. FastAPI doesn't send `Cache-Control` headers, so without this, browsers heuristic-cache JSON and serve pre-mutation state right after a POST. Concrete bug this prevents: boot → GET `/status` (cdm:false) → cached → user clicks Enable → POST opt-in (stores cdm:true) → reload → browser serves cached cdm:false → telemetry modal re-opens forever. Pinned by `tests/test_telemetry.py::test_api_helper_disables_http_cache`.
+
+**File rendering — live + reload paths must agree:** `splitFiles()` (around line 1876) splits a `files` list into `images` (by `is_image` flag OR `\.(png|jpe?g|gif|webp|bmp|svg)$/i` extension) and `others`. Images go to `_images` (inline `<img>`); others to `_files` (download chips). BOTH the live WS handler (`type === 'reply' / 'files'`) AND the reload mapper (`loadActiveMessages` over `meta.files`) must call `splitFiles` — otherwise an image the agent sent via `send_file` shows inline during the live turn but flips to a download link after the user leaves the thread and comes back. Pinned by `tests/test_ws_attachments.py::test_reload_path_runs_meta_files_through_splitfiles`.
 
 ## CI + release pipeline (`.github/workflows/`)
 
@@ -210,7 +227,7 @@ Render pattern: every state change rebuilds innerHTML. Event handlers attached v
 
 ## Tests (`tests/`)
 
-All ~495 tests run in a single pytest process (v0.17.24 — no more sys.modules pollution). Do NOT add `sys.modules[...] = mock_X` at module scope — use `monkeypatch` fixtures (see `tests/conftest.py` for `qwe_temp_data_dir`, `mock_llm`).
+All ~520 tests run in a single pytest process (v0.17.24 — no more sys.modules pollution). Do NOT add `sys.modules[...] = mock_X` at module scope — use `monkeypatch` fixtures (see `tests/conftest.py` for `qwe_temp_data_dir`, `mock_llm`).
 
 Notable files:
 - `test_integration.py` — TestClient + mocked LLM end-to-end (added to catch v0.17.23-style lazy-import SyntaxErrors)
@@ -219,10 +236,14 @@ Notable files:
 - `test_secret_scrub.py` — regex patterns for API key shapes
 - `test_migrations.py` — fresh + back-compat + idempotent + rollback
 - `test_skill_creator_smoke.py` + `test_skill_creator_pipeline.py` — pure helpers + e2e pipeline with mocked LLM (camera-using skill regression test)
-- `test_telemetry.py` — privacy contract + Countly + raw + consent gates (~58 tests)
+- `test_telemetry.py` — privacy contract + Countly + raw + consent gates + JS contract tests for `api()` no-store directive (70 tests)
+- `test_blog_feed.py` — RSS parser bounds + endpoint cache TTL + graceful fallback on upstream-down (12 tests)
+- `test_ws_attachments.py` — WS image/document round-trip + reload-path `splitFiles` contract
 - `test_text_to_tool_extraction.py` — all 5 patterns including the `!<function_call:>` Qwen variant (#10)
 - `test_camera_settings.py` — preset table + helper, `pytest.importorskip("cv2")` for CI
 - `conftest.py` — shared fixtures; `scope="session"` TestClient lives here
+
+**JS contract tests live in pytest.** Two exist so far: `test_api_helper_disables_http_cache` (pins `cache:'no-store'`) and `test_reload_path_runs_meta_files_through_splitfiles` (pins live/reload symmetry). Pattern: `Path(...).read_text()` on `static/index.html`, locate a stable anchor string, assert the contract holds in a window after it. Cheap regression guards for JS-side bugs that pytest would otherwise miss entirely.
 
 Coverage baseline 25.93%; floor 24% (`pyproject.toml::tool.coverage.report.fail_under`). Some modules under 10% (`cli.py`, `inference_setup.py`, `synthesis.py`) are candidates for future integration tests.
 
@@ -265,6 +286,6 @@ Telemetry-related settings live in `EDITABLE_SETTINGS` (not env vars): `telemetr
 5. **New schema change?** New file `migrations/NNN_snake_case.sql`. `_apply_migrations()` picks it up.
 6. **New doctor check?** Add to `cli.py:doctor()`. Must survive cp1251 terminals — no raw emoji in output.
 7. **New WS event?** Emit via `ctx.on_*` callback, not a global. Client reads in `handleWSMessage` in `static/index.html`. If event is non-chat (notification / status / etc.), short-circuit at the top of `handleWsMessage` BEFORE the `state.streaming` creation gate — otherwise it triggers a ghost streaming message in the chat (lesson from `task_update` bug, fixed in v0.18.3).
-8. **New telemetry event?** Add to `telemetry.ALLOWED_EVENTS` whitelist with type-strict prop schema. String props that could carry free text MUST use a closed enum. Bump `telemetry._CURRENT_CONSENT_VERSION` so existing opted-in users get a re-consent banner.
+8. **New telemetry event?** Add to `telemetry.ALLOWED_EVENTS` whitelist with type-strict prop schema. String props that could carry free text MUST use a closed enum. Bump `telemetry._CURRENT_CONSENT_VERSION` so existing opted-in users get a re-consent banner. Wire the emitter near the action it observes (e.g. `_emit_thread_created_telemetry` lives in `threads.py`); always lazy-import telemetry + swallow exceptions so a queue/network blip can't break the host operation.
 9. **Skills are gitignored except whitelisted.** When working on built-in skills (`skills/skill_creator.py` etc.), `.gitignore` entry `skills/` excludes them by default; whitelist (`!skills/skill_creator.py`) keeps the built-ins tracked. Side effect: `ruff check .` skips skills/ via gitignore — for those files run `ruff check skills/` explicitly.
 10. **Before commit**: `ruff check .`, `python scripts/check_js.py` (if you touched `static/index.html`), `pytest tests/`.
