@@ -427,12 +427,14 @@ def _default_sender(events: list[dict]) -> bool:
     Two supported formats:
     - "raw" (default) — single batched POST with `{"events": [...]}`
       shape. For custom collectors that accept our schema directly.
-    - "plausible" — per-event POST in Plausible Analytics' `/api/event`
-      format. For users who self-host Plausible (https://plausible.io).
+    - "countly" — batched POST in Countly's `/i` format. For users
+      who self-host Countly Community Edition (https://count.ly).
+      Maps anonymous_id → device_id natively (no synthetic-IP hacks),
+      cross-day per-user tracking works out of the box.
     """
     fmt = (config.get("telemetry_format") or "raw").strip().lower()
-    if fmt == "plausible":
-        return _send_plausible(events)
+    if fmt == "countly":
+        return _send_countly(events)
     return _send_raw(events)
 
 
@@ -553,46 +555,17 @@ def _send_raw(events: list[dict]) -> bool:
     return False
 
 
-def _aid_to_synthetic_ip(aid: str) -> str:
-    """Map an anonymous_id hex string to a stable synthetic IPv4.
+def _to_countly_segmentation(props: dict) -> dict:
+    """Countly's `segmentation` accepts string / number / bool values
+    only — no nested objects or arrays. Coerce our props to that shape.
 
-    Plausible counts unique visitors by hashing IP+UA+domain+rotating
-    daily salt. Without a per-user IP, every visit folds into one
-    "visitor" and unique counts collapse. With our anonymous_id
-    deterministically mapped to a synthetic IPv4, Plausible counts
-    unique opted-in installs without ever seeing a real IP.
+    Lists become comma-joined strings. Since `tool_categories_used` is
+    drawn from a small bounded enum (TOOL_CATEGORIES, ~13 values), the
+    resulting CSV string has bounded cardinality and Countly can group
+    on it cleanly as a discrete segmentation value.
 
-    The IP is purely synthetic — derived from the first 4 bytes of the
-    hex anonymous_id. Two installs only collide if their UUIDs share
-    the first 4 bytes (1 in 4 billion).
-
-    127.x.x.x (loopback) and 0.x.x.x (reserved) are remapped to the
-    10.x.x.x RFC1918 private range so Plausible doesn't reject them.
-    """
-    if not aid or len(aid) < 8:
-        return "10.0.0.1"
-    try:
-        b1 = int(aid[0:2], 16)
-        b2 = int(aid[2:4], 16)
-        b3 = int(aid[4:6], 16)
-        b4 = int(aid[6:8], 16)
-        if b1 in (0, 127):
-            b1 = 10
-        return f"{b1}.{b2}.{b3}.{b4}"
-    except ValueError:
-        return "10.0.0.1"
-
-
-def _to_plausible_props(props: dict) -> dict:
-    """Plausible accepts string / number / boolean prop values only,
-    no nested objects or arrays. Coerce our props to that shape.
-
-    Lists become comma-joined strings (TOOL_CATEGORIES are short enums,
-    so the resulting string is always small + bounded cardinality —
-    Plausible can group on "memory,files" as a discrete value).
-
-    Booleans pass through. Ints and floats are stringified at the JSON
-    serialiser later — keep as numbers here so Plausible knows the type.
+    Booleans / ints / floats / strings pass through — Countly preserves
+    types in segmentation.
     """
     out: dict = {}
     for k, v in (props or {}).items():
@@ -605,72 +578,102 @@ def _to_plausible_props(props: dict) -> dict:
     return out
 
 
-def _send_plausible(events: list[dict]) -> bool:
-    """POST each event individually to Plausible's /api/event endpoint.
+def _to_countly_event(ev: dict) -> dict:
+    """Transform our event envelope to Countly's event shape.
 
-    Why per-event (not batch): Plausible's API doesn't accept arrays —
-    each event is its own POST. We send sequentially with per-event
-    retry on 5xx. Returns True only if ALL events succeeded; on partial
-    failure the queue is preserved so the next flush retries
-    (potentially producing duplicates in Plausible — accepted trade-off
-    for at-least-once delivery semantics).
+    Countly event:
+        {key, count, sum?, dur?, segmentation, timestamp}
 
-    Plausible requires:
-    - User-Agent (we send `qwe-qwe/{version}`)
-    - X-Forwarded-For (we send a synthetic IPv4 derived from
-      anonymous_id, so unique-visitor counts match unique installs)
-    - body.domain matching a site registered in the Plausible dashboard
-      (read from `telemetry_plausible_domain` setting)
-    - body.url — synthetic `app://qwe-qwe/event/<event_name>` since
-      qwe-qwe isn't a website and we have no real URL to attribute
-    - body.name — the event name (one of our 5 ALLOWED_EVENTS)
-    - body.props — flat string/number/bool key-value (we coerce lists
-      to comma-joined strings)
+    `dur` (event duration in seconds) is set from `duration_ms / 1000`
+    when the event has a `duration_ms` prop (turn_complete,
+    skill_creator_pipeline). Otherwise omitted — Countly treats absence
+    as 0 which is fine for instantaneous events.
+    """
+    props = ev.get("props") or {}
+    seg = _to_countly_segmentation(props)
+    out: dict = {
+        "key": ev.get("event") or "unknown",
+        "count": 1,
+        "segmentation": seg,
+        "timestamp": int(ev.get("ts") or time.time()),
+    }
+    duration_ms = props.get("duration_ms")
+    if isinstance(duration_ms, (int, float)) and duration_ms > 0:
+        out["dur"] = duration_ms / 1000.0
+    return out
+
+
+def _send_countly(events: list[dict]) -> bool:
+    """POST a batch of events to Countly's /i ingest endpoint.
+
+    Countly accepts a single POST per device_id with all events for
+    that device. Since all events in our queue share the same
+    anonymous_id (it stamps from one source), one batched POST works
+    for the whole queue. Falls through to multiple POSTs only if a
+    queue ever ends up with mixed device_ids (theoretically possible
+    after `reset_anonymous_id()` mid-flight; we group defensively).
+
+    Countly requires:
+    - app_key matching a registered app in the dashboard (read from
+      `telemetry_countly_app_key` setting)
+    - device_id (we use anonymous_id natively — Countly hashes
+      internally, no salt rotation, so cross-day per-user tracking
+      works out of the box)
+    - events array with `key` (event name) and optional segmentation
+    - User-Agent header (we send `qwe-qwe/{version}`)
+
+    Privacy note: Countly receives our anonymous_id as device_id.
+    That's stable across days, by design — the user OPTED IN, and a
+    stable id is needed for retention / funnel metrics. The id is
+    still random-UUID and not derived from any PII.
+
+    Returns True on a 2xx response (queue cleared by flush()), False
+    on 4xx (config error — usually wrong app_key) or 5xx after retries
+    (queue retained for next flush).
     """
     endpoint = (config.get("telemetry_endpoint") or "").strip()
     if not endpoint:
         return False
-    domain = (config.get("telemetry_plausible_domain") or "").strip()
-    if not domain:
-        _log.warning("telemetry: format=plausible but telemetry_plausible_domain is empty — set it to the site you registered in Plausible")
+    app_key = (config.get("telemetry_countly_app_key") or "").strip()
+    if not app_key:
+        _log.warning(
+            "telemetry: format=countly but telemetry_countly_app_key is empty — "
+            "set it to the app key from your Countly dashboard"
+        )
         return False
 
-    sent_count = 0
+    # Group by device_id (anonymous_id). Almost always one group, but
+    # if `reset_anonymous_id()` fired between events the queue might
+    # carry a mix — handle it defensively.
+    by_device: dict[str, list[dict]] = {}
     for ev in events:
-        ok = _send_one_plausible(ev, endpoint, domain)
-        if not ok:
-            # First failure → bail. Don't burn through the queue trying
-            # each event when the network or config is bad.
+        aid = ev.get("anonymous_id") or "anon"
+        by_device.setdefault(aid, []).append(ev)
+
+    sent_count = 0
+    for device_id, device_events in by_device.items():
+        if not _send_countly_batch(endpoint, app_key, device_id, device_events):
             _log.warning(
-                "telemetry: plausible send failed at event %d/%d, keeping queue",
-                sent_count + 1, len(events),
+                "telemetry: countly send failed (device=%s..., %d events), keeping queue",
+                device_id[:8], len(device_events),
             )
             return False
-        sent_count += 1
+        sent_count += len(device_events)
 
-    _log.info("telemetry: sent %d events to plausible", sent_count)
+    _log.info("telemetry: sent %d events to countly", sent_count)
     return True
 
 
-def _send_one_plausible(ev: dict, endpoint: str, domain: str) -> bool:
-    """Single-event POST to Plausible. Internal retry on 5xx using the
-    same backoff as `_send_raw`. Returns True on 2xx, False otherwise."""
-    event_name = ev.get("event") or "unknown"
-    aid = ev.get("anonymous_id") or ""
-    sid = ev.get("session_id") or ""
-
-    # Build Plausible-shaped props. Drop anonymous_id from props since
-    # it's already used to synthesize the IP for unique-counting; keep
-    # session_id so the receiver can group within a single run.
-    props = _to_plausible_props(ev.get("props") or {})
-    if sid:
-        props["session_id"] = sid
-
+def _send_countly_batch(endpoint: str, app_key: str, device_id: str,
+                         events: list[dict]) -> bool:
+    """Single batched POST for one device_id. Internal retry on 5xx
+    using the same backoff as `_send_raw`."""
+    countly_events = [_to_countly_event(ev) for ev in events]
     body_obj = {
-        "name": event_name,
-        "url": f"app://qwe-qwe/event/{event_name}",
-        "domain": domain,
-        "props": props,
+        "app_key": app_key,
+        "device_id": device_id,
+        "timestamp": int(time.time()),
+        "events": countly_events,
     }
 
     try:
@@ -678,13 +681,12 @@ def _send_one_plausible(ev: dict, endpoint: str, domain: str) -> bool:
         headers = {
             "Content-Type": "application/json",
             "User-Agent": f"qwe-qwe/{config.VERSION}",
-            "X-Forwarded-For": _aid_to_synthetic_ip(aid),
         }
         req = urllib.request.Request(
             endpoint, data=body, headers=headers, method="POST"
         )
     except Exception as e:
-        _log.warning("telemetry: plausible request build failed: %s", type(e).__name__)
+        _log.warning("telemetry: countly request build failed: %s", type(e).__name__)
         return False
 
     last_err: str = "unknown"
@@ -714,7 +716,7 @@ def _send_one_plausible(ev: dict, endpoint: str, domain: str) -> bool:
         except Exception as e:
             last_err = type(e).__name__
 
-    _log.debug("telemetry: plausible event %r failed: %s", event_name, last_err)
+    _log.debug("telemetry: countly batch failed: %s", last_err)
     return False
 
 

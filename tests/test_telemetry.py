@@ -632,87 +632,91 @@ def test_request_payload_shape(monkeypatch, configured_endpoint, no_sleep):
         assert isinstance(ev["props"], dict)
 
 
-# ─── Plausible format ────────────────────────────────────────────────
+# ─── Countly format ──────────────────────────────────────────────────
 
 
 @pytest.fixture
-def plausible_endpoint(fresh_tel):
-    """Opt in + set a Plausible-shaped endpoint + domain."""
+def countly_endpoint(fresh_tel):
+    """Opt in + set a Countly-shaped endpoint + app_key."""
     import config
-    config.set("telemetry_endpoint", "https://stub.invalid/api/event")
-    config.set("telemetry_format", "plausible")
-    config.set("telemetry_plausible_domain", "qwe-qwe.test")
+    config.set("telemetry_endpoint", "https://stub.invalid/i")
+    config.set("telemetry_format", "countly")
+    config.set("telemetry_countly_app_key", "test_app_key_12345")
     fresh_tel.opt_in()
     return fresh_tel
 
 
-def test_aid_to_synthetic_ip_stable(fresh_tel):
-    aid = "abcdef1234567890" + "00" * 8
-    ip1 = fresh_tel._aid_to_synthetic_ip(aid)
-    ip2 = fresh_tel._aid_to_synthetic_ip(aid)
-    assert ip1 == ip2
-
-
-def test_aid_to_synthetic_ip_distinguishes_users(fresh_tel):
-    aid_a = "11" + "00" * 15
-    aid_b = "ff" + "00" * 15
-    assert fresh_tel._aid_to_synthetic_ip(aid_a) != fresh_tel._aid_to_synthetic_ip(aid_b)
-
-
-def test_aid_to_synthetic_ip_remaps_loopback(fresh_tel):
-    """127.x.x.x and 0.x.x.x get remapped to 10.x.x.x so Plausible
-    accepts them. Otherwise X-Forwarded-For: 127.0.0.1 would collapse
-    every loopback-prefixed UUID into one Plausible visitor."""
-    aid = "7fcafe00" + "00" * 12  # First byte 7f = 127
-    ip = fresh_tel._aid_to_synthetic_ip(aid)
-    assert not ip.startswith("127.")
-    assert not ip.startswith("0.")
-
-
-def test_aid_to_synthetic_ip_handles_short_input(fresh_tel):
-    assert fresh_tel._aid_to_synthetic_ip("") == "10.0.0.1"
-    assert fresh_tel._aid_to_synthetic_ip("ab") == "10.0.0.1"
-    assert fresh_tel._aid_to_synthetic_ip("not-hex!") == "10.0.0.1"
-
-
-def test_to_plausible_props_lists_become_csv(fresh_tel):
-    out = fresh_tel._to_plausible_props({"tool_categories_used": ["memory", "files"]})
+def test_to_countly_segmentation_lists_become_csv(fresh_tel):
+    out = fresh_tel._to_countly_segmentation({"tool_categories_used": ["memory", "files"]})
     assert out == {"tool_categories_used": "memory,files"}
 
 
-def test_to_plausible_props_preserves_numbers_bools_strings(fresh_tel):
-    out = fresh_tel._to_plausible_props({"count": 5, "ok": True, "name": "foo"})
+def test_to_countly_segmentation_preserves_primitives(fresh_tel):
+    out = fresh_tel._to_countly_segmentation({"count": 5, "ok": True, "name": "foo"})
     assert out == {"count": 5, "ok": True, "name": "foo"}
 
 
-def test_to_plausible_props_empty_list_becomes_empty_string(fresh_tel):
-    out = fresh_tel._to_plausible_props({"tools": []})
+def test_to_countly_segmentation_empty_list_becomes_empty_string(fresh_tel):
+    out = fresh_tel._to_countly_segmentation({"tools": []})
     assert out == {"tools": ""}
 
 
-def test_send_plausible_no_endpoint_returns_false(fresh_tel):
+def test_to_countly_event_basic_shape(fresh_tel):
+    """Our event envelope → Countly event shape (key, count, segmentation, timestamp)."""
+    ev = {
+        "event": "feature_first_use",
+        "anonymous_id": "abc",
+        "session_id": "sess",
+        "ts": 1700000000.5,
+        "props": {"feature": "camera_capture"},
+    }
+    out = fresh_tel._to_countly_event(ev)
+    assert out["key"] == "feature_first_use"
+    assert out["count"] == 1
+    assert out["segmentation"] == {"feature": "camera_capture"}
+    assert out["timestamp"] == 1700000000  # truncated to int
+    assert "dur" not in out  # no duration_ms in props → no dur key
+
+
+def test_to_countly_event_duration_ms_to_dur_seconds(fresh_tel):
+    """duration_ms in props → dur (seconds) in Countly event. Lets
+    Countly compute event-duration averages natively."""
+    ev = {
+        "event": "turn_complete",
+        "anonymous_id": "abc",
+        "session_id": "sess",
+        "ts": 1700000000,
+        "props": {"duration_ms": 4200, "rounds": 3},
+    }
+    out = fresh_tel._to_countly_event(ev)
+    assert out["dur"] == 4.2
+    assert out["segmentation"]["duration_ms"] == 4200
+    assert out["segmentation"]["rounds"] == 3
+
+
+def test_send_countly_no_endpoint_returns_false(fresh_tel):
     import config
-    config.set("telemetry_format", "plausible")
-    config.set("telemetry_plausible_domain", "qwe-qwe.test")
+    config.set("telemetry_format", "countly")
+    config.set("telemetry_countly_app_key", "x")
     fresh_tel.opt_in()
     fresh_tel.track_event("feature_first_use", {"feature": "camera_capture"})
-    assert fresh_tel._send_plausible(fresh_tel.get_pending_events()) is False
+    assert fresh_tel._send_countly(fresh_tel.get_pending_events()) is False
 
 
-def test_send_plausible_no_domain_returns_false(fresh_tel):
-    """domain is required by Plausible — refuse to send without it."""
+def test_send_countly_no_app_key_returns_false(fresh_tel):
+    """app_key is required by Countly — refuse to send without it."""
     import config
-    config.set("telemetry_endpoint", "https://stub.invalid/api/event")
-    config.set("telemetry_format", "plausible")
-    config.set("telemetry_plausible_domain", "")
+    config.set("telemetry_endpoint", "https://stub.invalid/i")
+    config.set("telemetry_format", "countly")
+    config.set("telemetry_countly_app_key", "")
     fresh_tel.opt_in()
     fresh_tel.track_event("feature_first_use", {"feature": "camera_capture"})
-    assert fresh_tel._send_plausible(fresh_tel.get_pending_events()) is False
+    assert fresh_tel._send_countly(fresh_tel.get_pending_events()) is False
 
 
-def test_send_plausible_post_shape(monkeypatch, plausible_endpoint, no_sleep):
-    """Verify each POST: URL=endpoint, method=POST, body has Plausible
-    keys (name/url/domain/props), headers carry UA + X-Forwarded-For."""
+def test_send_countly_post_shape(monkeypatch, countly_endpoint, no_sleep):
+    """One batched POST per device_id. Body has app_key, device_id,
+    timestamp, events array. Headers carry Content-Type + User-Agent."""
     import json as _json
     import urllib.request as _ur
 
@@ -725,92 +729,87 @@ def test_send_plausible_post_shape(monkeypatch, plausible_endpoint, no_sleep):
             "headers": {k: v for k, v in req.header_items()},
             "body": _json.loads(req.data.decode("utf-8")),
         })
-        return _FakeResponse(status=202)
+        return _FakeResponse(status=200)
 
     monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
 
-    plausible_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
-    plausible_endpoint.track_event("turn_complete", {
-        "duration_ms": 100, "rounds": 1,
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    countly_endpoint.track_event("turn_complete", {
+        "duration_ms": 4200, "rounds": 3,
         "tool_categories_used": ["memory", "files"],
         "tool_calls_count": 2, "tool_errors_count": 0,
         "input_tokens": 10, "output_tokens": 20, "context_hits": 0,
         "source": "web",
     })
-    assert plausible_endpoint._send_plausible(plausible_endpoint.get_pending_events()) is True
+    assert countly_endpoint._send_countly(countly_endpoint.get_pending_events()) is True
 
-    assert len(captured) == 2
-    c0 = captured[0]
-    assert c0["url"] == "https://stub.invalid/api/event"
-    assert c0["method"] == "POST"
-    assert c0["body"]["name"] == "feature_first_use"
-    assert c0["body"]["domain"] == "qwe-qwe.test"
-    assert c0["body"]["url"].startswith("app://qwe-qwe/event/")
-    assert c0["body"]["props"]["feature"] == "camera_capture"
-    headers_lc = {k.lower(): v for k, v in c0["headers"].items()}
+    # Both events for the same anonymous_id → one POST
+    assert len(captured) == 1
+    c = captured[0]
+    assert c["url"] == "https://stub.invalid/i"
+    assert c["method"] == "POST"
+    assert c["body"]["app_key"] == "test_app_key_12345"
+    assert isinstance(c["body"]["device_id"], str) and c["body"]["device_id"]
+    assert "timestamp" in c["body"]
+    assert isinstance(c["body"]["events"], list)
+    assert len(c["body"]["events"]) == 2
+    e0 = c["body"]["events"][0]
+    assert e0["key"] == "feature_first_use"
+    assert e0["count"] == 1
+    assert e0["segmentation"]["feature"] == "camera_capture"
+    e1 = c["body"]["events"][1]
+    assert e1["key"] == "turn_complete"
+    assert e1["dur"] == 4.2
+    assert e1["segmentation"]["tool_categories_used"] == "memory,files"
+    headers_lc = {k.lower(): v for k, v in c["headers"].items()}
     assert headers_lc["content-type"] == "application/json"
     assert headers_lc["user-agent"].startswith("qwe-qwe/")
-    assert "x-forwarded-for" in headers_lc
-
-    c1 = captured[1]
-    assert c1["body"]["name"] == "turn_complete"
-    # List prop became CSV string
-    assert c1["body"]["props"]["tool_categories_used"] == "memory,files"
 
 
-def test_send_plausible_synthetic_ip_matches_helper(monkeypatch, plausible_endpoint, no_sleep):
-    """X-Forwarded-For for an event must equal _aid_to_synthetic_ip(aid)."""
+def test_send_countly_uses_anonymous_id_as_device_id(monkeypatch, countly_endpoint, no_sleep):
     import urllib.request as _ur
+    import json as _json
 
-    captured_xff = []
+    captured_device_id = []
 
     def _fake_urlopen(req, *_a, **_kw):
-        headers_lc = {k.lower(): v for k, v in req.header_items()}
-        captured_xff.append(headers_lc.get("x-forwarded-for"))
-        return _FakeResponse(status=202)
+        body = _json.loads(req.data.decode("utf-8"))
+        captured_device_id.append(body["device_id"])
+        return _FakeResponse(status=200)
 
     monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
 
-    plausible_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
-    pending = plausible_endpoint.get_pending_events()
-    aid = pending[0]["anonymous_id"]
-    expected_ip = plausible_endpoint._aid_to_synthetic_ip(aid)
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    pending = countly_endpoint.get_pending_events()
+    expected_aid = pending[0]["anonymous_id"]
 
-    assert plausible_endpoint._send_plausible(pending) is True
-    assert captured_xff[0] == expected_ip
+    assert countly_endpoint._send_countly(pending) is True
+    assert captured_device_id[0] == expected_aid
 
 
-def test_send_plausible_bails_on_first_4xx(monkeypatch, plausible_endpoint, no_sleep):
-    """If event N fails 4xx, don't keep trying events N+1..end. Bail."""
+def test_send_countly_returns_false_on_4xx_no_retry(monkeypatch, countly_endpoint, no_sleep):
     import urllib.request as _ur
 
     call_count = {"n": 0}
 
     def _fake_urlopen(req, *_a, **_kw):
         call_count["n"] += 1
-        if call_count["n"] == 1:
-            return _FakeResponse(status=202)  # first event ok
-        raise _make_http_error(400, "bad request")
+        raise _make_http_error(400, "bad app_key")
 
     monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
 
-    plausible_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
-    plausible_endpoint.track_event("feature_first_use", {"feature": "live_voice"})
-    plausible_endpoint.track_event("feature_first_use", {"feature": "telegram_send"})
-
-    assert plausible_endpoint._send_plausible(plausible_endpoint.get_pending_events()) is False
-    # First event ok (1 call), second 400 with no retry (1 call).
-    # Third never attempted.
-    assert call_count["n"] == 2
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    assert countly_endpoint._send_countly(countly_endpoint.get_pending_events()) is False
+    assert call_count["n"] == 1
 
 
-def test_send_plausible_retries_on_5xx_per_event(monkeypatch, plausible_endpoint, no_sleep):
+def test_send_countly_retries_on_5xx_then_succeeds(monkeypatch, countly_endpoint, no_sleep):
     import urllib.request as _ur
 
     call_seq = iter([
         _make_http_error(503, "down"),
         _make_http_error(503, "down"),
-        _FakeResponse(status=202),  # third attempt succeeds
+        _FakeResponse(status=200),
     ])
     call_count = {"n": 0}
 
@@ -823,35 +822,60 @@ def test_send_plausible_retries_on_5xx_per_event(monkeypatch, plausible_endpoint
 
     monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
 
-    plausible_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
-    assert plausible_endpoint._send_plausible(plausible_endpoint.get_pending_events()) is True
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    assert countly_endpoint._send_countly(countly_endpoint.get_pending_events()) is True
     assert call_count["n"] == 3
 
 
-def test_default_sender_dispatches_to_plausible(monkeypatch, plausible_endpoint, no_sleep):
-    """When format=plausible, _default_sender routes through
-    _send_plausible, not _send_raw."""
-    called = {"raw": False, "plausible": False}
-    monkeypatch.setattr(plausible_endpoint, "_send_raw",
-                        lambda evs: (called.update(raw=True), True)[1])
-    monkeypatch.setattr(plausible_endpoint, "_send_plausible",
-                        lambda evs: (called.update(plausible=True), True)[1])
+def test_send_countly_groups_by_device_id(monkeypatch, countly_endpoint, no_sleep):
+    """If anonymous_id rotates mid-queue, each id gets its own POST."""
+    import urllib.request as _ur
+    import json as _json
 
-    plausible_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
-    plausible_endpoint._default_sender(plausible_endpoint.get_pending_events())
-    assert called == {"raw": False, "plausible": True}
+    captured_devices = []
+
+    def _fake_urlopen(req, *_a, **_kw):
+        body = _json.loads(req.data.decode("utf-8"))
+        captured_devices.append(body["device_id"])
+        return _FakeResponse(status=200)
+
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    countly_endpoint.reset_anonymous_id()
+    countly_endpoint.track_event("feature_first_use", {"feature": "live_voice"})
+
+    pending = countly_endpoint.get_pending_events()
+    assert pending[0]["anonymous_id"] != pending[1]["anonymous_id"]
+
+    assert countly_endpoint._send_countly(pending) is True
+    assert len(captured_devices) == 2
+    assert captured_devices[0] != captured_devices[1]
+
+
+def test_default_sender_dispatches_to_countly(monkeypatch, countly_endpoint, no_sleep):
+    """When format=countly, _default_sender routes through _send_countly."""
+    called = {"raw": False, "countly": False}
+    monkeypatch.setattr(countly_endpoint, "_send_raw",
+                        lambda evs: (called.update(raw=True), True)[1])
+    monkeypatch.setattr(countly_endpoint, "_send_countly",
+                        lambda evs: (called.update(countly=True), True)[1])
+
+    countly_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
+    countly_endpoint._default_sender(countly_endpoint.get_pending_events())
+    assert called == {"raw": False, "countly": True}
 
 
 def test_default_sender_dispatches_to_raw_by_default(monkeypatch, configured_endpoint, no_sleep):
-    """Default format=raw routes through _send_raw, not _send_plausible."""
+    """Default format=raw routes through _send_raw, not _send_countly."""
     import config
     config.set("telemetry_format", "raw")
-    called = {"raw": False, "plausible": False}
+    called = {"raw": False, "countly": False}
     monkeypatch.setattr(configured_endpoint, "_send_raw",
                         lambda evs: (called.update(raw=True), True)[1])
-    monkeypatch.setattr(configured_endpoint, "_send_plausible",
-                        lambda evs: (called.update(plausible=True), True)[1])
+    monkeypatch.setattr(configured_endpoint, "_send_countly",
+                        lambda evs: (called.update(countly=True), True)[1])
 
     configured_endpoint.track_event("feature_first_use", {"feature": "camera_capture"})
     configured_endpoint._default_sender(configured_endpoint.get_pending_events())
-    assert called == {"raw": True, "plausible": False}
+    assert called == {"raw": True, "countly": False}

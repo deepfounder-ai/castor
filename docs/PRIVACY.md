@@ -115,30 +115,33 @@ Currently: **nowhere by default.** The `telemetry_endpoint` setting is empty out
 
 A project-operated endpoint (sending to the qwe-qwe project itself) is **not currently shipped** — when one is added in a future release, the consent prompt will surface again so you can re-decide with the new endpoint URL visible.
 
-#### Self-hosted Plausible
+#### Self-hosted Countly
 
-[Plausible Analytics](https://plausible.io) is a privacy-friendly, open-source web analytics tool. qwe-qwe ships a built-in transformer for Plausible's `/api/event` format. Setup:
+[Countly](https://count.ly) Community Edition is open-source, self-hostable product analytics. Unlike Plausible (whose daily-rotating-salt design makes cross-day per-user tracking impossible by design), Countly uses a stable `device_id` so retention, funnels, and cohorts work out of the box. qwe-qwe ships a built-in transformer for Countly's `/i` format. Setup:
 
-1. Self-host Plausible (Docker compose, one command — see Plausible's docs).
-2. In Plausible's dashboard, register a site domain (e.g. `qwe-qwe.app`).
+1. Self-host Countly Community Edition (one Docker compose command — see Countly's docs).
+2. In Countly's dashboard, create an app and copy its **App Key** from Settings → Apps.
 3. In qwe-qwe, Settings → Privacy → Telemetry:
    - Enable telemetry
-   - Set Endpoint URL: `https://your-plausible-host.example/api/event`
-   - Set Format: `plausible`
-   - Set Plausible Domain: `qwe-qwe.app` (matching what you registered)
-4. (Optional) Press "Send now" to verify events land in Plausible's dashboard.
+   - Set Endpoint URL: `https://your-countly-host.example/i`
+   - Set Format: `countly`
+   - Set Countly App Key: paste from step 2
+4. (Optional) Press "Send now" to verify events land in Countly's dashboard.
 
-Plausible's data model uses a daily-rotating salt to hash IP+UA+domain into anonymous fingerprints, so cross-day per-user tracking is **impossible by design** — that's a feature, not a bug. To still get accurate unique-install counts, qwe-qwe synthesises a stable IPv4 from your `anonymous_id` (first 4 hex bytes), so each install maps to one Plausible "visitor" without a real IP ever leaving the machine. Loopback (127.x.x.x) and reserved (0.x.x.x) ranges are remapped to 10.x.x.x so Plausible accepts them.
+Countly receives our `anonymous_id` directly as `device_id`. That id is stable across days **by your explicit consent** — necessary for retention / funnel metrics, but it stays a random UUID with no PII derivation. You can rotate it any time via Settings → Privacy → Reset, or wipe entirely via Forget Me (which also makes any future re-opt-in get a fresh id, breaking correlation).
 
-What Plausible sees:
-- Event names (one of our 5 ALLOWED_EVENTS)
-- Synthetic URL: `app://qwe-qwe/event/<event_name>`
-- Domain: whatever you configured
-- Props (flat string/number/bool — lists become CSV strings)
-- Synthetic IPv4 derived from anonymous_id (NOT your real IP)
+What Countly sees:
+- App key (matches the registered app)
+- Device id = our anonymous_id (random UUID, not derived from PII)
+- Timestamp
+- Events array, each with:
+  - `key` = event name (one of our 5 ALLOWED_EVENTS)
+  - `count` = 1
+  - `dur` (seconds) — for events with `duration_ms` prop, lets Countly compute event-duration averages natively
+  - `segmentation` = our props as flat string/number/bool (lists become CSV strings)
 - User-Agent: `qwe-qwe/<version>`
 
-Self-hosted users can also point `telemetry_endpoint` at PostHog or any custom HTTP collector that accepts our raw `{events: [...]}` shape — set Format to `raw` for that path.
+Self-hosted users can also point `telemetry_endpoint` at any custom HTTP collector that accepts our raw `{events: [...]}` shape — set Format to `raw` for that path.
 
 ### Controls
 
