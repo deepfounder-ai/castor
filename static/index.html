@@ -2611,13 +2611,24 @@ async function loadActiveMessages(opts) {
         };
       }) : [];
       // Attachments: user messages store image_path + file in meta;
-      // assistant messages carry files produced by send_file tool.
+      // assistant messages carry files produced by send_file / camera_capture
+      // tools. The live WS path runs `meta.files` through splitFiles() so
+      // image-typed entries render inline while non-images become download
+      // chips. The reload path needs the SAME split — without it, an image
+      // the agent sent via send_file shows up as an `<img>` during the live
+      // turn and then flips to a download link as soon as the user leaves
+      // the thread and comes back. Mirror the live behavior here so the
+      // bubble looks identical before and after a reload.
       const _images = [];
       const _files = [];
       if (meta.image_path) _images.push(meta.image_path);
       if (Array.isArray(meta.images)) for (const u of meta.images) if (u) _images.push(u);
       if (meta.file) _files.push(meta.file);
-      if (Array.isArray(meta.files)) for (const f of meta.files) if (f) _files.push(f);
+      if (Array.isArray(meta.files)) {
+        const split = splitFiles(meta.files);
+        for (const u of split.images) if (u) _images.push(u);
+        for (const f of split.others) if (f) _files.push(f);
+      }
       return {
         id: m.id || ('m-' + i),
         role: m.role,

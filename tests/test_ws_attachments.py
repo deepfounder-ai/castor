@@ -307,3 +307,43 @@ def test_ws_document_and_image_can_coexist(client, captured_agent_call):
     assert call["file_meta"] and call["file_meta"]["name"] == "readme.txt"
     assert "[File attached: readme.txt" in call["user_input"]
     assert "look at these" in call["user_input"]
+
+
+# ── Reload contract: meta.files images must stay inline ──────────────
+
+
+def test_reload_path_runs_meta_files_through_splitfiles():
+    """Reported: an image the agent sent via send_file shows inline
+    during the live turn but flips to a download link after the user
+    leaves the thread and comes back.
+
+    Root cause: the live WS path runs `msg.files` through splitFiles()
+    so image-typed entries become inline `<img>` and the rest become
+    download chips. The reload path (loadActiveMessages → /api/history
+    → state.messages.map) was treating ALL of `meta.files` as plain
+    attachments — no split — so an image PNG re-emerged as a download
+    link.
+
+    Fix lives in static/index.html. This test pins the contract by
+    reading the file and asserting splitFiles is invoked when
+    processing meta.files in the reload mapper. Cheap regression
+    guard — fails loud if a refactor drops it.
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+    # Locate the loadActiveMessages mapper — anchor on the comment block
+    # that documents this exact contract so the assertion stays close
+    # to the code it guards.
+    anchor = "if (Array.isArray(meta.files))"
+    idx = src.find(anchor)
+    assert idx >= 0, "reload mapper handling of meta.files not found — was it renamed?"
+    # Window from the anchor to the closing brace of the mapper
+    window = src[idx: idx + 600]
+    assert "splitFiles(meta.files)" in window, (
+        "loadActiveMessages no longer routes meta.files through splitFiles(). "
+        "Without the split, image-typed entries (.png/.jpg/.gif/etc — typically "
+        "produced by send_file or camera_capture) render as download chips on "
+        "reload instead of inline images. The live WS path splits them; the "
+        "reload path must mirror that. Restore the splitFiles call in "
+        "static/index.html::loadActiveMessages."
+    )
