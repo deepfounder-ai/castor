@@ -896,11 +896,11 @@ def _telemetry_first_run_prompt() -> None:
 
     endpoint = config.get("telemetry_endpoint") or "(none)"
     console.print()
-    console.print("  [bold]🔍 Anonymous telemetry?[/]")
-    console.print("     [dim]Help the project see how qwe-qwe is used. Off by default.[/]")
+    console.print("  [bold]🔍 Send anonymous metrics to the project?[/]")
+    console.print("     [dim]Helps us see what's used and what to fix. Off by default.[/]")
     console.print("     [dim]No chat content / no soul / no PII. Full policy:[/]")
     console.print("     [dim]https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md[/]")
-    console.print(f"     [dim]Default destination: {endpoint}[/]")
+    console.print(f"     [dim]Sends to: {endpoint} (deepfounder.ai)[/]")
     try:
         ans = input("     Enable? [y/N]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):

@@ -111,45 +111,40 @@ The whitelist in `telemetry.py::ALLOWED_EVENTS` is **type-strict** — every pro
 
 ### Where the data goes
 
-Telemetry is still **off by default** — you have to explicitly opt in via Settings → Privacy → Telemetry or via the future first-run prompt.
+Telemetry is **off by default** — you must explicitly opt in via the first-run prompt or Settings → Privacy → Telemetry.
 
-If you opt in WITHOUT changing the default endpoint, events go to the project-operated Countly instance at **`https://qwelytics.deepfounder.ai/i`**. This is the analytics endpoint operated by the qwe-qwe project (deepfounder.ai). It's a self-hosted Countly Community Edition — same code you can run yourself, same privacy guarantees on the wire, same data inventory documented in this file.
+If you opt in, events go to the project-operated Countly instance at **`https://qwelytics.deepfounder.ai/i`**, run by deepfounder.ai (the qwe-qwe project maintainer). It's a self-hosted Countly Community Edition — same code you could run yourself, same privacy guarantees on the wire, same data inventory documented in this file.
 
-If you want your data to go somewhere you control instead — or nowhere at all — you have three options:
+The end-user UI offers exactly **two choices**: enable or disable. The destination is fixed — the project decides where its own telemetry lands, you decide whether to participate. This is by design: a buffet of "alternative endpoints" surfaces in the UI would dilute the privacy signal and complicate the trust model.
 
-1. **Self-hosted Countly** (most privacy-sensitive deployments): set `telemetry_endpoint` to your own Countly URL, set `telemetry_countly_app_key` to your app key. Data flows to YOUR Countly, never touches deepfounder.ai.
-2. **Custom HTTP collector**: set `telemetry_format=raw` + `telemetry_endpoint=https://your-collector.example/track`. Data POSTs as `{"events": [...]}` for you to handle.
-3. **Stay opted in but local-only**: clear `telemetry_endpoint` (set to empty). Events queue locally, you can inspect them in Settings → Privacy → "View pending events", but nothing leaves the machine.
+When the project changes either the default destination or the schema of `ALLOWED_EVENTS`, the **`telemetry_consent_version`** bumps. Users who opted in under the old policy see a "policy updated, please re-confirm" banner in Settings → Privacy before any new event is sent — you always see the new policy before it takes effect.
 
-When the project changes either the default destination or the schema of `ALLOWED_EVENTS`, the **`telemetry_consent_version`** bumps. Users who opted in under the old policy see a "policy updated, please re-confirm" banner in Settings → Privacy before any new event is sent — you always see the new defaults before they take effect.
+**For operators / forks**: if you're packaging qwe-qwe for a different deployment and want telemetry to go elsewhere (your own Countly, a custom collector, or nowhere), edit the project defaults in `config.py`:
 
-#### Self-hosted Countly
+- `telemetry_endpoint` — POST destination URL
+- `telemetry_format` — `"countly"` or `"raw"`
+- `telemetry_countly_app_key` — Countly app key (when format=countly)
 
-[Countly](https://count.ly) Community Edition is open-source, self-hostable product analytics. Unlike Plausible (whose daily-rotating-salt design makes cross-day per-user tracking impossible by design), Countly uses a stable `device_id` so retention, funnels, and cohorts work out of the box. qwe-qwe ships a built-in transformer for Countly's `/i` format. Setup:
+The `format=raw` path POSTs `{"events": [...]}` to whatever URL you set — useful for custom HTTP collectors. The `format=countly` path is the default Countly transformer with `device_id` = anonymous_id (cross-day per-user tracking works).
 
-1. Self-host Countly Community Edition (one Docker compose command — see Countly's docs).
-2. In Countly's dashboard, create an app and copy its **App Key** from Settings → Apps.
-3. In qwe-qwe, Settings → Privacy → Telemetry:
-   - Enable telemetry
-   - Set Endpoint URL: `https://your-countly-host.example/i`
-   - Set Format: `countly`
-   - Set Countly App Key: paste from step 2
-4. (Optional) Press "Send now" to verify events land in Countly's dashboard.
+These are project-level decisions, not user-level — there's no UI surface to override them from inside qwe-qwe itself. Hidden in plain code, easy to fork.
 
-Countly receives our `anonymous_id` directly as `device_id`. That id is stable across days **by your explicit consent** — necessary for retention / funnel metrics, but it stays a random UUID with no PII derivation. You can rotate it any time via Settings → Privacy → Reset, or wipe entirely via Forget Me (which also makes any future re-opt-in get a fresh id, breaking correlation).
+#### What Countly receives on the wire
 
-What Countly sees:
-- App key (matches the registered app)
-- Device id = our anonymous_id (random UUID, not derived from PII)
+[Countly](https://count.ly) Community Edition is open-source, self-hostable product analytics. The qwe-qwe project runs an instance at `qwelytics.deepfounder.ai` for opt-in telemetry. End-users don't configure anything — the project's defaults are baked in.
+
+Per opted-in user, Countly receives:
+- App key (the project's public Countly app key — not a secret, equivalent to a Sentry/PostHog public DSN)
+- `device_id` = our random `anonymous_id` (UUID, not derived from any PII; rotatable any time via Settings → Privacy → Reset; wipe-able via Forget Me)
 - Timestamp
 - Events array, each with:
-  - `key` = event name (one of our 5 ALLOWED_EVENTS)
+  - `key` = event name (one of the 5 ALLOWED_EVENTS)
   - `count` = 1
   - `dur` (seconds) — for events with `duration_ms` prop, lets Countly compute event-duration averages natively
-  - `segmentation` = our props as flat string/number/bool (lists become CSV strings)
+  - `segmentation` = props as flat string/number/bool (lists become CSV strings)
 - User-Agent: `qwe-qwe/<version>`
 
-Self-hosted users can also point `telemetry_endpoint` at any custom HTTP collector that accepts our raw `{events: [...]}` shape — set Format to `raw` for that path.
+The `device_id` is stable across days **by your explicit opt-in consent** — that's what makes retention / funnel metrics work. Reset rotates it, Forget Me wipes it.
 
 ### Controls
 
