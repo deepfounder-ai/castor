@@ -1450,6 +1450,90 @@ async def update_settings(request: Request):
     return {"results": results}
 
 
+# ─── Telemetry ─────────────────────────────────────────────────────────
+# All endpoints route through telemetry.py — never touch the queue or
+# consent state directly. Privacy-sensitive surface, audit by grep.
+
+@app.get("/api/telemetry/status")
+async def telemetry_status():
+    """Current opt-in state, anonymous id (truncated for display),
+    endpoint URL, queue count, and a copy of ALLOWED_EVENTS for the UI
+    transparency panel. Anonymous id only exposed truncated to first 8
+    chars — full id is never read by UI, only used for transmission.
+    """
+    import telemetry
+    aid = config.get("telemetry_anonymous_id") or ""
+    return {
+        "enabled": telemetry.enabled(),
+        "anonymous_id_short": aid[:8] + "..." if aid else "",
+        "anonymous_id_set": bool(aid),
+        "endpoint": config.get("telemetry_endpoint") or "",
+        "queue_size": telemetry.queue_size(),
+        "session_id": telemetry.session_id(),
+        "allowed_events": list(telemetry.ALLOWED_EVENTS.keys()),
+    }
+
+
+@app.post("/api/telemetry/opt-in")
+async def telemetry_opt_in():
+    """Enable telemetry + ensure anonymous id exists. Idempotent."""
+    import telemetry
+    aid = telemetry.opt_in()
+    return {"ok": True, "anonymous_id_short": aid[:8] + "..."}
+
+
+@app.post("/api/telemetry/opt-out")
+async def telemetry_opt_out():
+    """Disable telemetry, drop queue, KEEP anonymous id."""
+    import telemetry
+    telemetry.opt_out()
+    return {"ok": True}
+
+
+@app.post("/api/telemetry/forget-me")
+async def telemetry_forget_me():
+    """Disable + drop queue + WIPE anonymous id. Stronger than opt-out."""
+    import telemetry
+    telemetry.forget_me()
+    return {"ok": True}
+
+
+@app.post("/api/telemetry/reset-id")
+async def telemetry_reset_id():
+    """Rotate anonymous id without changing the enabled flag."""
+    import telemetry
+    aid = telemetry.reset_anonymous_id()
+    return {"ok": True, "anonymous_id_short": aid[:8] + "..."}
+
+
+@app.get("/api/telemetry/preview")
+async def telemetry_preview():
+    """Snapshot of the queued events. Lets the user see exactly what
+    would be sent before pressing flush. Anonymous_id and session_id
+    are returned in full here because the user is looking at THEIR own
+    queue on THEIR own machine — no third party involved."""
+    import telemetry
+    return {"events": telemetry.get_pending_events()}
+
+
+@app.post("/api/telemetry/flush")
+async def telemetry_flush():
+    """Manually flush the queue. Returns count sent. No-op when
+    endpoint is empty (returns 0)."""
+    import telemetry
+    sent = telemetry.flush()
+    return {"sent": sent, "remaining": telemetry.queue_size()}
+
+
+@app.post("/api/telemetry/clear-queue")
+async def telemetry_clear_queue():
+    """Drop all queued events without sending. For users who opted in,
+    queued some events, then changed their mind before any flush."""
+    import telemetry
+    n = telemetry.clear_queue()
+    return {"ok": True, "dropped": n}
+
+
 @app.get("/api/kv/{key}")
 async def kv_get(key: str):
     """Get a raw key-value pair from DB."""

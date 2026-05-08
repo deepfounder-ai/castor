@@ -2736,6 +2736,13 @@ async function loadKbRecent() {
   } catch { state.kbRecent = []; }
 }
 
+async function loadTelemetry() {
+  try {
+    state.telemetry = await api('/api/telemetry/status');
+    render();
+  } catch { state.telemetry = { enabled: false, allowed_events: [], queue_size: 0 }; render(); }
+}
+
 async function loadMemory() {
   loadKbRecent();  // fire-and-forget, updates the activity card
   try {
@@ -4904,6 +4911,7 @@ function openSettingsTab(id) {
   if (id === 'inference') loadStatus();
   if (id === 'advanced') loadAdvanced();
   if (id === 'tools') loadSpicy();
+  if (id === 'privacy') loadTelemetry();
 }
 
 // ───── Modal bodies ─────
@@ -5577,6 +5585,7 @@ function renderTabNetwork() {
 function renderTabPrivacy() {
   const st = state.status || {};
   const dataDir = st.data_dir || '~/.qwe-qwe';
+  const tel = state.telemetry || null;
   return '<h2>Privacy</h2><p class="intro">qwe-qwe runs fully on-device. Nothing leaves your machine unless you explicitly enable an outbound tool (<span class="mono">http_request</span>, <span class="mono">browser_open</span>, remote providers, Telegram bot).</p>' +
     settingsSection('What\'s local',
       settingRow('Threads & messages', 'SQLite at ' + esc(dataDir) + '/qwe_qwe.db',
@@ -5593,7 +5602,103 @@ function renderTabPrivacy() {
         '<a href="#" data-settings="tools" class="btn-secondary" style="text-decoration:none">open →</a>') +
       settingRow('Telegram bot', 'When enabled, your Telegram chat is routed through the public Bot API.',
         '<a href="#" data-settings="telegram" class="btn-secondary" style="text-decoration:none">open →</a>')
+    ) +
+    renderTelemetryPanel(tel);
+}
+
+function renderTelemetryPanel(tel) {
+  // Privacy-critical UI section. Default state assumes opt-OUT until
+  // /api/telemetry/status confirms otherwise. Lots of explicit text so
+  // the user knows EXACTLY what they're signing up for and what they're
+  // NOT (chat, soul, paths, model name — none of it).
+  if (!tel) {
+    return settingsSection('Anonymous telemetry',
+      '<div class="hint" style="font-size:11.5px;color:var(--fg-4);padding:8px">Loading telemetry status…</div>'
     );
+  }
+
+  const enabled = !!tel.enabled;
+  const badge = enabled
+    ? '<span class="status-badge ok"><span class="sbdot"></span>opted in</span>'
+    : '<span class="status-badge"><span class="sbdot"></span>off (default)</span>';
+
+  const eventsList = (tel.allowed_events || []).map(e =>
+    '<li><span class="mono" style="color:var(--fg-2)">' + esc(e) + '</span></li>'
+  ).join('');
+
+  const idDisplay = tel.anonymous_id_set
+    ? '<span class="mono" style="font-size:11px;color:var(--fg-3)">' + esc(tel.anonymous_id_short) + '</span>'
+    : '<span class="mono" style="font-size:11px;color:var(--fg-5)">(none — generated on opt-in)</span>';
+
+  return settingsSection('Anonymous telemetry',
+    // Status row + main toggle
+    '<div style="display:flex;align-items:center;gap:12px;padding:6px 0 14px;border-bottom:1px solid var(--line-2);margin-bottom:14px">' +
+      '<div style="flex:1">' +
+        '<div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:3px">Share anonymous usage metrics ' + badge + '</div>' +
+        '<div style="font-size:11.5px;color:var(--fg-4);line-height:1.5">Helps the project understand how qwe-qwe is used and what to fix. <strong>Default OFF.</strong> Opt-in only. No chat content, no soul / personality, no file paths, no model ids, no PII. <a href="https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full policy →</a></div>' +
+      '</div>' +
+      '<button class="' + (enabled ? 'btn-secondary' : 'btn-primary') + '" data-act="' + (enabled ? 'telemetry-opt-out' : 'telemetry-opt-in') + '" style="padding:6px 14px;flex-shrink:0">' +
+        (enabled ? 'Disable' : 'Enable') +
+      '</button>' +
+    '</div>' +
+
+    // What's collected
+    '<details' + (enabled ? ' open' : '') + ' style="margin-bottom:10px">' +
+      '<summary style="cursor:pointer;font-size:12px;color:var(--fg-2);font-weight:500;padding:4px 0">What\'s collected (' + (tel.allowed_events || []).length + ' event types)</summary>' +
+      '<ul style="font-size:11.5px;color:var(--fg-3);line-height:1.7;margin:8px 0 4px 18px;list-style:disc">' +
+        eventsList +
+      '</ul>' +
+      '<div style="font-size:11px;color:var(--fg-4);margin-top:6px">Each event has a <span class="mono">type-strict whitelist schema</span> in <span class="mono">telemetry.py</span>. The validator drops any event with extra keys or wrong types — making it physically impossible for a future bug to leak chat content through this channel without explicitly editing the whitelist.</div>' +
+    '</details>' +
+
+    // What's NEVER collected
+    '<details style="margin-bottom:10px">' +
+      '<summary style="cursor:pointer;font-size:12px;color:var(--fg-2);font-weight:500;padding:4px 0">What\'s NEVER collected</summary>' +
+      '<ul style="font-size:11.5px;color:var(--fg-3);line-height:1.7;margin:8px 0 4px 18px;list-style:disc">' +
+        '<li>Chat content (your messages, assistant replies, thinking blocks)</li>' +
+        '<li>Soul / personality (traits, names, custom traits)</li>' +
+        '<li>Memory entries, knowledge-base text, recall queries / results</li>' +
+        '<li>File paths or filenames</li>' +
+        '<li>Tool-call args or results</li>' +
+        '<li>Exact model name or provider URL (could deanonymize)</li>' +
+        '<li>Specific skill names (custom skills could leak company identity)</li>' +
+        '<li>IP / hostname / username / machine id</li>' +
+        '<li>API keys, secrets, Telegram tokens</li>' +
+      '</ul>' +
+    '</details>' +
+
+    // Identity + endpoint controls (only meaningful if enabled)
+    settingRow('Anonymous ID', 'Random UUID generated on first opt-in. Not derived from any identity. Reset rotates without disabling.',
+      '<div style="display:flex;align-items:center;gap:6px">' + idDisplay +
+        (tel.anonymous_id_set
+          ? '<button class="icon-btn" data-act="telemetry-reset-id" title="Generate fresh anonymous id (telemetry stays enabled)">' + ico('refresh', 12) + '</button>'
+          : '') +
+      '</div>'
+    ) +
+    settingRow('Endpoint URL',
+      'Where to POST batched events. Empty = no network calls (events queue locally, you can inspect them below). Self-hosted users can point at their own PostHog / Plausible / custom collector.',
+      '<input type="text" class="setting-input mono" data-setting-key="telemetry_endpoint" data-setting-type="str" value="' + esc(tel.endpoint || '') + '" placeholder="https://your-collector.example/track" style="width:280px">'
+    ) +
+    settingRow('Queue', 'Events waiting to be sent. Inspect, send manually, or clear.',
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span class="mono" style="font-size:11px;color:var(--fg-3)">' + (tel.queue_size || 0) + ' pending</span>' +
+        '<button class="btn-secondary" data-act="telemetry-preview" style="padding:4px 10px;font-size:11px"' + (tel.queue_size ? '' : ' disabled') + '>view</button>' +
+        '<button class="btn-secondary" data-act="telemetry-flush" style="padding:4px 10px;font-size:11px"' + (tel.queue_size && tel.endpoint ? '' : ' disabled') + '>send now</button>' +
+        '<button class="btn-secondary" data-act="telemetry-clear-queue" style="padding:4px 10px;font-size:11px"' + (tel.queue_size ? '' : ' disabled') + '>clear</button>' +
+      '</div>'
+    ) +
+
+    // Forget me — destructive, separated visually
+    '<div style="margin-top:18px;padding:12px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface)">' +
+      '<div style="display:flex;align-items:center;gap:12px">' +
+        '<div style="flex:1">' +
+          '<div style="font-size:12.5px;font-weight:500;color:var(--fg);margin-bottom:3px">Forget me</div>' +
+          '<div style="font-size:11.5px;color:var(--fg-4);line-height:1.5">Disable telemetry, drop the queue, AND wipe the anonymous id. A future re-opt-in gets a fresh id, so nothing ties periods of opt-in together.</div>' +
+        '</div>' +
+        '<button class="btn-secondary" data-act="telemetry-forget-me" style="padding:6px 12px;color:var(--err);border-color:var(--err)">Forget me</button>' +
+      '</div>' +
+    '</div>'
+  );
 }
 
 function renderTabAppearance() {
@@ -6815,6 +6920,90 @@ function wireEvents() {
     };
   });
   document.querySelectorAll('[data-act="camera-reload"]').forEach(b => { b.onclick = loadCameras; });
+
+  // Telemetry controls — every action goes through /api/telemetry/* so
+  // there's one audit-friendly surface. Each button posts and reloads.
+  document.querySelectorAll('[data-act="telemetry-opt-in"]').forEach(b => {
+    b.onclick = async () => {
+      // Confirm first — we're about to enable a potentially-network-bound feature
+      const ok = confirm(
+        'Enable anonymous telemetry?\n\n' +
+        'A random anonymous ID will be generated. Events will queue locally — ' +
+        'nothing is sent until you set an Endpoint URL.\n\n' +
+        'Default OFF. You can disable any time. No chat content / no soul / ' +
+        'no PII is ever collected.\n\n' +
+        'Continue?'
+      );
+      if (!ok) return;
+      try { await api('/api/telemetry/opt-in', { method: 'POST' }); toast('telemetry enabled'); loadTelemetry(); }
+      catch { toast('opt-in failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-opt-out"]').forEach(b => {
+    b.onclick = async () => {
+      try { await api('/api/telemetry/opt-out', { method: 'POST' }); toast('telemetry disabled, queue dropped'); loadTelemetry(); }
+      catch { toast('opt-out failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-forget-me"]').forEach(b => {
+    b.onclick = async () => {
+      const ok = confirm(
+        'Forget me — disable telemetry, drop queue, AND wipe anonymous ID.\n\n' +
+        'Stronger than disable: any future re-opt-in will get a fresh ID, ' +
+        'so nothing ties periods of opt-in together.\n\n' +
+        'Continue?'
+      );
+      if (!ok) return;
+      try { await api('/api/telemetry/forget-me', { method: 'POST' }); toast('telemetry: forgotten'); loadTelemetry(); }
+      catch { toast('forget-me failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-reset-id"]').forEach(b => {
+    b.onclick = async () => {
+      const ok = confirm('Generate a fresh anonymous ID? Telemetry stays enabled, but the new ID won\'t correlate with your previous one.');
+      if (!ok) return;
+      try { await api('/api/telemetry/reset-id', { method: 'POST' }); toast('anonymous ID rotated'); loadTelemetry(); }
+      catch { toast('reset failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-preview"]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        const r = await api('/api/telemetry/preview');
+        const events = (r && r.events) || [];
+        // Pretty-print as a JSON modal — explicitly readable so user can verify nothing sensitive
+        const json = JSON.stringify(events, null, 2);
+        openModal({
+          title: `Pending events (${events.length})`,
+          body: '<div class="hint" style="font-size:11.5px;color:var(--fg-4);margin-bottom:10px">Exact JSON that would be POSTed to your endpoint. Verify nothing sensitive before sending.</div>' +
+            '<pre style="background:var(--surface);padding:10px;border-radius:6px;font-size:11px;font-family:var(--font-mono);max-height:50vh;overflow:auto;color:var(--fg-2)">' + esc(json) + '</pre>',
+          actions: [{ label: 'Close' }],
+        });
+      } catch { toast('preview failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-flush"]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        const r = await api('/api/telemetry/flush', { method: 'POST' });
+        const sent = (r && r.sent) || 0;
+        const remaining = (r && r.remaining) || 0;
+        toast(sent ? `sent ${sent} events (${remaining} remaining)` : 'no events sent (check endpoint URL)', sent ? 'ok' : 'err');
+        loadTelemetry();
+      } catch { toast('flush failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="telemetry-clear-queue"]').forEach(b => {
+    b.onclick = async () => {
+      const ok = confirm('Drop all queued events without sending? Cannot be undone.');
+      if (!ok) return;
+      try {
+        const r = await api('/api/telemetry/clear-queue', { method: 'POST' });
+        toast(`dropped ${(r && r.dropped) || 0} events`);
+        loadTelemetry();
+      } catch { toast('clear failed', 'err'); }
+    };
+  });
   document.querySelectorAll('[data-act="cam-preview-start"]').forEach(b => {
     b.onclick = async () => {
       await cameraStart();
