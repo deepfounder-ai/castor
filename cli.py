@@ -877,6 +877,72 @@ def _first_run_setup():
     console.print("\n  [green]✓ Setup complete! Use /soul to tweak later.[/]\n")
 
 
+def _emit_cli_session_start() -> None:
+    """Build and emit the session_start telemetry event for CLI boot.
+
+    No-op unless telemetry is enabled (default OFF). All values are bucketed
+    / enum-bounded — never the URL, model id, or any PII. See docs/PRIVACY.md.
+    """
+    import telemetry
+    if not telemetry.enabled():
+        return
+    try:
+        import telegram_bot as _tg
+        has_telegram = bool(_tg.is_enabled() and _tg.get_token())
+    except Exception:
+        has_telegram = False
+    try:
+        has_camera = int(config.get("camera_index")) >= 0
+    except Exception:
+        has_camera = False
+    try:
+        import stt as _stt
+        has_voice = bool(config.get("tts_enabled")) or bool(_stt.is_available())
+    except Exception:
+        has_voice = False
+    try:
+        scheduled_jobs_count = len(scheduler.list_tasks())
+    except Exception:
+        scheduled_jobs_count = 0
+    try:
+        active_skills_count = len(skills.get_active())
+    except Exception:
+        active_skills_count = 0
+    try:
+        import rag as _rag
+        indexed_sources_count = int(_rag.get_status().get("files", 0))
+    except Exception:
+        try:
+            row = db.fetchone(
+                "SELECT COUNT(*) FROM kv WHERE key LIKE 'rag:mtime:%'"
+            )
+            indexed_sources_count = int(row[0]) if row else 0
+        except Exception:
+            indexed_sources_count = 0
+    try:
+        import mcp_client as _mcp
+        has_mcp = bool(_mcp.list_servers())
+    except Exception:
+        has_mcp = False
+    provider_kind = telemetry.provider_kind_from_name(providers.get_active_name())
+    telemetry.track_event("session_start", {
+        "qwe_version": str(config.VERSION),
+        "python_version": telemetry.python_version(),
+        "os": telemetry.os_kind(),
+        "provider_kind": provider_kind,
+        "model_size_bucket": telemetry.bucket_model_size(None),
+        "has_web_ui": False,
+        "has_telegram": has_telegram,
+        "has_voice": has_voice,
+        "has_camera": has_camera,
+        "has_scheduler": True,  # scheduler.start() was called above
+        "has_mcp": has_mcp,
+        "active_skills_count": int(active_skills_count),
+        "scheduled_jobs_count": int(scheduled_jobs_count),
+        "indexed_sources_count": int(indexed_sources_count),
+    })
+
+
 def main():
     # Check first run
     if not db.kv_get("setup_complete"):
@@ -894,6 +960,12 @@ def main():
 
     show_banner()
     _log.info("session started | model=%s | user=%s", config.LLM_MODEL, db.kv_get("user_name") or "User")
+    # Telemetry — fires once per CLI process boot. Default-OFF; no-op unless
+    # the user has opted in. All values are bucketed / enum-bounded.
+    try:
+        _emit_cli_session_start()
+    except Exception as e:
+        _log.warning("telemetry session_start failed: %s", e)
 
     while True:
         try:

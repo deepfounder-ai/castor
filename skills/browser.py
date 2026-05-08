@@ -475,6 +475,15 @@ def execute(name: str, args: dict) -> str:
             if new_mode != _headless_mode:
                 _headless_mode = new_mode
                 _close_browser()  # restart with new mode on next call
+            # Telemetry: track first time the user enables visible mode in
+            # this session. We only emit on visible=True — toggling back to
+            # headless is the default state and not a "feature use".
+            if visible:
+                try:
+                    import telemetry as _tel
+                    _tel.track_feature_first_use("browser_visible")
+                except Exception:
+                    pass
             return f"Browser set to {'visible' if visible else 'headless'} mode. Next browser_open will {'show' if visible else 'hide'} the window."
 
         if name == "browser_close":

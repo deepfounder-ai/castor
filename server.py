@@ -333,6 +333,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         _log.warning(f"Telegram startup: {e}")
     _log.info("web server started")
+    # Telemetry — fires once per process boot. Default-OFF; this call is a
+    # no-op unless the user has explicitly opted in (see telemetry.enabled()).
+    # All values are bucketed / enum-bounded — never the URL, model id,
+    # provider key for custom providers, skill names, or chat content.
+    try:
+        _emit_session_start_telemetry(source="web")
+    except Exception as e:
+        _log.warning(f"telemetry session_start: {e}")
     yield
     # Shutdown
     try:
@@ -344,6 +352,76 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     _log.info("web server stopped")
+
+
+def _emit_session_start_telemetry(source: str) -> None:
+    """Build and emit the session_start event.
+
+    Imported lazily so importing server.py in tests doesn't trigger a
+    spurious event. All inputs are coerced into the bounded enum / bucket
+    space defined in telemetry.ALLOWED_EVENTS — anything we can't classify
+    cleanly defaults to "unknown" / 0 / False, never raw strings.
+    """
+    import telemetry
+    if not telemetry.enabled():
+        return  # default off; check before doing any work
+    try:
+        import telegram_bot as _tg
+        has_telegram = bool(_tg.is_enabled() and _tg.get_token())
+    except Exception:
+        has_telegram = False
+    try:
+        has_camera = int(config.get("camera_index")) >= 0
+    except Exception:
+        has_camera = False
+    try:
+        has_voice = bool(config.get("tts_enabled")) or bool(stt.is_available())
+    except Exception:
+        has_voice = False
+    try:
+        scheduled_jobs_count = len(scheduler.list_tasks())
+    except Exception:
+        scheduled_jobs_count = 0
+    try:
+        active_skills_count = len(skills.get_active())
+    except Exception:
+        active_skills_count = 0
+    try:
+        # rag.get_status() returns {"files": N, "chunks": N}
+        indexed_sources_count = int(rag.get_status().get("files", 0))
+    except Exception:
+        try:
+            row = db.fetchone(
+                "SELECT COUNT(*) FROM kv WHERE key LIKE 'rag:mtime:%'"
+            )
+            indexed_sources_count = int(row[0]) if row else 0
+        except Exception:
+            indexed_sources_count = 0
+    try:
+        has_mcp = bool(mcp_client.list_servers())
+    except Exception:
+        has_mcp = False
+    provider_kind = telemetry.provider_kind_from_name(providers.get_active_name())
+    # We don't probe the model size here — providers don't expose the
+    # parameter count uniformly. The UI can fill this in later via a
+    # follow-up event; for now, "unknown" is the safe default.
+    model_size_bucket = telemetry.bucket_model_size(None)
+    telemetry.track_event("session_start", {
+        "qwe_version": str(config.VERSION),
+        "python_version": telemetry.python_version(),
+        "os": telemetry.os_kind(),
+        "provider_kind": provider_kind,
+        "model_size_bucket": model_size_bucket,
+        "has_web_ui": source == "web",
+        "has_telegram": has_telegram,
+        "has_voice": has_voice,
+        "has_camera": has_camera,
+        "has_scheduler": True,  # scheduler always boots in lifespan
+        "has_mcp": has_mcp,
+        "active_skills_count": int(active_skills_count),
+        "scheduled_jobs_count": int(scheduled_jobs_count),
+        "indexed_sources_count": int(indexed_sources_count),
+    })
 
 
 # ── App ──
@@ -618,6 +696,13 @@ async def transcribe_audio(request: Request):
     """Transcribe audio to text via STT."""
     if not stt.is_available():
         return JSONResponse({"error": "STT not available. Install: pip install faster-whisper"}, status_code=503)
+    # Telemetry: first STT call in the session — proxy for "live voice mode
+    # is being used". One-shot per process. No-op when telemetry is off.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("live_voice")
+    except Exception:
+        pass
 
     content_type = request.headers.get("content-type", "")
     if "multipart" in content_type:
@@ -1675,6 +1760,14 @@ async def add_cron(data: dict):
         data.get("schedule", ""),
         skip_dry_run=bool(data.get("skip_dry_run", False)),
     )
+    # Telemetry: first scheduled-task creation this session. Only emit on
+    # success so a validation-failed POST doesn't count as "scheduler used".
+    if result.get("ok"):
+        try:
+            import telemetry as _tel
+            _tel.track_feature_first_use("scheduler_create")
+        except Exception:
+            pass
     if result.get("ok") and result.get("thread_id") and task:
         import threading as _th
         thread_id = result["thread_id"]

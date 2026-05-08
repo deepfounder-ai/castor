@@ -1272,6 +1272,13 @@ def send_message(chat_id: int, text: str, token: str | None = None,
     token = token or get_token()
     if not token:
         return
+    # Telemetry: first outgoing Telegram message this session. The token
+    # check above ensures we only fire when a real send is about to happen.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("telegram_send")
+    except Exception:
+        pass
     # Split long messages (Telegram limit: 4096 chars)
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for ci, chunk in enumerate(chunks):

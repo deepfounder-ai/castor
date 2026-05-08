@@ -1535,6 +1535,22 @@ def _run_inner_body(user_input: str, thread_id: str | None,
                      tools_used=result.tool_calls_made, reply_len=len(result.reply),
                      est_tokens=result.completion_tokens, context_hits=result.auto_context_hits,
                      thread=tid or "active")
+        # Telemetry — same metrics as the structured log line above, but
+        # with tool *categories* instead of names so custom-skill names
+        # never leave the machine. No-op unless user has opted in.
+        try:
+            _emit_turn_complete_telemetry(
+                duration_ms=turn_ms,
+                rounds=int(stats.turns),
+                tool_calls_made=result.tool_calls_made or [],
+                tool_errors_count=int(getattr(stats, "total_errors", 0)),
+                input_tokens=int(result.prompt_tokens or 0),
+                output_tokens=int(result.completion_tokens or 0),
+                context_hits=int(result.auto_context_hits or 0),
+                source=source,
+            )
+        except Exception as e:
+            _log.debug(f"telemetry turn_complete (v2): {e}")
 
         if result.tool_calls_made:
             _save_experience(user_input, result, stats.turns, stats.total_errors)
@@ -2041,6 +2057,20 @@ def _run_inner_body(user_input: str, thread_id: str | None,
                      self_checks=result.self_check_fixes,
                      self_check_rejections=result.self_check_rejections,
                      thread=tid or "active")
+        # Telemetry — see comment in v2 path above for privacy contract.
+        try:
+            _emit_turn_complete_telemetry(
+                duration_ms=turn_ms,
+                rounds=int(rounds),
+                tool_calls_made=result.tool_calls_made or [],
+                tool_errors_count=int(total_tool_errors),
+                input_tokens=int(prompt_tokens or 0),
+                output_tokens=int(est_tokens or 0),
+                context_hits=int(result.auto_context_hits or 0),
+                source=source,
+            )
+        except Exception as e:
+            _log.debug(f"telemetry turn_complete (v1): {e}")
 
         if result.tool_calls_made:
             _save_experience(user_input, result, rounds, total_tool_errors)
@@ -2051,3 +2081,52 @@ def _run_inner_body(user_input: str, thread_id: str | None,
     result.reply = "I've used all my tool rounds for this turn."
     db.save_message("assistant", result.reply, thread_id=tid)
     return result
+
+
+# ── Telemetry helpers ─────────────────────────────────────────────────
+#
+# Lazy-imported telemetry — keeps import-time cost zero for callers that
+# never opt in. Privacy contract: every value below is bucketed / enum-
+# constrained / counted. We map tool *names* to bounded categories before
+# emitting, so a custom skill ("acme_corp_invoicing") never escapes as a
+# string. The validator in `telemetry.track_event` enforces the same rules
+# even if a future bug widens the inputs here.
+
+
+def _emit_turn_complete_telemetry(*, duration_ms: int, rounds: int,
+                                   tool_calls_made: list[str],
+                                   tool_errors_count: int,
+                                   input_tokens: int, output_tokens: int,
+                                   context_hits: int, source: str) -> None:
+    """Build + emit a `turn_complete` event. No-op if telemetry disabled."""
+    import telemetry
+    if not telemetry.enabled():
+        return
+    # Tool name → category, deduped. Each tool name flows through
+    # tools.category_for_tool which falls back to "skills" for unknown
+    # entries — never the raw name.
+    cats: list[str] = []
+    seen: set[str] = set()
+    try:
+        for tn in tool_calls_made or []:
+            if not isinstance(tn, str):
+                continue
+            cat = tools.category_for_tool(tn)
+            if cat in telemetry.TOOL_CATEGORIES and cat not in seen:
+                seen.add(cat)
+                cats.append(cat)
+    except Exception:
+        cats = []
+    # Coerce source into the SOURCES enum (anything else → "other")
+    safe_source = source if source in telemetry.SOURCES else "other"
+    telemetry.track_event("turn_complete", {
+        "duration_ms": int(duration_ms),
+        "rounds": int(rounds),
+        "tool_categories_used": cats,
+        "tool_calls_count": len(tool_calls_made or []),
+        "tool_errors_count": int(tool_errors_count),
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "context_hits": int(context_hits),
+        "source": safe_source,
+    })

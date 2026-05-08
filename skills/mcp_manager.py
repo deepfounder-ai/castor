@@ -129,6 +129,13 @@ def execute(name: str, args: dict) -> str:
             transport=transport,
             enabled=True,
         )
+        # Telemetry: first MCP server added this session. Fires after the
+        # add succeeds (`add_server` raises on duplicates / bad args).
+        try:
+            import telemetry as _tel
+            _tel.track_feature_first_use("mcp_add")
+        except Exception:
+            pass
         # Auto-start
         start_result = mcp_client.start_server(srv_name)
         return f"{result}\n{start_result}"

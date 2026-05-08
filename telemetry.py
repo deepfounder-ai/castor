@@ -451,3 +451,78 @@ def python_version() -> str:
     """Python version as 'major.minor.patch' (no build / compiler info)."""
     v = sys.version_info
     return f"{v.major}.{v.minor}.{v.micro}"
+
+
+def provider_kind_from_name(name: str | None) -> str:
+    """Map a provider preset key to one of PROVIDER_KINDS.
+
+    Use this anywhere you have an active provider name (`providers.get_active_name()`)
+    but want to send only the kind, not the URL. Cardinality is fixed by the
+    PROVIDER_KINDS frozenset — anything outside it (e.g. user-added custom
+    providers, perplexity / cerebras / mistral presets that aren't in the
+    enum) collapses to "unknown".
+    """
+    if not name:
+        return "unknown"
+    return name if name in PROVIDER_KINDS else "unknown"
+
+
+# Per-process set of features that have already fired `feature_first_use`.
+# Cleared on process restart (matches `_SESSION_ID` regen). The point is to
+# emit one event per feature per session, even when callers fire repeatedly.
+_FEATURES_USED_THIS_SESSION: set[str] = set()
+_features_used_lock = threading.Lock()
+
+
+def track_feature_first_use(feature: str) -> bool:
+    """Emit a `feature_first_use` event the FIRST time a feature is used in
+    this process. Subsequent calls with the same feature are silent no-ops.
+
+    Returns True if the event was actually emitted (accepted by
+    track_event), False otherwise (telemetry off, already fired this
+    session, or feature outside the FEATURES enum).
+
+    Privacy: feature is enum-bounded — anything outside FEATURES is
+    rejected by track_event's validator before reaching the queue.
+    """
+    if feature not in FEATURES:
+        # Reject early so a typo here can't smuggle a new free-text
+        # value into the payload.
+        return False
+    with _features_used_lock:
+        if feature in _FEATURES_USED_THIS_SESSION:
+            return False
+        _FEATURES_USED_THIS_SESSION.add(feature)
+    return track_event("feature_first_use", {"feature": feature})
+
+
+def provider_kind_from_url(url: str | None) -> str:
+    """URL-based heuristic to classify a provider when only the URL is known.
+
+    Substring match on host. Falls through to "unknown" when nothing matches —
+    we never want to send a URL fragment off-machine, even if classification
+    fails. This is a defense-in-depth mapping for callers that don't have
+    access to the provider name.
+    """
+    if not url:
+        return "unknown"
+    u = url.lower()
+    if "openai.com" in u:
+        return "openai"
+    if "openrouter.ai" in u:
+        return "openrouter"
+    if "groq.com" in u:
+        return "groq"
+    if "together.xyz" in u or "together.ai" in u:
+        return "together"
+    if "deepseek.com" in u:
+        return "deepseek"
+    if "azure.com" in u or "azure-api.net" in u or ".azureml." in u:
+        return "azure"
+    if "amazonaws.com" in u or "bedrock" in u:
+        return "bedrock"
+    if "11434" in u:
+        return "ollama"
+    if "1234" in u or "localhost:1234" in u:
+        return "lmstudio"
+    return "unknown"

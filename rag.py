@@ -669,6 +669,14 @@ def index_url(url: str, tags: list[str] | None = None) -> dict:
 
     if not url.startswith(URL_SCHEMES):
         return {"url": url, "chunks": 0, "status": "invalid URL scheme"}
+    # Telemetry: first URL ingest this session. We fire here (entry point)
+    # rather than at the call site so all callers — server.py, skills,
+    # cli.py — are covered uniformly. The URL itself is NEVER sent.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("knowledge_index_url")
+    except Exception:
+        pass
 
     uploads = Path(config.UPLOADS_DIR) / "kb"
     uploads.mkdir(parents=True, exist_ok=True)
@@ -770,6 +778,13 @@ def index_file(filepath: str, tags: list[str] | None = None) -> dict:
     path = Path(filepath).expanduser().resolve()
     if not path.exists():
         return {"path": str(path), "chunks": 0, "status": "not found"}
+    # Telemetry: first file ingest this session. Path is never sent — only
+    # the bounded "knowledge_index_file" enum value.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("knowledge_index_file")
+    except Exception:
+        pass
 
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS and ext != ".pdf" and ext not in IMAGE_EXTENSIONS:

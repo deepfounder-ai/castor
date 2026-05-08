@@ -1208,6 +1208,14 @@ def activate(preset_id: str) -> dict:
         raise
 
     _log.info(f"activated preset: {preset_id}")
+    # Telemetry: first preset activation this session. We fire AFTER the
+    # log so a rollback path (which raises before this point) doesn't
+    # falsely report "activated". No PII — just a count via the enum.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("preset_activate")
+    except Exception:
+        pass
     return {"id": preset_id, "name": info["name"]}
 
 

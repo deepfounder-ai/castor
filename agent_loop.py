@@ -10,12 +10,62 @@ Replaces the inner loop of agent._run_inner() with:
 
 import json
 import re
+import subprocess
 import time
 import logger
 from agent_events import EventEmitter, AgentEvent, EVT_BUDGET_WARNING
 from agent_budget import BudgetLimits, BudgetStats, check_budget, warning_check
 
 _log = logger.get("loop")
+
+
+def _classify_tool_error(exc: BaseException) -> str:
+    """Map an exception class to one of telemetry.ERROR_KINDS.
+
+    Privacy contract: classify the EXCEPTION TYPE only — never the message
+    text. Messages can carry tool args, paths, or chat snippets, so we
+    never look at `str(exc)`. Set: timeout / aborted / rate_limited /
+    unauthorized / not_found / exception.
+    """
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return "aborted"
+    name = type(exc).__name__
+    if name in ("TimeoutError", "ReadTimeout", "ConnectTimeout"):
+        return "timeout"
+    if name in ("RateLimitError",):
+        return "rate_limited"
+    if name in ("FileNotFoundError",):
+        return "not_found"
+    if name in ("PermissionError",):
+        return "unauthorized"
+    return "exception"
+
+
+def _emit_tool_error_telemetry(tool_name: str, error_kind: str) -> None:
+    """Map tool name → category and emit a tool_error event. No-op when
+    telemetry is disabled (default).
+
+    Privacy: we send the bounded category (never the tool name) and the
+    classified error_kind (never the exception message). The validator in
+    `telemetry.track_event` rejects anything outside the enum.
+    """
+    try:
+        import telemetry
+        if not telemetry.enabled():
+            return
+        import tools as _tools
+        cat = _tools.category_for_tool(tool_name)
+        if cat not in telemetry.TOOL_CATEGORIES:
+            cat = "other"
+        kind = error_kind if error_kind in telemetry.ERROR_KINDS else "exception"
+        telemetry.track_event("tool_error", {
+            "tool_category": cat,
+            "error_kind": kind,
+        })
+    except Exception as e:  # pragma: no cover — telemetry must never crash a turn
+        _log.debug(f"telemetry tool_error: {e}")
 
 
 def _run_tool(tool_executor, name: str, args: dict, abort_event, ctx=None) -> str:
@@ -276,6 +326,7 @@ def _synthesize_tool_call(tool_name: str, args: dict, tool_executor, messages: l
         result = f"Rejected (extracted-tool safety gate): {block_reason}"
         emitter.tool_end(tool_name, result[:150], 0)
         stats.add_error()
+        _emit_tool_error_telemetry(tool_name, "blocked")
         messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
         return result
 
@@ -289,6 +340,7 @@ def _synthesize_tool_call(tool_name: str, args: dict, tool_executor, messages: l
     except Exception as e:
         result = f"Error: {e}"
         stats.add_error()
+        _emit_tool_error_telemetry(tool_name, _classify_tool_error(e))
     tool_ms = int((time.time() - tool_start) * 1000)
 
     result_short = result.replace("\n", " ")[:150]
@@ -606,6 +658,7 @@ def run_loop(
                 if args is None:
                     tool_result = f"Error: invalid JSON arguments: {tc['arguments'][:100]}"
                     stats.add_error()
+                    _emit_tool_error_telemetry(tc["name"], "validation_failed")
                 else:
                     # Self-check for dangerous tools
                     if self_check_fn and args:
@@ -615,6 +668,7 @@ def run_loop(
                         elif not ok:
                             tool_result = "Error: self-check rejected this action."
                             stats.add_error()
+                            _emit_tool_error_telemetry(tc["name"], "blocked")
                             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": tool_result})
                             continue
 
@@ -628,6 +682,7 @@ def run_loop(
                         _log.warning(f"native {tc['name']} rejected by pre-dispatch: {_block}")
                         tool_result = f"Rejected: {_block}"
                         stats.add_error()
+                        _emit_tool_error_telemetry(tc["name"], "blocked")
                         messages.append({"role": "tool", "tool_call_id": tc["id"], "content": tool_result})
                         continue
 
@@ -646,6 +701,7 @@ def run_loop(
                     except Exception as e:
                         tool_result = f"Error: {e}"
                         stats.add_error()
+                        _emit_tool_error_telemetry(tc["name"], _classify_tool_error(e))
                     tool_ms = int((time.time() - tool_start) * 1000)
 
                     # Fix 4: Cap tool results to prevent context overflow

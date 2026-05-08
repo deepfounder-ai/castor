@@ -903,6 +903,14 @@ def _create_skill_async(skill_name: str, description: str) -> str:
     """Kick off background skill generation."""
     import logger
     _log = logger.get("skill_creator")
+    # Telemetry: first skill_create attempt this session. Fires before any
+    # validation so we capture both successful and failed attempts.
+    # No-op when telemetry is off.
+    try:
+        import telemetry as _tel
+        _tel.track_feature_first_use("skill_create")
+    except Exception:
+        pass
 
     skill_name = skill_name.lower().replace(" ", "_").replace("-", "_")
     if not skill_name.isidentifier():
@@ -1299,6 +1307,29 @@ def _generate_skill_pipeline(skill_name: str, description: str, target: Path, ta
             _active_skills.discard(skill_name)
 
 
+def _emit_pipeline_telemetry(outcome: str, attempts: int, start_time: float,
+                              tools_count: int) -> None:
+    """Emit a `skill_creator_pipeline` telemetry event. No-op when disabled.
+
+    Privacy: outcome / attempts / duration / tools-count only. Never the
+    skill name (could be a corp identifier) or any tool names.
+    """
+    try:
+        import telemetry
+        if not telemetry.enabled():
+            return
+        kind = outcome if outcome in telemetry.PIPELINE_OUTCOMES else "max_attempts_exhausted"
+        telemetry.track_event("skill_creator_pipeline", {
+            "outcome": kind,
+            "attempts": int(attempts),
+            "duration_ms": int((time.time() - start_time) * 1000),
+            "tools_count": int(tools_count),
+        })
+    except Exception:
+        # Telemetry must never crash the skill pipeline
+        pass
+
+
 def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int = 0):
     """Actual pipeline logic, wrapped by _generate_skill_pipeline for cleanup."""
     import logger
@@ -1306,6 +1337,9 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
     _log = logger.get("skill_creator")
     start = time.time()
     max_attempts = 3
+    # Track per-attempt failure mode so the FINAL outcome reflects what
+    # actually killed the last try (validate vs smoke vs syntax).
+    last_failure: str = "max_attempts_exhausted"
 
     def _progress(step: str):
         if task_id:
@@ -1455,6 +1489,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                     ast.parse(code)
                 except SyntaxError as e2:
                     _log.warning(f"[{skill_name}] still syntax error after fix: {e2}")
+                    last_failure = "syntax_error"
                     continue
 
             # Save
@@ -1469,12 +1504,14 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 # Keep file for manual fix, but don't enable
                 if attempt < max_attempts:
                     target.unlink(missing_ok=True)  # retry will overwrite anyway
+                    last_failure = "validate_fail"
                     continue
                 # Last attempt — keep file, notify with errors
                 msg = f"⚠️ Created with errors: {'; '.join(errors)}. Fix with write_file."
                 if task_id:
                     tasks.update(task_id, "error", msg)
                 _notify(skill_name, msg)
+                _emit_pipeline_telemetry("validate_fail", attempt, start, 0)
                 return
 
             # Smoke test: try calling execute() with each tool
@@ -1483,11 +1520,13 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 _log.warning(f"[{skill_name}] smoke test errors: {smoke_errors}")
                 if attempt < max_attempts:
                     target.unlink(missing_ok=True)
+                    last_failure = "smoke_fail"
                     continue
                 msg = f"⚠️ Created but smoke test failed: {'; '.join(smoke_errors)}"
                 if task_id:
                     tasks.update(task_id, "error", msg)
                 _notify(skill_name, msg)
+                _emit_pipeline_telemetry("smoke_fail", attempt, start, 0)
                 return
 
             # Enable
@@ -1501,10 +1540,12 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             _notify(skill_name, msg)
             _save_skill_result(skill_name, description, tool_names, success=True)
             _log.info(f"[{skill_name}] SUCCESS in {elapsed}s, attempt {attempt}")
+            _emit_pipeline_telemetry("success", attempt, start, len(tools_list))
             return
 
         except Exception as e:
             _log.error(f"[{skill_name}] attempt {attempt} error: {e}", exc_info=True)
+            last_failure = "max_attempts_exhausted"
             continue
 
     # All attempts failed
@@ -1515,6 +1556,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
     _notify(skill_name, msg)
     _save_skill_result(skill_name, description, [], success=False)
     _log.error(f"[{skill_name}] FAILED after {max_attempts} attempts")
+    _emit_pipeline_telemetry(last_failure, max_attempts, start, 0)
 
 
 def _list_skills() -> str:
