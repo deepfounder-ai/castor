@@ -61,6 +61,7 @@ def test_presets_max_area_grows_with_resolution(fresh):
 
 def test_apply_camera_resolution_returns_preset_for_unknown_value(fresh, monkeypatch):
     """Bogus settings.camera_resolution should fall back to auto, not crash."""
+    pytest.importorskip("cv2")  # opencv-python is an optional dep; CI without GPU stack skips
     t, c = fresh
     monkeypatch.setattr(c, "get", lambda key, default=None: "WAT" if key == "camera_resolution" else default)
 
@@ -79,10 +80,10 @@ def test_apply_camera_resolution_returns_preset_for_unknown_value(fresh, monkeyp
 
 def test_apply_camera_resolution_sets_width_height_for_720p(fresh, monkeypatch):
     """720p preset must call cap.set with WIDTH=1280, HEIGHT=720."""
+    cv2 = pytest.importorskip("cv2")
     t, c = fresh
     monkeypatch.setattr(c, "get", lambda key, default=None: "720p" if key == "camera_resolution" else default)
 
-    import cv2
     calls = []
 
     class _StubCap:
@@ -98,6 +99,7 @@ def test_apply_camera_resolution_sets_width_height_for_720p(fresh, monkeypatch):
 
 def test_apply_camera_resolution_swallows_cap_set_errors(fresh, monkeypatch):
     """Some camera backends throw on cap.set — must not propagate up."""
+    pytest.importorskip("cv2")  # helper imports cv2 internally
     t, c = fresh
     monkeypatch.setattr(c, "get", lambda key, default=None: "1080p" if key == "camera_resolution" else default)
 

@@ -1,64 +1,84 @@
-# v0.18.3 — Skill creator actually works for engineering tasks + camera tuning
+# v0.18.4 — Community-driven cleanup + camera tuning + smoke_test fix
 
-Patch release driven by a live field session that took the skill_creator from "generates broken stubs that fail validation" to "generates working multi-tool engineering skills with raw OpenCV capture, statistics math, and time-series SQLite tables — from a single chat prompt". Plus two fixes for chat UI annoyances and new resolution/quality controls in Settings → Camera.
+This release captures everything that was meant to ship as v0.18.3 (which never got tagged because of a CI failure) plus two community-merged PRs that closed long-standing skill_creator gaps. v0.18.4 is the first release after the README rebalanced positioning toward "business-oriented AI agent" — small/local models still fully supported, just no longer the headline.
 
-## 🤖 Skill creator now generates working engineering skills
+## 🤝 Community merges
 
-Three coupled fixes that landed in sequence as the field session exposed each layer of the breakage.
+Three external contributors landed work this cycle:
 
-### Soul rule 14 — agent must STOP after `create_skill`
+### #13 closed by @forhim007 — `_smoke_test` now scopes param-usage check to `execute()` body (PR #17)
 
-Symptom: agent invoked `create_skill` (correct) but in the same turn ran 20+ shell commands and `write_file` to manually build the skill in parallel. The pipeline message says "started in background, will notify in 2-5 min" but the agent didn't trust it. Result: a half-baked manually-written `.py` clobbered or raced the pipeline's output, and the file didn't satisfy the skill loader contract (no `TOOLS` list, no `execute()` function, hardcoded paths, ungrouped table names).
+Pre-fix, the smoke test searched the **whole module source** for required param names. Since param names are by definition in the `TOOLS` dict literal, the substring check always passed — even when `execute()` didn't actually use them. The field-session `camera_diagnostics` skill caught itself in this gap: tool def declared `num_samples`, code used `args.get("samples", 30)`, smoke test happily approved.
 
-Rule 14 now contains four critical sub-rules:
-- After `create_skill` → END the turn. Don't run more tools that turn. Notification arrives later.
-- NEVER `write_file` in `~/.qwe-qwe/skills/`. Manual writes don't satisfy the loader.
-- Skills are SINGLE `.py` files at `~/.qwe-qwe/skills/<name>.py` — not directories. Don't `mkdir` or `ls` a skill subdir.
-- "Run `<skill_name>`" = call one of the skill's tools directly. If unsure of tool names → `list_skills`.
+@forhim007 added `_extract_execute_body(source)` — uses `ast.parse` to locate the `execute` `FunctionDef` and slice the body. The param-usage check now runs against THIS slice only. Returns empty string on failure (unparseable, no execute) so the caller degrades gracefully via simple truthiness.
 
-### Pipeline elif→if when all tools are custom
+8 new tests in `tests/test_skill_creator_smoke.py` covering the helper + before/after on the original repro.
 
-Symptom: every attempt failed with `syntax error on attempt N: invalid syntax (<unknown>, line 70)` — same line across attempts. Field session gave 6 attempts, all the same. Generated `.py` had `elif name == "..."` as the first branch, no preceding `if`.
+### #15 closed by @dutchaiagency — `delete_skill` drops orphan tables (PR #19)
 
-Root cause: when `_assemble_from_mapping()` finds no recognisable CRUD ops in the tools list (snapshot, trend, recommend, benchmark, etc. are all "custom"), the deterministic execute_body comes out EMPTY. The LLM was then asked to "Generate ONLY elif blocks for these tools… Start each with 'elif name == ...'". With no preceding `if`, that's a `SyntaxError`.
+Before this fix, deleting a user-created skill removed only the `.py` file. The `skill_<name>_*` tables it had created in the shared SQLite stayed forever. Over many regenerate cycles, dead tables accumulated.
 
-Two-part fix in `_run_pipeline`:
-- **Prompt-level**: detect whether `execute_body` is empty BEFORE calling the LLM. If empty, tell it to start the FIRST tool with `if name == "..."` and the rest with `elif`. Also stricter wording: "FULL implementation (no stub `pass`)" and "All code for a tool MUST be indented under its branch".
-- **Defensive post-process**: regex-rewrite the first occurrence of `elif name ==` to `if name ==` whenever `execute_body` was empty. Idempotent on already-correct output.
+@dutchaiagency added two helpers:
 
-### End-to-end pipeline test
+- `_extract_skill_owned_tables(source, skill_name)` — regex with handling for backtick / quote / bracket variants of `CREATE TABLE`, optional `IF NOT EXISTS`, `isidentifier()` check. Only returns names matching the `skill_<name>_` prefix exactly (not `skill_name2_*`).
+- `_drop_skill_owned_tables(skill_name, skill_path)` — runs before `target.unlink()` in `_delete_skill`. For each candidate table, verifies presence in `sqlite_master` BEFORE issuing `DROP TABLE`. Wraps the whole thing in try/except so cleanup failure doesn't block the file delete.
 
-`test_skill_creator_pipeline.py` (NEW) — three tests with mocked LLM that drive `_run_pipeline` end-to-end:
-- happy-path camera-using skill — asserts the produced file calls `tools.execute("camera_capture", ...)` + `memory.save()` + uses `skill_<name>_` table prefix + parses cleanly + passes smoke test
-- 3-attempt retry: first plan call returns garbage, retry, succeed
-- elif-first regression shield — feeds the exact buggy LLM output from the field session, asserts post-process rewrites to `if`
+`delete_skill` return string now reports the count: `"Deleted skill 'X' (3 skill table(s) dropped)"`. Two tests pin the prefix-matching strictness.
 
-Field result after these fixes: created `camera_diagnostics` from a chat prompt — 5580-byte skill with 3 tools (`camera_benchmark`, `camera_health`, `camera_baseline_reset`), direct `cv2.VideoCapture(0)` for raw frame grab, `statistics.stdev()` for FPS variance, properly-namespaced `skill_camera_diagnostics_benchmarks` table, baseline comparison logic. Worked first try (190s pipeline). Real engineering skill generated from a paragraph of natural-language description.
+### #18 — new bug from QA campaign
 
-## 🖱 Chat UI: task_update no longer creates ghost streaming messages
+@dutchaiagency also filed #18: timer skill exposes only `set_timer`, no cancel/list path. Tagged `good first issue` with full acceptance criteria.
 
-Symptom: after invoking `create_skill`, the chat indicator stayed in "generating" state with the typing dot blinking forever, even after the original turn completed.
+## 🎯 Repositioning
 
-Root cause: `skill_creator._notify()` broadcasts pipeline progress as `{type: "task_update", name, text}` over WS. The client's `handleWsMessage` had a fall-through branch that fired for ANY non-status event, including `task_update`, treating each "Step 2/5: generating tools" as the start of a new agent turn. Since `task_update` has no follow-up `done` event, `state.streaming.streaming` stayed `true` forever.
+README rewritten to lead with the business-automation angle and de-emphasize the previous small-model-first framing:
 
-Fix: handle `task_update` explicitly at the top of `handleWsMessage` — surface as a toast (✅/❌ styling based on the message text), return before the streaming-message-creation gate. Side benefit: user now actually SEES skill creation progress as toasts (`camera_diagnostics: Step 2/5: generating tools` → `camera_diagnostics: ✅ Created and enabled!`) instead of getting zero UI feedback during the 2-5 minute background pipeline. Plus auto-refresh of the skills list on success so new tools appear without manual reload.
+- Tagline: `Self-hosted AI agent for business automation` → `Business-oriented AI agent`
+- Sub-tagline: leads with hosted providers (Azure OpenAI, AWS Bedrock, OpenAI, Groq, OpenRouter), local as on-prem alternative
+- "Why Small Models" section replaced with "Why qwe-qwe" comparing self-hosted vs vendor SaaS agents (data, LLM choice, cost, compliance, extensibility, reliability)
+- "Recommended hardware" → "Hardware" with conditional structure: hosted needs almost nothing, local-LLM table follows
+- "Small-model optimizations" → "Engineering around the LLM" — same techniques, framed as benefiting all model sizes
+- Removed "100% offline" badge — too small-model-coded
+- `soul.py` identity + `pyproject.toml` description updated to match
 
-## 📷 Camera: configurable resolution + JPEG quality
+Local + small models remain a real value prop (on-prem privacy, offline, no per-token billing) — they're now a deployment choice in Quick Start, not the headline.
+
+## 📷 Camera resolution + JPEG quality (the v0.18.3 work)
 
 Two new settings in Settings → Camera → Capture quality:
 
-**`camera_resolution`**: `auto` / `480p` / `720p` / `1080p`. Applied to `cv2.VideoCapture` via `CAP_PROP_FRAME_WIDTH`/`CAP_PROP_FRAME_HEIGHT` on device open. Each preset also carries a max-pixels cap for the resize step before JPEG encoding — so users picking 1080p don't end up with the legacy 256×192 default cap:
+**`camera_resolution`**: `auto` / `480p` / `720p` / `1080p`. Applied via `CAP_PROP_FRAME_WIDTH`/`HEIGHT` on device open. Each preset carries its own max-pixels cap for the resize step before JPEG encoding:
 
 | Preset | Capture | Sent to LLM |
 |---|---|---|
-| auto | camera default | up to 256×192 (49K pixels) |
-| 480p | 640×480 | up to 256×192 (49K pixels) |
-| 720p | 1280×720 | up to 512×384 (196K pixels) |
-| 1080p | 1920×1080 | up to 1024×768 (786K pixels) |
+| auto | camera default | ≤256×192 (49K pixels, legacy cap) |
+| 480p | 640×480 | ≤256×192 |
+| 720p | 1280×720 | ≤512×384 (196K) |
+| 1080p | 1920×1080 | ≤1024×768 (786K) |
 
-**`camera_quality`**: int 1-100, default 70. Replaces the hardcoded `cv2.IMWRITE_JPEG_QUALITY=70`. Read on every encode (no restart needed); resolution requires a camera reset to re-open with the new size.
+**`camera_quality`**: int 1-100, default 70. Replaces hardcoded `cv2.IMWRITE_JPEG_QUALITY=70`. Read on every encode.
 
-Trade-off the user controls now: 1080p + quality 90 sends a sharp ~1MB base64 to the vision LLM (slow, expensive, but readable text + tiny details). auto + quality 50 sends a cheap 256×192 thumbnail (fast, cheap, blurry). 9 unit tests pin the preset table, helper behaviour, exception handling, and config metadata.
+Trade-off the user controls: 1080p + quality 90 sends a sharp ~1MB base64 to the vision LLM (slow, expensive, but readable text + tiny details). auto + quality 50 sends a cheap 256×192 thumbnail.
+
+9 unit tests in `tests/test_camera_settings.py` pin presets, helper behaviour, and config metadata. The 3 tests that import cv2 transitively are now `pytest.importorskip("cv2")`-guarded so CI without OpenCV cleanly skips them — that's what blocked v0.18.3 from auto-releasing. Fixed in this cycle.
+
+## 🤖 Skill creator now generates working engineering skills (the v0.18.3 work, finally shipping)
+
+Three coupled fixes from the field session that took skill_creator from "generates stubs that fail validation" to "generates camera-using engineering skills with raw OpenCV + statistics + time-series SQLite — first try":
+
+- **Soul rule 14 expansion**: agent must STOP after `create_skill`, never `write_file` in `~/.qwe-qwe/skills/`, skills are SINGLE `.py` files (not directories), "run skill_name" = call its tool directly.
+- **Pipeline `elif`→`if` fix**: when execute_body is empty (all tools custom), prompt the LLM to start the FIRST tool with `if name == "..."`. Plus defensive regex post-process. Closed the recurring `syntax error on attempt N: invalid syntax (line 70)` that bit every workspace_meter / camera_diagnostics attempt.
+- **End-to-end pipeline test**: `tests/test_skill_creator_pipeline.py` with mocked LLM, asserts produced `.py` calls `tools.execute("camera_capture")` + `memory.save()` + uses `skill_<name>_` table prefix + parses cleanly.
+
+## 🖱️ task_update no longer ghost-streams the chat
+
+After `create_skill`, the chat indicator stayed in "generating" state with the typing dot blinking forever — `task_update` WS events were falling through to the streaming-message-creation branch. Now handled explicitly: surfaces as toast (`✅`/`❌` styling), auto-refreshes the skills list on success.
+
+## 🔧 CI fix that unblocked everything
+
+`tests/test_camera_settings.py` was importing `cv2` directly in 3 tests. CI doesn't install OpenCV (it's an optional heavy dep) so those tests `ModuleNotFoundError`'d and the whole Tests workflow failed. That meant **release.yml was skipped on every push since v0.18.2** because it gates on Tests success. v0.18.3 was bumped in code but never tagged on GitHub.
+
+Fixed by `pytest.importorskip("cv2")` at the top of those 3 tests. CI without OpenCV now cleanly skips them; CI with OpenCV runs them. Local dev unchanged.
 
 ## 🔄 Upgrading
 
@@ -72,14 +92,15 @@ No data migration needed.
 
 ## 📊 Stats
 
-- 5 commits since v0.18.2
-- 394 → 409 tests passing (+15: 4 pipeline e2e tests, 9 camera-settings tests, +2 minor)
-- All fixes verified live — `camera_diagnostics` skill generation went from 100% failure rate to first-try success after the elif→if fix landed
+- 9 commits since v0.18.2 (no v0.18.3 was ever tagged — bumped in code but blocked on CI)
+- **2 community PRs merged** (PR #17 forhim007, PR #19 dutchaiagency)
+- 4 community contributors active this cycle: forhim007, dutchaiagency, snakefood3232, EugeneKorr
+- 394 → 418 tests passing (+24)
+- Full lint + JS-syntax + 3.11/3.12 pytest matrix green
 
-## 🐞 Filed as follow-up issues
+## 🐞 Open for community
 
-Tech debt surfaced during the session — open for community contributions:
-
-- [#13](https://github.com/deepfounder-ai/qwe-qwe/issues/13) (good first issue): `smoke_test` param-usage check looks at whole source instead of `execute()` body — let a real `num_samples` vs `samples` mismatch slip through
-- [#14](https://github.com/deepfounder-ai/qwe-qwe/issues/14) (help wanted): AST-level fix for code outside `if`/`elif` branches — the second half of the LLM-codegen failure mode, prompt-only mitigated for now
-- [#15](https://github.com/deepfounder-ai/qwe-qwe/issues/15) (help wanted): `delete_skill` leaves orphan tables in shared SQLite
+- [#8](https://github.com/deepfounder-ai/qwe-qwe/issues/8) onnxruntime-gpu doctor check — claimed by @snakefood3232
+- [#14](https://github.com/deepfounder-ai/qwe-qwe/issues/14) AST fix for code outside if/elif branches — claimed by @snakefood3232 (48h promise)
+- [#18](https://github.com/deepfounder-ai/qwe-qwe/issues/18) timer skill cancel/list — `good first issue` with acceptance criteria
+- [#12](https://github.com/deepfounder-ai/qwe-qwe/issues/12) ongoing QA campaign — find more bugs, file with repro
