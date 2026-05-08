@@ -307,3 +307,326 @@ def test_python_version_format(fresh_tel):
     assert len(parts) == 3
     for p in parts:
         assert p.isdigit()
+
+
+# ── Real HTTP sender (`_default_sender`) ─────────────────────────────
+#
+# The wire-up commit replaces the stub with a real urllib POST + retry
+# loop. These tests pin the contract:
+# - 2xx → True (queue cleared by flush)
+# - 4xx → False, ONE attempt only (no retry — config error)
+# - 5xx → retry up to _MAX_ATTEMPTS, success counts, terminal failure
+#         returns False
+# - URLError (DNS / refused / timeout) → same as 5xx
+# - missing endpoint → False without urlopen call
+# - other exceptions → swallowed, return False
+# - request body shape: {"events": [...]}
+# - headers: Content-Type + User-Agent (+ X-QWE-Anonymous-Id when
+#   events carry one)
+#
+# Mock urlopen via monkeypatch — never hits the network. Backoff sleeps
+# are no-op'd so the suite doesn't actually wait 7s per retry test.
+
+
+class _FakeResponse:
+    """urllib.request.urlopen returns an http.client.HTTPResponse-shaped
+    context manager. Tests only need the bits `_default_sender` reads:
+    .status (and getcode() as fallback) and the context-manager protocol."""
+
+    def __init__(self, status: int = 200, body: bytes = b'{"ok":true}'):
+        self.status = status
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+    def getcode(self) -> int:
+        return self.status
+
+
+def _make_http_error(code: int, msg: str = "boom"):
+    """Build a urllib.error.HTTPError with sensible defaults — its
+    constructor wants url/code/msg/hdrs/fp."""
+    import io
+
+    import urllib.error
+    return urllib.error.HTTPError(
+        url="https://stub.invalid/track",
+        code=code,
+        msg=msg,
+        hdrs={},
+        fp=io.BytesIO(b""),
+    )
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """Skip retry backoff so 5xx-loop tests don't actually wait 7s."""
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_kw: None)
+
+
+@pytest.fixture
+def configured_endpoint(fresh_tel):
+    """Opt in + set a stub endpoint so flush() / _default_sender don't
+    short-circuit on the empty-endpoint guard."""
+    import config
+    config.set("telemetry_endpoint", "https://stub.invalid/track")
+    fresh_tel.opt_in()
+    return fresh_tel
+
+
+def _make_event(tel) -> dict:
+    """Make a real event by routing through track_event so it gets the
+    full envelope (anonymous_id, session_id, ts, props)."""
+    tel.track_event("feature_first_use", {"feature": "camera_capture"})
+    pending = tel.get_pending_events()
+    return pending[-1]
+
+
+def test_default_sender_posts_json(monkeypatch, configured_endpoint, no_sleep):
+    """Body parses as JSON {"events": [...]}, method=POST, URL=endpoint,
+    headers carry Content-Type + User-Agent."""
+    import json as _json
+    import urllib.request as _ur
+
+    captured = {}
+
+    def fake_urlopen(req, *_a, **_kw):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["body"] = req.data
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeResponse(status=200)
+
+    monkeypatch.setattr(_ur, "urlopen", fake_urlopen)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+
+    assert ok is True
+    assert captured["url"] == "https://stub.invalid/track"
+    assert captured["method"] == "POST"
+    parsed = _json.loads(captured["body"].decode("utf-8"))
+    assert "events" in parsed
+    assert isinstance(parsed["events"], list)
+    assert parsed["events"][0]["event"] == "feature_first_use"
+    # urllib lowercases header names in get_header_items
+    assert captured["headers"].get("content-type") == "application/json"
+    ua = captured["headers"].get("user-agent", "")
+    assert ua.startswith("qwe-qwe/")
+    # Anonymous-Id echoed in header for receiver-side bucketing
+    assert captured["headers"].get("x-qwe-anonymous-id") == event["anonymous_id"]
+
+
+@pytest.mark.parametrize("status", [200, 201, 202, 204])
+def test_default_sender_returns_true_on_2xx(
+    monkeypatch, configured_endpoint, no_sleep, status
+):
+    """Any 2xx is treated as success — collector implementations vary
+    (PostHog returns 200, some return 202, some 204 No Content)."""
+    import urllib.request as _ur
+
+    monkeypatch.setattr(
+        _ur, "urlopen",
+        lambda *_a, **_kw: _FakeResponse(status=status),
+    )
+
+    event = _make_event(configured_endpoint)
+    assert configured_endpoint._default_sender([event]) is True
+
+
+def test_default_sender_returns_false_on_4xx_no_retry(
+    monkeypatch, configured_endpoint, no_sleep
+):
+    """4xx = config error (bad endpoint, malformed body). One attempt,
+    no retry, return False so the queue stays put for the user to fix."""
+    import urllib.request as _ur
+
+    counter = {"n": 0}
+
+    def fake(*_a, **_kw):
+        counter["n"] += 1
+        raise _make_http_error(400, "bad request")
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+    assert ok is False
+    assert counter["n"] == 1  # Crucially: NO retry on 4xx
+
+
+def test_default_sender_retries_on_5xx_then_succeeds(
+    monkeypatch, configured_endpoint, no_sleep
+):
+    """5xx is retryable. 500, 500, 200 → True after 3 attempts."""
+    import urllib.request as _ur
+
+    counter = {"n": 0}
+
+    def fake(*_a, **_kw):
+        counter["n"] += 1
+        if counter["n"] <= 2:
+            raise _make_http_error(500, "internal error")
+        return _FakeResponse(status=200)
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+    assert ok is True
+    assert counter["n"] == 3
+
+
+def test_default_sender_retries_on_5xx_then_fails(
+    monkeypatch, configured_endpoint, no_sleep
+):
+    """Always 503 → 3 attempts, then False."""
+    import urllib.request as _ur
+
+    counter = {"n": 0}
+
+    def fake(*_a, **_kw):
+        counter["n"] += 1
+        raise _make_http_error(503, "service unavailable")
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+    assert ok is False
+    assert counter["n"] == 3
+
+
+def test_default_sender_retries_on_network_error(
+    monkeypatch, configured_endpoint, no_sleep
+):
+    """URLError (DNS / refused / timeout) is treated like 5xx — retry,
+    then terminal False."""
+    import urllib.error
+    import urllib.request as _ur
+
+    counter = {"n": 0}
+
+    def fake(*_a, **_kw):
+        counter["n"] += 1
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+    assert ok is False
+    assert counter["n"] == 3
+
+
+def test_default_sender_swallows_exceptions(
+    monkeypatch, configured_endpoint, no_sleep
+):
+    """Any unexpected exception class must not propagate — telemetry
+    must never break the caller."""
+    import urllib.request as _ur
+
+    def fake(*_a, **_kw):
+        raise RuntimeError("yo")
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    event = _make_event(configured_endpoint)
+    ok = configured_endpoint._default_sender([event])
+    assert ok is False  # Did not raise.
+
+
+def test_default_sender_no_endpoint_returns_false_without_call(
+    monkeypatch, fresh_tel
+):
+    """If endpoint is empty, sender returns False without ever invoking
+    urlopen — the empty-endpoint guard runs before the network."""
+    import config
+    import urllib.request as _ur
+
+    config.set("telemetry_endpoint", "")
+    fresh_tel.opt_in()
+
+    called = {"n": 0}
+
+    def fake(*_a, **_kw):
+        called["n"] += 1
+        return _FakeResponse(status=200)
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    fresh_tel.track_event("feature_first_use", {"feature": "camera_capture"})
+    pending = fresh_tel.get_pending_events()
+    ok = fresh_tel._default_sender(pending)
+    assert ok is False
+    assert called["n"] == 0
+
+
+def test_flush_clears_queue_only_on_success(monkeypatch, configured_endpoint):
+    """Round-trip: opt in, queue 3 events, mock send → True, flush clears.
+    Then queue 2 more, mock send → False, flush leaves queue intact."""
+    # First batch — successful send.
+    for _ in range(3):
+        configured_endpoint.track_event(
+            "feature_first_use", {"feature": "camera_capture"}
+        )
+    assert configured_endpoint.queue_size() == 3
+    sent = configured_endpoint.flush(send_fn=lambda _: True)
+    assert sent == 3
+    assert configured_endpoint.queue_size() == 0
+
+    # Second batch — failed send.
+    for _ in range(2):
+        configured_endpoint.track_event(
+            "feature_first_use", {"feature": "live_voice"}
+        )
+    assert configured_endpoint.queue_size() == 2
+    sent = configured_endpoint.flush(send_fn=lambda _: False)
+    assert sent == 0
+    assert configured_endpoint.queue_size() == 2  # Events retained.
+
+
+def test_request_payload_shape(monkeypatch, configured_endpoint, no_sleep):
+    """Wire format pin: {"events": [{event, anonymous_id, session_id,
+    ts, props}, ...]}. If a future refactor changes the envelope shape
+    silently, downstream collectors break — this test catches it."""
+    import json as _json
+    import urllib.request as _ur
+
+    captured_body = {}
+
+    def fake(req, *_a, **_kw):
+        captured_body["raw"] = req.data
+        return _FakeResponse(status=200)
+
+    monkeypatch.setattr(_ur, "urlopen", fake)
+
+    configured_endpoint.track_event(
+        "feature_first_use", {"feature": "camera_capture"}
+    )
+    configured_endpoint.track_event(
+        "feature_first_use", {"feature": "live_voice"}
+    )
+    pending = configured_endpoint.get_pending_events()
+    assert configured_endpoint._default_sender(pending) is True
+
+    parsed = _json.loads(captured_body["raw"].decode("utf-8"))
+    assert set(parsed.keys()) == {"events"}
+    assert isinstance(parsed["events"], list)
+    assert len(parsed["events"]) == 2
+    for ev in parsed["events"]:
+        assert set(ev.keys()) >= {"event", "anonymous_id", "session_id", "ts", "props"}
+        assert isinstance(ev["event"], str)
+        assert isinstance(ev["anonymous_id"], str)
+        assert isinstance(ev["session_id"], str)
+        # ts is a UNIX timestamp; serialised as a float by json.
+        assert isinstance(ev["ts"], (int, float))
+        assert isinstance(ev["props"], dict)

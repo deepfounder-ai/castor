@@ -38,10 +38,13 @@ See `docs/PRIVACY.md` for the human-readable version of this contract.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections import deque
 from typing import Any, Callable
@@ -49,6 +52,18 @@ from typing import Any, Callable
 import config
 
 _log = logging.getLogger("qwe.telemetry")
+
+# ── HTTP send tunables ───────────────────────────────────────────────
+# Single timeout cap for the whole urlopen call. urllib doesn't separate
+# connect/read — one cap is fine for our purposes (collector receives
+# tiny JSON, no streaming).
+_HTTP_TIMEOUT_S = 10.0
+# Retry policy: up to 3 total attempts with exponential backoff between
+# them (1s, 2s, 4s). 5xx + network errors retry; 4xx does NOT (it means
+# config error — bad endpoint, malformed body — and re-sending just
+# spams the receiver).
+_MAX_ATTEMPTS = 3
+_BACKOFF_SCHEDULE_S = (1.0, 2.0, 4.0)
 
 # ── Whitelist of allowed events ──────────────────────────────────────
 #
@@ -381,12 +396,10 @@ def flush(send_fn: Callable[[list[dict]], bool] | None = None) -> int:
     events successfully sent (0 if disabled, no endpoint, or send fails).
 
     `send_fn` parameter is for tests — production path uses the
-    built-in HTTP POST. If endpoint is empty, returns 0 without doing
-    anything. Queue is cleared only on a 2xx response.
-
-    Currently always 0 in production: no endpoint default, no built-in
-    sender. Wire-up lands in a follow-up commit so this PR ships
-    foundation + opt-in only.
+    built-in HTTP POST (`_default_sender`). If endpoint is empty,
+    returns 0 without doing anything. Queue is cleared only on a 2xx
+    response — failures (4xx, 5xx after retries, network errors) keep
+    events queued for the next flush attempt.
     """
     if not enabled():
         return 0
@@ -409,10 +422,119 @@ def flush(send_fn: Callable[[list[dict]], bool] | None = None) -> int:
 
 
 def _default_sender(events: list[dict]) -> bool:
-    """Built-in HTTP sender. Stub for now — real implementation lands
-    in the wire-up commit. Returns False so the queue isn't cleared."""
-    _log.debug("telemetry: would send %d events to %s",
-               len(events), config.get("telemetry_endpoint"))
+    """Built-in HTTP sender. POSTs the batch as JSON to
+    `telemetry_endpoint`.
+
+    Returns True only on a 2xx response from the receiver, in which case
+    `flush()` clears the sent events from the queue. Returns False on:
+    - missing endpoint (defensive — `flush()` short-circuits earlier)
+    - 4xx (config error — don't retry, don't clear queue, let the user
+      notice in logs)
+    - 5xx after `_MAX_ATTEMPTS` retries
+    - network error (DNS / refused / timeout) after retries
+    - any exception during request building / encoding
+
+    Never raises out of this function — telemetry must never break the
+    caller. Network errors and exceptions are caught and converted into
+    a False return.
+
+    Privacy notes:
+    - The request body is NEVER logged (it would defeat the
+      no-chat-content guarantee if a future event schema regression
+      slipped a string field in).
+    - The endpoint URL is logged at DEBUG level only; default INFO logs
+      show counts and error classes but no URL.
+    - We skip the SSRF guard that `rag.py` applies to user-content URLs:
+      `telemetry_endpoint` is set explicitly by the user (Settings →
+      Privacy → Telemetry endpoint), so a self-hosted PostHog at
+      192.168.x.x is a legitimate use case. Endpoint URL is documented
+      as the user's responsibility in `docs/PRIVACY.md`.
+    """
+    endpoint = (config.get("telemetry_endpoint") or "").strip()
+    if not endpoint:
+        # Defensive: flush() also checks. If we got here directly,
+        # don't even attempt urlopen.
+        return False
+
+    # Build the request once. Failures here are not retryable.
+    try:
+        body = json.dumps({"events": events}).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": f"qwe-qwe/{config.VERSION}",
+        }
+        # Echo anonymous_id as a header so receivers can bucket without
+        # parsing JSON. All events in a batch share the same id (track_event
+        # stamps it from the same source), so we read the first event.
+        if events:
+            aid = events[0].get("anonymous_id")
+            if isinstance(aid, str) and aid:
+                headers["X-QWE-Anonymous-Id"] = aid
+        req = urllib.request.Request(
+            endpoint, data=body, headers=headers, method="POST"
+        )
+    except Exception as e:
+        _log.warning(
+            "telemetry: send failed building request: %s",
+            type(e).__name__,
+        )
+        return False
+
+    _log.debug("telemetry: sending %d events to %s", len(events), endpoint)
+
+    last_err_class: str = "unknown"
+    for attempt in range(_MAX_ATTEMPTS):
+        # Backoff BEFORE attempts after the first. Schedule is short
+        # enough to be unobtrusive and bounded so flush() can't block
+        # the caller indefinitely.
+        if attempt > 0:
+            time.sleep(_BACKOFF_SCHEDULE_S[attempt - 1])
+
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+                # urllib gives `.status` (3.9+) — fall back to getcode()
+                # for any odd response object that doesn't expose it.
+                status = getattr(resp, "status", None)
+                if status is None:
+                    try:
+                        status = resp.getcode()
+                    except Exception:
+                        status = 0
+                if 200 <= int(status) < 300:
+                    _log.info("telemetry: sent %d events", len(events))
+                    return True
+                # Non-2xx without HTTPError is unusual but possible if a
+                # custom opener swallowed it. Treat as terminal failure.
+                last_err_class = f"HTTP{status}"
+                if 400 <= int(status) < 500:
+                    # 4xx — don't retry.
+                    break
+                # 5xx — fall through to retry path.
+                continue
+        except urllib.error.HTTPError as he:
+            # HTTPError is a subclass of URLError but carries .code.
+            code = int(getattr(he, "code", 0) or 0)
+            last_err_class = f"HTTP{code}"
+            if 400 <= code < 500:
+                # 4xx → terminal. Don't retry, don't clear queue.
+                break
+            # 5xx (or other non-4xx code) → retry.
+            continue
+        except urllib.error.URLError as ue:
+            # DNS fail / connection refused / timeout etc. Retry.
+            last_err_class = type(ue).__name__
+            continue
+        except Exception as e:
+            # Any other exception (socket.timeout from older Pythons,
+            # SSL error, weird custom error) — treat as retryable so we
+            # don't lose the queue on transient flakes, but never raise.
+            last_err_class = type(e).__name__
+            continue
+
+    _log.warning(
+        "telemetry: send failed after %d retries: %s",
+        _MAX_ATTEMPTS, last_err_class,
+    )
     return False
 
 
