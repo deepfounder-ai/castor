@@ -1561,6 +1561,10 @@ async def telemetry_status():
         # opt_in() again restamps consent_version and clears this.
         "consent_needs_reprompt": telemetry.consent_needs_reprompt(),
         "current_consent_version": telemetry._CURRENT_CONSENT_VERSION,
+        # When False, the user has never made an explicit yes/no
+        # choice. The UI shows a first-run modal once. Both opt_in()
+        # and opt_out() bump consent_version and flip this to True.
+        "consent_decision_made": telemetry.consent_decision_made(),
     }
 
 

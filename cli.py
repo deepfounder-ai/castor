@@ -877,6 +877,43 @@ def _first_run_setup():
     console.print("\n  [green]✓ Setup complete! Use /soul to tweak later.[/]\n")
 
 
+def _telemetry_first_run_prompt() -> None:
+    """Ask the user yes/no on first run only.
+
+    Stamps `telemetry_consent_version` regardless of answer, so the
+    prompt fires exactly once per install (unless the project bumps
+    the policy version). If the user is in a non-interactive context
+    (no TTY, e.g. systemd / CI), default to opt_out so we never enable
+    telemetry without explicit consent.
+    """
+    import telemetry
+    if telemetry.consent_decision_made():
+        return
+    # Non-interactive guard — silently decline, never auto-enable
+    if not sys.stdin.isatty():
+        telemetry.opt_out()
+        return
+
+    endpoint = config.get("telemetry_endpoint") or "(none)"
+    console.print()
+    console.print("  [bold]🔍 Anonymous telemetry?[/]")
+    console.print("     [dim]Help the project see how qwe-qwe is used. Off by default.[/]")
+    console.print("     [dim]No chat content / no soul / no PII. Full policy:[/]")
+    console.print("     [dim]https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md[/]")
+    console.print(f"     [dim]Default destination: {endpoint}[/]")
+    try:
+        ans = input("     Enable? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        telemetry.opt_in()
+        console.print("     [green]✓ telemetry enabled — thank you[/]")
+    else:
+        telemetry.opt_out()
+        console.print("     [dim]✓ telemetry stays off[/]")
+    console.print()
+
+
 def _emit_cli_session_start() -> None:
     """Build and emit the session_start telemetry event for CLI boot.
 
@@ -960,6 +997,14 @@ def main():
 
     show_banner()
     _log.info("session started | model=%s | user=%s", config.LLM_MODEL, db.kv_get("user_name") or "User")
+    # First-run telemetry consent prompt — only fires when the user has
+    # never made an explicit yes/no choice (telemetry_consent_version=0).
+    # Both opt_in and opt_out bump the version, so this prompts exactly
+    # once per install unless the project bumps the policy.
+    try:
+        _telemetry_first_run_prompt()
+    except Exception as e:
+        _log.debug("telemetry prompt failed (non-fatal): %s", e)
     # Telemetry — fires once per CLI process boot. Default-OFF; no-op unless
     # the user has opted in. All values are bucketed / enum-bounded.
     try:

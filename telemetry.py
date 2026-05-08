@@ -285,12 +285,30 @@ def consent_needs_reprompt() -> bool:
 def opt_out() -> None:
     """Disable telemetry and drop any queued events. Anonymous id is
     NOT deleted by default — keeping it lets a future re-opt-in stay
-    consistent. Use `forget_me()` to also wipe the id."""
+    consistent. Use `forget_me()` to also wipe the id.
+
+    Also stamps the current consent version so the first-run prompt
+    doesn't keep re-asking. opt_out is an EXPLICIT user choice — they
+    looked at the privacy text and said no — same intent as opt_in,
+    just opposite outcome.
+    """
     config.set("telemetry_enabled", 0)
+    config.set("telemetry_consent_version", _CURRENT_CONSENT_VERSION)
     with _queue_lock:
         dropped = len(_queue)
         _queue.clear()
-    _log.info("telemetry disabled (%d queued events dropped)", dropped)
+    _log.info("telemetry disabled (%d queued events dropped, consent v%d)",
+              dropped, _CURRENT_CONSENT_VERSION)
+
+
+def consent_decision_made() -> bool:
+    """True once the user has explicitly chosen yes or no to telemetry.
+
+    Used by the first-run prompt to decide whether to show the modal.
+    A fresh install starts with telemetry_consent_version=0; the prompt
+    fires until the user clicks Enable or Decline (both bump it).
+    """
+    return int(config.get("telemetry_consent_version") or 0) >= 1
 
 
 def forget_me() -> None:
@@ -333,6 +351,16 @@ def track_event(name: str, props: dict | None = None) -> bool:
     string values down to bounded sets.
     """
     if not enabled():
+        return False
+    # Stale-consent gate: if the user agreed to v(N-1) and the project
+    # bumped the policy / default endpoint to v(N), refuse new events
+    # until they re-confirm (UI shows the banner, calls opt_in() which
+    # restamps the version). Without this gate the banner is just
+    # advisory — events would keep flowing under stale assumptions.
+    if consent_needs_reprompt():
+        # Logged at DEBUG so it doesn't spam during the brief window
+        # between policy bump and user re-confirm.
+        _log.debug("telemetry: dropping event %r — consent reprompt pending", name)
         return False
     if name not in ALLOWED_EVENTS:
         _log.warning("telemetry: dropping unknown event %r", name)
@@ -431,6 +459,15 @@ def flush(send_fn: Callable[[list[dict]], bool] | None = None) -> int:
     events queued for the next flush attempt.
     """
     if not enabled():
+        return 0
+    # Same stale-consent gate as track_event — block any send until
+    # the user has re-confirmed under the current policy. This is
+    # belt-and-suspenders: track_event already drops new events under
+    # stale consent, but if events queued earlier under v0 and the
+    # project bumped to v1, those events shouldn't quietly send to a
+    # destination the user never agreed to.
+    if consent_needs_reprompt():
+        _log.debug("telemetry: flush blocked — consent reprompt pending")
         return 0
     endpoint = (config.get("telemetry_endpoint") or "").strip()
     if not endpoint:

@@ -150,6 +150,53 @@ def test_consent_needs_reprompt_false_after_reopt_in(fresh_tel):
     assert fresh_tel.consent_needs_reprompt() is False
 
 
+def test_consent_decision_made_false_at_install(fresh_tel):
+    """Fresh install: consent_version=0 → no decision yet."""
+    assert fresh_tel.consent_decision_made() is False
+
+
+def test_consent_decision_made_true_after_opt_in(fresh_tel):
+    fresh_tel.opt_in()
+    assert fresh_tel.consent_decision_made() is True
+
+
+def test_consent_decision_made_true_after_opt_out(fresh_tel):
+    """opt_out also stamps the version — declining counts as a decision."""
+    fresh_tel.opt_out()
+    assert fresh_tel.consent_decision_made() is True
+
+
+def test_track_event_blocked_when_consent_stale(fresh_tel):
+    """Stale consent gate: enabled + old version → reject events.
+    This is the privacy-critical guarantee — UI banner is advisory,
+    track_event is the actual gate."""
+    import config
+    fresh_tel.opt_in()
+    config.set("telemetry_consent_version", 0)  # downgrade to stale
+    assert fresh_tel.consent_needs_reprompt() is True
+
+    accepted = fresh_tel.track_event("feature_first_use", {"feature": "camera_capture"})
+    assert accepted is False
+    assert fresh_tel.queue_size() == 0
+
+
+def test_flush_blocked_when_consent_stale(fresh_tel):
+    """Belt-and-suspenders: events queued under v0 must not be sent
+    once the policy bumps to v1, even though _send_raw / _send_countly
+    don't check consent. flush() is the gate."""
+    import config
+    fresh_tel.opt_in()
+    fresh_tel.track_event("feature_first_use", {"feature": "camera_capture"})
+    assert fresh_tel.queue_size() == 1
+
+    # Now downgrade consent (simulate project bumping the policy)
+    config.set("telemetry_consent_version", 0)
+    sent = fresh_tel.flush(send_fn=lambda evs: True)
+    assert sent == 0
+    # Queue intact — events stay until user re-confirms
+    assert fresh_tel.queue_size() == 1
+
+
 # ── Whitelist enforcement ────────────────────────────────────────────
 
 
