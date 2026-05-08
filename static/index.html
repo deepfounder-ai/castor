@@ -7510,6 +7510,12 @@ async function checkTelemetryFirstRun() {
     const eventsList = (tel.allowed_events || []).map(e =>
       '<li><span class="mono" style="color:var(--fg-2)">' + esc(e) + '</span></li>'
     ).join('');
+    // Track whether the user made an explicit choice via the action
+    // buttons. If they dismiss via X / ESC instead, we fall back to
+    // opt_out in onClose so consent_version still gets stamped and the
+    // modal doesn't re-appear on every page reload. User can re-enable
+    // any time in Settings → Privacy → Telemetry.
+    let _decided = false;
     openModal({
       title: 'Help improve qwe-qwe?',
       body:
@@ -7532,13 +7538,24 @@ async function checkTelemetryFirstRun() {
             '<li>API keys, secrets, Telegram tokens</li>' +
           '</ul>' +
         '</details>' +
-        '<div style="font-size:11px;color:var(--fg-4);margin-top:10px"><a href="https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full privacy policy →</a></div>',
+        '<div style="font-size:11px;color:var(--fg-4);margin-top:10px">Default is <strong>off</strong>. If you close this without choosing, telemetry stays off — change any time in Settings → Privacy. <a href="https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full privacy policy →</a></div>',
+      onClose: () => {
+        // Backdrop / X / ESC dismissal without an explicit choice →
+        // treat as silent decline. Fires opt-out so consent_version
+        // gets stamped and we don't re-prompt on every reload. Without
+        // this, X/ESC was a "decide later" loop forever.
+        if (!_decided) {
+          api('/api/telemetry/opt-out', { method: 'POST' }).catch(() => {});
+        }
+      },
       actions: [
         { label: 'No thanks', onClick: async () => {
+            _decided = true;
             try { await api('/api/telemetry/opt-out', { method: 'POST' }); toast('telemetry off'); }
             catch { toast('failed to save choice', 'err'); return false; }
         }},
         { label: 'Enable', primary: true, onClick: async () => {
+            _decided = true;
             try { await api('/api/telemetry/opt-in', { method: 'POST' }); toast('telemetry enabled — thank you!'); }
             catch { toast('failed to enable', 'err'); return false; }
         }},
