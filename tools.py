@@ -1207,6 +1207,23 @@ _TOOL_SEARCH_INDEX = {
     "url": ["browser_open"],
     "site": ["browser_open", "browser_snapshot"],
     "page": ["browser_open", "browser_snapshot"],
+    # Canvas skill — render HTML in a sandboxed side panel for forms,
+    # dashboards, mockups, prototypes. canvas_prompt blocks until form
+    # submit (mirrors camera_capture); canvas_render is fire-and-forget.
+    "canvas": ["canvas_render", "canvas_prompt", "canvas_save", "canvas_load", "canvas_list"],
+    "dashboard": ["canvas_render", "canvas_save", "canvas_list", "canvas_load"],
+    "form": ["canvas_prompt", "canvas_render"],
+    "mockup": ["canvas_render", "canvas_save"],
+    "prototype": ["canvas_render", "canvas_save"],
+    "widget": ["canvas_render"],
+    "chart": ["canvas_render"],
+    "visualize": ["canvas_render"],
+    "render": ["canvas_render", "canvas_load"],
+    "artifact": ["canvas_save", "canvas_list", "canvas_load"],
+    "ui": ["canvas_render", "canvas_prompt"],
+    "survey": ["canvas_prompt"],
+    "questionnaire": ["canvas_prompt"],
+    "panel": ["canvas_render"],
     # Serial / USB-COM hardware skill — scales, barcode/RFID readers, GPS,
     # label printers, PLCs over Modbus RTU, industrial sensors, etc.
     "serial": ["serial_list_ports", "serial_read_once", "serial_write"],
@@ -1313,7 +1330,7 @@ def _do_tool_search(query: str) -> str:
                 found.add(fn["name"])
 
     if not found:
-        return f"No tools found for '{query}'. Available keywords: browser, notes, schedule, secret, mcp, profile, rag, skill, soul, timer, model, serial, modbus, scale, rfid, barcode, gps, plc, hardware"
+        return f"No tools found for '{query}'. Available keywords: browser, notes, schedule, secret, mcp, profile, rag, skill, soul, timer, model, serial, modbus, scale, rfid, barcode, gps, plc, hardware, canvas, dashboard, form, mockup, chart, ui, survey"
 
     # Check if tools already activated — short-circuit to prevent repeated tool_search
     if found and found.issubset(_active_extra_tools):

@@ -162,6 +162,22 @@ Adding a new event: edit `ALLOWED_EVENTS` schema + bump `_CURRENT_CONSENT_VERSIO
 
 Full data inventory + privacy contract: `docs/PRIVACY.md`.
 
+### Canvas skill (`skills/canvas.py`) — sandboxed HTML side panel
+
+**Added v0.18.7.** Lets the agent render rich UI (forms / dashboards / mockups) in a 480px right-side panel. Auto-active (in `_DEFAULT_SKILLS`).
+
+Five tools: `canvas_render` (fire-and-forget), `canvas_prompt` (BLOCKS until user submits — mirrors `camera_capture`'s `_pending_frame_requests`), `canvas_save`, `canvas_load`, `canvas_list`. `canvas_prompt` is the form-submission entry point; agent emits HTML with a postMessage handler, blocks until user fills the form, gets back the data as a JSON tool-result.
+
+**Iframe sandbox is the load-bearing security boundary.** `<iframe sandbox="allow-scripts allow-forms" srcdoc="...">`. **No `allow-same-origin`** — iframe origin is `"null"`, so it can't read parent cookies/localStorage/DOM. Trust check on the postMessage listener filters by `event.source === iframe.contentWindow` (origin-string filtering is useless when origin is `"null"`). 256 KB HTML cap at both skill entry and `/api/canvas/artifacts` POST.
+
+**Mutually exclusive with the inspector** — same right-column slot. Opening canvas auto-closes inspector. Hidden on screens <1100px.
+
+Persistence: `canvas_artifacts` table (slug PK, title, html ≤256 KB, created/updated_at, thread_id, meta JSON). Migration `006_canvas_artifacts.sql`. REST: `GET/POST/DELETE /api/canvas/artifacts*`. New left-nav **Canvases** view (`renderCanvasesView()`) browses saved artifacts as a card grid.
+
+Pattern reused from `camera_capture`: `_pending_canvas_prompts[req_id] = {event, data, closed}`; `request_canvas_prompt_sync()` opens the panel + awaits the asyncio.Event. Pattern reused from `task_update`: `canvas_render` / `canvas_close` WS events short-circuit BEFORE the streaming-message gate at line ~1985 in `handleWsMessage` (otherwise rendering a dashboard would also pop a ghost assistant message).
+
+Full data inventory + postMessage protocol + reference HTML template: `docs/CANVAS.md`.
+
 ### Project blog feed (`/api/feed/blog`)
 
 **Added v0.18.5.** Server-side proxy of `https://deepfounder.ai/tag/qwe-qwe/rss/`, rendered as a "From the blog" strip above the preset grid. **NOT telemetry** — empty body, no `anonymous_id`. Only signal deepfounder.ai sees is "an install asked for the feed" (IP + `qwe-qwe/<ver>` UA).

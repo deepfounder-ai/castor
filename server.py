@@ -91,6 +91,14 @@ def _push_history(entry: dict):
 # Camera frame request/response system — allows agent tools to capture frames on demand
 _pending_frame_requests: dict = {}  # request_id → asyncio.Event + result
 
+# Canvas prompt request/response system — the `canvas` skill uses this to
+# render a form in the right-side panel and BLOCK its tool turn until the
+# user submits (or closes / timeouts). Mirrors `_pending_frame_requests`
+# exactly. Entries look like {event: asyncio.Event, data: dict|None,
+# closed: bool}; populated by the `canvas_event` WS handler when the
+# iframe's postMessage routes a submit/close back to us.
+_pending_canvas_prompts: dict = {}  # request_id → asyncio.Event + result
+
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -1478,6 +1486,95 @@ def request_camera_frame_sync(timeout: float = 5.0) -> str | None:
         return None
 
 
+async def request_canvas_prompt(html: str, title: str = "",
+                                 timeout: float = 300.0) -> dict | None:
+    """Render a canvas form to the WS client and BLOCK until the user
+    submits, closes the panel, or the timeout elapses.
+
+    Returns:
+        - dict (form submission data) on user submit
+        - {} on user close without submit
+        - None on no client connected or timeout
+
+    Used by the `canvas_prompt` tool — mirrors `request_camera_frame`.
+    Pending requests live in `_pending_canvas_prompts`; the WS handler
+    for `canvas_event` resolves them when the iframe's postMessage
+    routes a submit/close back.
+    """
+    req_id = uuid.uuid4().hex[:8]
+    event = asyncio.Event()
+    _pending_canvas_prompts[req_id] = {"event": event, "data": None, "closed": False}
+
+    await _broadcast({
+        "type": "canvas_render",
+        "request_id": req_id,
+        "title": title or "Form",
+        "html": html,
+    })
+
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        _pending_canvas_prompts.pop(req_id, None)
+        # Tell the UI to close the panel so it doesn't sit there
+        # waiting forever.
+        try:
+            await _broadcast({"type": "canvas_close", "request_id": req_id})
+        except Exception:
+            pass
+        return None
+
+    entry = _pending_canvas_prompts.pop(req_id, {})
+    if entry.get("closed"):
+        return {}
+    return entry.get("data")
+
+
+def request_canvas_prompt_sync(html: str, title: str = "",
+                                timeout: float = 300.0) -> dict | None:
+    """Synchronous wrapper — called from the agent's executor thread."""
+    if not _ws_loop or not _ws_clients:
+        return None
+    future = asyncio.run_coroutine_threadsafe(
+        request_canvas_prompt(html, title, timeout), _ws_loop)
+    try:
+        return future.result(timeout=timeout + 1)
+    except Exception:
+        return None
+
+
+def broadcast_canvas_render_sync(html: str, title: str = "",
+                                   slug: str | None = None) -> bool:
+    """Fire-and-forget: emit a canvas_render WS event without waiting
+    for user interaction. Used by the `canvas_render` and `canvas_load`
+    tools. Returns True if the broadcast was scheduled, False if no
+    WS client is connected.
+    """
+    if not _ws_loop or not _ws_clients:
+        return False
+    payload = {"type": "canvas_render", "title": title or "", "html": html}
+    if slug:
+        payload["slug"] = slug
+    try:
+        asyncio.run_coroutine_threadsafe(_broadcast(payload), _ws_loop)
+        return True
+    except Exception:
+        return False
+
+
+def broadcast_canvas_close_sync() -> bool:
+    """Fire-and-forget close — used by a potential future `canvas_close`
+    tool. Returns True if scheduled."""
+    if not _ws_loop or not _ws_clients:
+        return False
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _broadcast({"type": "canvas_close"}), _ws_loop)
+        return True
+    except Exception:
+        return False
+
+
 @app.post("/api/streaming")
 async def set_streaming(data: dict):
     val = bool(data.get("enabled", True))
@@ -2145,6 +2242,123 @@ async def blog_feed():
             stale_ts = _feed_cache["fetched_at"]
         return {"items": stale, "cached": False, "fetched_at": stale_ts,
                 "error": str(e)[:200]}
+
+
+# ── Canvas artifacts (saved dashboards / forms / mockups) ──────────────
+#
+# Built-in skill `canvas` renders model-supplied HTML in a sandboxed iframe
+# on the right side of the chat. These endpoints back the persistence
+# layer: when the user (or the agent) calls `canvas_save`, the html lands
+# in the `canvas_artifacts` table, and the `Canvases` left-nav view in the
+# Web UI loads them via these REST routes.
+#
+# Privacy: artifacts are stored locally in qwe_qwe.db like everything else.
+# Never sent off-machine. The 256 KB size cap matches the cap inside
+# `skills/canvas.py` so the table can't grow unbounded from a runaway
+# model.
+
+_CANVAS_HTML_CAP_BYTES = 256 * 1024  # 256 KB
+_CANVAS_SLUG_RE = re.compile(r"[^a-z0-9\-_]+")
+
+
+def _canvas_slugify(title: str) -> str:
+    """Turn a free-form title into a slug. Lowercase, dashed, ≤64 chars.
+    Falls back to a short uuid if the input has no usable characters."""
+    if not title:
+        return uuid.uuid4().hex[:8]
+    slug = _CANVAS_SLUG_RE.sub("-", title.lower()).strip("-")[:64]
+    return slug or uuid.uuid4().hex[:8]
+
+
+def _canvas_save_artifact(slug: str, title: str, html: str,
+                            thread_id: str | None = None,
+                            meta: dict | None = None) -> str:
+    """Upsert a canvas artifact. Returns the slug used. Slugifies the
+    title if no slug is supplied. Raises ValueError on oversize HTML."""
+    if not isinstance(html, str):
+        raise ValueError("html must be a string")
+    if len(html.encode("utf-8", errors="replace")) > _CANVAS_HTML_CAP_BYTES:
+        raise ValueError(
+            f"html exceeds {_CANVAS_HTML_CAP_BYTES} byte cap "
+            f"({len(html.encode('utf-8', errors='replace'))} bytes). "
+            f"Trim inlined assets or split into multiple artifacts."
+        )
+    slug = (slug or "").strip() or _canvas_slugify(title)
+    now = time.time()
+    conn = db._get_conn()
+    existing = conn.execute(
+        "SELECT created_at FROM canvas_artifacts WHERE slug=?", (slug,)
+    ).fetchone()
+    created_at = existing[0] if existing else now
+    conn.execute(
+        "INSERT OR REPLACE INTO canvas_artifacts "
+        "(slug, title, html, created_at, updated_at, thread_id, meta) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (slug, title or slug, html, created_at, now, thread_id,
+         json.dumps(meta) if meta else None)
+    )
+    conn.commit()
+    return slug
+
+
+@app.get("/api/canvas/artifacts")
+async def canvas_list_artifacts():
+    """List saved canvas artifacts (metadata only — no html bodies).
+    Sorted newest-updated first."""
+    rows = db.fetchall(
+        "SELECT slug, title, created_at, updated_at, thread_id "
+        "FROM canvas_artifacts ORDER BY updated_at DESC LIMIT 200"
+    )
+    return {"items": [
+        {"slug": r[0], "title": r[1],
+         "created_at": r[2], "updated_at": r[3],
+         "thread_id": r[4]}
+        for r in rows
+    ]}
+
+
+@app.get("/api/canvas/artifacts/{slug}")
+async def canvas_get_artifact(slug: str):
+    """Fetch a single artifact including its html body."""
+    row = db.fetchone(
+        "SELECT slug, title, html, created_at, updated_at, thread_id, meta "
+        "FROM canvas_artifacts WHERE slug=?", (slug,)
+    )
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    meta_json = row[6]
+    return {
+        "slug": row[0], "title": row[1], "html": row[2],
+        "created_at": row[3], "updated_at": row[4],
+        "thread_id": row[5],
+        "meta": json.loads(meta_json) if meta_json else None,
+    }
+
+
+@app.post("/api/canvas/artifacts")
+async def canvas_save_artifact_endpoint(data: dict):
+    """Save (upsert) a canvas artifact. Body: {slug?, title, html, thread_id?}."""
+    title = (data.get("title") or "").strip()
+    html = data.get("html") or ""
+    slug = (data.get("slug") or "").strip()
+    if not html:
+        return JSONResponse({"error": "html required"}, status_code=400)
+    try:
+        slug_used = _canvas_save_artifact(
+            slug=slug, title=title, html=html,
+            thread_id=data.get("thread_id"),
+            meta=data.get("meta") if isinstance(data.get("meta"), dict) else None,
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=413)
+    return {"slug": slug_used, "ok": True}
+
+
+@app.delete("/api/canvas/artifacts/{slug}")
+async def canvas_delete_artifact(slug: str):
+    """Delete a single artifact by slug."""
+    db.execute("DELETE FROM canvas_artifacts WHERE slug=?", (slug,))
+    return {"ok": True}
 
 
 # ── Business presets ────────────────────────────────────────────────────
@@ -2841,6 +3055,46 @@ async def websocket_chat(ws: WebSocket):
                     if req_id and req_id in _pending_frame_requests:
                         _pending_frame_requests[req_id]["image_b64"] = msg.get("image_b64")
                         _pending_frame_requests[req_id]["event"].set()
+                    continue
+
+                # Handle canvas iframe events (form submit / save / close).
+                # The iframe is sandboxed-no-same-origin, so it can only talk
+                # to the parent window via postMessage — the JS in static/
+                # index.html listens for those messages and relays them
+                # over this WS channel.
+                if msg.get("type") == "canvas_event":
+                    event_kind = msg.get("event")
+                    req_id = msg.get("request_id")
+                    if event_kind == "submit":
+                        if req_id and req_id in _pending_canvas_prompts:
+                            _pending_canvas_prompts[req_id]["data"] = msg.get("data") or {}
+                            _pending_canvas_prompts[req_id]["event"].set()
+                        # else: fire-and-forget submit (canvas_render path).
+                        # Queue as a synthetic user-turn input on the next
+                        # message. We don't have a per-thread input queue —
+                        # the simplest path is to log + ignore for now; the
+                        # primary form path is canvas_prompt which DOES
+                        # block, so submits without request_id should be
+                        # rare. Skill author can poll canvas state later.
+                        else:
+                            _log.info(f"canvas submit without pending request: {(msg.get('data') or {})}")
+                    elif event_kind == "close":
+                        if req_id and req_id in _pending_canvas_prompts:
+                            _pending_canvas_prompts[req_id]["closed"] = True
+                            _pending_canvas_prompts[req_id]["event"].set()
+                    elif event_kind == "save":
+                        # User clicked a "Save" button rendered by the
+                        # canvas chrome (not by the model's HTML). Upsert
+                        # into canvas_artifacts and ack.
+                        try:
+                            _canvas_save_artifact(
+                                slug=msg.get("slug") or "",
+                                title=msg.get("title") or "Untitled",
+                                html=msg.get("html") or "",
+                                thread_id=None,
+                            )
+                        except Exception as e:
+                            _log.warning(f"canvas save failed: {e}")
                     continue
 
                 user_input = msg.get("text", "").strip()

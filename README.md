@@ -31,7 +31,7 @@
 
 ## What is qwe-qwe?
 
-A **business-oriented AI agent** built to drop into real workflows: customer ops, internal automation, knowledge retrieval, scheduled reporting, custom integrations, **hardware on the floor**. Deploys on your infrastructure — a workstation, your own server, or the cloud account you already have. Chat via web UI, terminal, or Telegram, with tools, semantic memory, browser control, MCP integrations, a cron-like scheduler, and direct USB/serial access to scales, scanners, GPS, label printers, and PLCs.
+A **business-oriented AI agent** built to drop into real workflows: customer ops, internal automation, knowledge retrieval, scheduled reporting, custom integrations, **hardware on the floor**, and **rich UI in chat** (forms, dashboards, mockups). Deploys on your infrastructure — a workstation, your own server, or the cloud account you already have. Chat via web UI, terminal, or Telegram, with tools, semantic memory, browser control, MCP integrations, a cron-like scheduler, direct USB/serial access to scales, scanners, GPS, label printers, and PLCs — and a sandboxed canvas panel where the agent can render arbitrary HTML for visual artifacts.
 
 **Bring your own LLM**: works with any OpenAI-compatible provider — Azure OpenAI, AWS Bedrock, OpenAI, Groq, OpenRouter, DeepSeek, Together — or a local model via LM Studio / Ollama if you need everything on-prem. Your provider, your context window, your budget. Switch providers per-thread without restarting the agent.
 
@@ -146,13 +146,15 @@ Works on: gaming laptops, desktop GPUs (RTX 3060+), Mac M1+ (via Ollama), Linux 
 CLI (terminal)  <--+           +-- RAG (file indexing & search)
 Web UI (browser) <--+-- Agent -+-- SQLite (history, threads, state)
 Telegram bot    <--/    Loop   +-- Tools (8 core + tool_search)
-                        |      +-- Skills (8 built-in, user-creatable)
+                        |      +-- Skills (9 built-in, user-creatable)
                         |      +-- Browser (Playwright/Chromium)
                         |      +-- MCP (external tool servers)
                         |      +-- Scheduler (cron tasks)
                         |      +-- Vault (encrypted secrets)
                         |      +-- Hardware (USB/serial via pyserial — scales,
                         |                    scanners, GPS, PLCs, sensors)
+                        |      +-- Canvas (sandboxed HTML side panel — forms,
+                        |                  dashboards, mockups)
                         v
                    LLM (local or cloud)
                    10 providers supported
@@ -280,6 +282,7 @@ Pluggable skill system — built-in skills + create your own from chat:
 | `timer` | Countdown timers |
 | `weather` | Weather reports via wttr.in |
 | `serial_port` | Talk to USB-serial / RS-232 / RS-485 hardware (scales, scanners, GPS, label printers, PLCs over Modbus RTU) — Windows / macOS / Linux |
+| `canvas` | Render HTML in a sandboxed right-side panel — forms (blocking, returns user input), dashboards (saveable), mockups / prototypes |
 
 ### Creating skills from chat
 
@@ -387,6 +390,36 @@ Agent: [tool_search("schedule")] [tool_search("gps")]
 - **Windows**: drivers usually auto-install via Windows Update. CH340 may need the [WCH driver](https://www.wch.cn/download/CH341SER_EXE.html); FTDI cables are plug-and-play.
 
 For non-serial hardware (Zigbee, Z-Wave, Wi-Fi, MQTT), the practical bridge is **Home Assistant** — adding an HA MCP server through `mcp_manager` exposes its 2000+ integrations. Pattern docs in [`docs/HARDWARE.md`](docs/HARDWARE.md).
+
+## Canvas
+
+Rich UI in chat. The built-in **`canvas`** skill renders model-supplied HTML in a sandboxed right-side panel — 480px wide, mutually exclusive with the inspector. Three use cases:
+
+| Use case | Tool | Behavior |
+|---|---|---|
+| **Interactive forms** | `canvas_prompt(html, title?)` | BLOCKS the agent's turn until the user submits the form. Returns the submitted data as JSON. Mirrors `camera_capture`'s blocking pattern. |
+| **Dashboards** | `canvas_render(html, title?)` then `canvas_save(slug, title, html)` | Fire-and-forget render, then save under a slug. Saved dashboards appear in the **Canvases** left-nav view and survive reloads. |
+| **Mockups / prototypes** | `canvas_render(html, title?)` | Visual communication. Agent renders a layout; user gives feedback in chat; agent iterates. |
+
+### Concrete scenario
+
+```
+You:    Make a form to add a new client. Fields: full name, phone, source
+        (Google / Referral / Other).
+Agent:  [tool_search("form")] → activates canvas_prompt
+        [canvas_prompt html="<form>...</form>" title="New client"]
+        → panel opens on the right (480px), inspector auto-closes
+        → user fills + clicks Save
+Agent:  Receives {full_name: "Anna", phone: "+7 ...", source: "Google"}
+        [memory_save "Client Anna · +7 ... · via Google · 2026-05-11"]
+        Saved.
+```
+
+### Security
+
+The iframe is **rigorously sandboxed**: `<iframe sandbox="allow-scripts allow-forms">` — **no `allow-same-origin`**. Iframe origin is `"null"`, so model-generated HTML cannot read parent cookies, localStorage, or DOM. The only channel back to the agent is `parent.postMessage({type:'canvas_submit', data: {...}}, '*')`, filtered by iframe identity. External CDN resources (Chart.js, fonts) work, but without the user's auth.
+
+HTML cap: 256 KB per artifact, enforced at both skill entry and REST POST. Pattern docs + reference HTML template + postMessage protocol: [`docs/CANVAS.md`](docs/CANVAS.md).
 
 ## MCP
 

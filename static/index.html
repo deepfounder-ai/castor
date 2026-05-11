@@ -769,6 +769,45 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
   overflow-y: auto;
   display: flex; flex-direction: column;
 }
+
+/* Canvas panel — the `canvas` skill renders sandboxed HTML here.
+   Sits in the same right-column slot as the inspector; the two are
+   mutually exclusive (opening one closes the other). Wider than the
+   inspector (480px vs 340px) because dashboards / forms need more
+   room. Hidden on narrow screens like the inspector. */
+.canvas-panel {
+  width: 480px; flex-shrink: 0;
+  background: var(--bg-inspector);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.canvas-panel .canvas-head {
+  height: 44px; padding: 0 16px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.canvas-panel .canvas-head h2 {
+  font-size: 12px; font-weight: 500; color: var(--fg); flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.canvas-panel .canvas-head .canvas-slug {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-4);
+  margin-left: 6px;
+}
+.canvas-panel .canvas-body {
+  flex: 1; min-height: 0;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+}
+.canvas-panel .canvas-frame {
+  flex: 1; min-height: 0;
+  width: 100%; border: 0;
+  background: #fff;
+}
+/* Hide canvas on narrow screens, same threshold as inspector */
+@media (max-width: 1100px) { .canvas-panel { display: none; } }
 .insp-head {
   height: 44px; padding: 0 16px;
   display: flex; align-items: center; gap: 10px;
@@ -1840,6 +1879,13 @@ const state = {
   network: { lan_access: true, ip: '' },
   // Phase 2 state
   pendingAttachments: [],  // [{id, name, path, size, type, isImage, b64?}]
+  // Canvas: the side-panel surface that renders model-generated HTML in
+  // a sandboxed iframe. open=null when closed; open={html,title,slug?,
+  // request_id?} when the agent has called canvas_render or canvas_prompt.
+  // Mutually exclusive with inspector — opening canvas auto-closes
+  // inspector and vice versa.
+  canvas: null,
+  canvasArtifacts: [],      // [{slug,title,created_at,updated_at}] — populated when Canvases view is open
   cameraOn: false,
   cameraStream: null,
   cameraDeviceId: null,
@@ -1954,6 +2000,30 @@ const handleWsMessage = (msg) => {
     if (kind === 'ok') {
       try { loadSkills && loadSkills(); } catch {}
     }
+    return;
+  }
+
+  // Canvas events — the `canvas_render` / `canvas_close` types come from
+  // the canvas skill via _broadcast. MUST short-circuit here, BEFORE the
+  // "create pending streaming message" branch below; otherwise the panel-
+  // render would also pop a ghost assistant message into the chat (same
+  // class of bug as the v0.18.3 task_update fix).
+  if (t === 'canvas_render') {
+    state.canvas = {
+      html: msg.html || '',
+      title: msg.title || 'Canvas',
+      slug: msg.slug || '',
+      request_id: msg.request_id || '',
+    };
+    // Mutually exclusive with the inspector — opening canvas auto-closes
+    // the inspector (and vice versa via the toggle handler).
+    state.inspectorOn = false;
+    render();
+    return;
+  }
+  if (t === 'canvas_close') {
+    state.canvas = null;
+    render();
     return;
   }
 
@@ -3494,7 +3564,11 @@ function render() {
             ? '<div class="threadlist-backdrop" data-act="close-threadlist"></div>'
             : '') +
           '<div class="view">' + renderViewBody() + '</div>' +
-          (state.view === 'chat' && state.inspectorOn ? renderInspector() : '') +
+          // Right-column slot — canvas wins if open (mutually exclusive
+          // with inspector). Both only visible in chat view.
+          (state.view === 'chat' && state.canvas
+            ? renderCanvasPanel()
+            : (state.view === 'chat' && state.inspectorOn ? renderInspector() : '')) +
         '</div>' +
       '</main>' +
       (state.paletteOpen ? renderPalette() : '') +
@@ -3503,6 +3577,7 @@ function render() {
     '</div>';
   wireEvents();
   wireModal();
+  patchCanvasIframe();   // Set iframe.srcdoc imperatively from state.canvas.html
   // Restore scroll position (or stick to bottom) on the new scroll container
   if (savedScroll) {
     requestAnimationFrame(() => {
@@ -3533,6 +3608,7 @@ function renderRail() {
     { id: 'memory', icon: 'brain', label: 'Memory' },
     { id: 'scheduler', icon: 'clock', label: 'Routines' },
     { id: 'presets', icon: 'package', label: 'Presets' },
+    { id: 'canvases', icon: 'image', label: 'Canvases' },
   ];
   const bottom = [{ id: 'settings', icon: 'settings', label: 'Settings' }];
   const navBtn = (it) =>
@@ -3966,6 +4042,56 @@ function renderChatView() {
   return '<div class="scroll-col" id="chat-scroll"><div class="inner">' + header +
     '<div style="flex:1;display:flex;flex-direction:column">' + (state.messages.map(renderMessage).join('') || empty) + '</div>' +
     scrollBtn + composer + '</div></div>';
+}
+
+function renderCanvasPanel() {
+  // Right-column panel hosting an iframe that renders model-generated
+  // HTML. The iframe is sandboxed without same-origin so it cannot
+  // touch the parent DOM / cookies / localStorage. Form submissions
+  // route back via postMessage — see canvasMessageListener below.
+  //
+  // We use a stable wrapper here and set `iframe.srcdoc` in
+  // patchCanvasIframe() after render, so the iframe DOM isn't
+  // discarded + recreated on every parent re-render (which would
+  // discard any in-progress user input).
+  const c = state.canvas || {};
+  const title = c.title || 'Canvas';
+  const slug = c.slug ? '<span class="canvas-slug">' + esc(c.slug) + '</span>' : '';
+  return '<aside class="canvas-panel">' +
+    '<div class="canvas-head">' +
+      ico('image', 14, 'style="color:var(--fg-3)"') +
+      '<h2>' + esc(title) + slug + '</h2>' +
+      (c.slug
+        ? '<button class="icon-btn" data-act="canvas-save" data-slug="' + esc(c.slug) + '" title="Save artifact">' + ico('download', 14) + '</button>'
+        : '<button class="icon-btn" data-act="canvas-save-as" title="Save as new artifact">' + ico('download', 14) + '</button>') +
+      '<button class="icon-btn" data-act="toggle-canvas" title="Close canvas">' + ico('close', 14) + '</button>' +
+    '</div>' +
+    '<div class="canvas-body">' +
+      // The iframe SRC is set imperatively after render to avoid
+      // double-escaping the html through esc(). The wrapper is stable
+      // so the iframe identity persists across renders.
+      '<iframe class="canvas-frame" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer" data-canvas-iframe></iframe>' +
+    '</div>' +
+  '</aside>';
+}
+
+function patchCanvasIframe() {
+  // Imperative side-effect after render(): set srcdoc on the canvas
+  // iframe from state.canvas.html. Called from render() so the
+  // iframe DOM stays stable but content updates when the agent
+  // emits canvas_render.
+  const iframe = document.querySelector('[data-canvas-iframe]');
+  if (!iframe) return;
+  const html = (state.canvas && state.canvas.html) || '';
+  // Only update srcdoc when the content actually changed — otherwise
+  // every parent re-render would blow away in-progress form input.
+  if (iframe.dataset.canvasHtmlHash !== ('' + html.length + ':' + html.slice(0, 32))) {
+    iframe.srcdoc = html;
+    iframe.dataset.canvasHtmlHash = '' + html.length + ':' + html.slice(0, 32);
+    // Store request_id on the iframe element so the postMessage
+    // listener can attach it to outgoing canvas_submit events.
+    iframe.dataset.canvasRequestId = (state.canvas && state.canvas.request_id) || '';
+  }
 }
 
 function renderInspector() {
@@ -6025,9 +6151,54 @@ function renderViewBody() {
     case 'memory': return renderMemoryView();
     case 'scheduler': return renderSchedulerView();
     case 'presets': return renderPresetsView();
+    case 'canvases': return renderCanvasesView();
     case 'settings': return renderSettingsView();
     default: return '';
   }
+}
+
+async function loadCanvasArtifacts() {
+  try {
+    const r = await api('/api/canvas/artifacts');
+    state.canvasArtifacts = (r && r.items) || [];
+  } catch { state.canvasArtifacts = []; }
+  render();
+}
+
+function renderCanvasesView() {
+  const items = state.canvasArtifacts || [];
+  const colors = ['var(--info)','var(--magic)','var(--ok)','var(--warn)','var(--err)'];
+  const empty =
+    '<div style="text-align:center;padding:40px 20px;color:var(--fg-3)">' +
+      '<div style="font-size:14px;margin-bottom:8px">No saved canvases yet.</div>' +
+      '<div style="font-size:12px">Ask the agent to "render a dashboard" or "make me a form" — then say "save this as &lt;slug&gt;".</div>' +
+    '</div>';
+  return '<div class="scroll-col"><div class="inner-wide">' +
+    '<div class="page-hdr"><div class="copy">' +
+      '<div class="eyebrow">CANVASES · ' + items.length + ' saved</div>' +
+      '<h1>Canvas artifacts</h1>' +
+      '<p class="sub">Saved dashboards, forms, mockups, and prototypes rendered by the agent. Click to open in the chat side-panel.</p>' +
+    '</div></div>' +
+    (items.length === 0 ? empty :
+      '<div class="card-grid">' +
+        items.map((it, i) => {
+          const c = colors[i % colors.length];
+          const updated = fmtTime(it.updated_at);
+          return '<div class="preset-card" data-act="canvas-open" data-slug="' + esc(it.slug) + '" style="cursor:pointer">' +
+            '<div class="stripe" style="background:' + c + '"></div>' +
+            '<div class="row1"><div class="p-icon" style="color:' + c + '">' + ico('image', 16) + '</div>' +
+            '<div style="flex:1"><div class="p-name">' + esc(it.title || it.slug) + '</div>' +
+              '<div class="p-desc mono" style="font-size:11px;color:var(--fg-4)">' + esc(it.slug) + '</div></div></div>' +
+            '<div class="p-foot">' +
+              '<div class="p-meta">' + ico('clock', 10, 'style="color:var(--fg-4)"') + esc(updated) + '</div>' +
+              '<div style="flex:1"></div>' +
+              '<button class="icon-btn" data-act="canvas-delete" data-slug="' + esc(it.slug) + '" title="Delete">' + ico('trash', 12) + '</button>' +
+            '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>'
+    ) +
+  '</div></div>';
 }
 
 function renderPalette() {
@@ -6037,6 +6208,7 @@ function renderPalette() {
     { group: 'go', label: 'Go to Memory', icon: 'brain', act: () => go('memory'), kbd: ALT_MOD + ' M' },
     { group: 'go', label: 'Go to Routines', icon: 'clock', act: () => go('scheduler'), kbd: ALT_MOD + ' S' },
     { group: 'go', label: 'Go to Presets', icon: 'package', act: () => go('presets'), kbd: ALT_MOD + ' P' },
+    { group: 'go', label: 'Go to Canvases', icon: 'image', act: () => go('canvases') },
     { group: 'go', label: 'Go to Settings', icon: 'settings', act: () => go('settings'), kbd: ALT_MOD + ' ,' },
     { group: 'action', label: 'New thread', icon: 'plusSmall', act: () => newThread(), kbd: MOD + ' N' },
     { group: 'action', label: (state.inspectorOn ? 'Hide' : 'Show') + ' right-side inspector (token gauge, memories, tools)', icon: 'eye', act: () => { state.inspectorOn = !state.inspectorOn; render(); } },
@@ -6178,6 +6350,7 @@ function go(view) {
   if (view === 'memory') loadMemory();
   if (view === 'scheduler') loadCron();
   if (view === 'presets') { loadPresets(); loadBlogFeed(); }
+  if (view === 'canvases') loadCanvasArtifacts();
   if (view === 'settings') openSettingsTab(state.settingsTab);
 }
 
@@ -6524,7 +6697,88 @@ function wireEvents() {
       } catch { toast('save failed', 'err'); }
     };
   });
-  document.querySelectorAll('[data-act="toggle-inspector"]').forEach(b => { b.onclick = () => { state.inspectorOn = !state.inspectorOn; render(); }; });
+  document.querySelectorAll('[data-act="toggle-inspector"]').forEach(b => {
+    b.onclick = () => {
+      // Mutual exclusion: turning inspector on closes the canvas panel
+      // (and vice versa via the canvas toggle / close button).
+      state.inspectorOn = !state.inspectorOn;
+      if (state.inspectorOn) state.canvas = null;
+      render();
+    };
+  });
+  document.querySelectorAll('[data-act="toggle-canvas"]').forEach(b => {
+    b.onclick = () => {
+      // Close the canvas panel. The user can ask the agent to reopen
+      // by calling canvas_load(slug=...).
+      state.canvas = null;
+      render();
+    };
+  });
+  document.querySelectorAll('[data-act="canvas-save"]').forEach(b => {
+    b.onclick = async () => {
+      // Save the currently-rendered canvas under its existing slug.
+      const slug = b.dataset.slug || '';
+      const c = state.canvas || {};
+      if (!c.html) return;
+      try {
+        await api('/api/canvas/artifacts', { method: 'POST', body: {
+          slug, title: c.title || slug || 'Untitled', html: c.html,
+        }});
+        toast('Canvas saved');
+      } catch { toast('Canvas save failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="canvas-open"]').forEach(card => {
+    card.onclick = async (e) => {
+      // Don't fire when the user clicked the inline delete button —
+      // stopPropagation on that button handles this, but defense in
+      // depth: ignore if the click came from a button.
+      if (e.target.closest('[data-act="canvas-delete"]')) return;
+      const slug = card.dataset.slug;
+      if (!slug) return;
+      try {
+        const r = await api('/api/canvas/artifacts/' + encodeURIComponent(slug));
+        if (!r || !r.html) { toast('Canvas missing html', 'err'); return; }
+        // Open in chat-side panel. Switching to chat view is the
+        // natural UX — the canvas lives next to the chat.
+        state.canvas = { html: r.html, title: r.title || slug, slug: r.slug || slug };
+        state.inspectorOn = false;
+        go('chat');
+      } catch { toast('Failed to load canvas', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="canvas-delete"]').forEach(b => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const slug = b.dataset.slug;
+      if (!slug) return;
+      if (!confirm('Delete canvas "' + slug + '"? This cannot be undone.')) return;
+      try {
+        await api('/api/canvas/artifacts/' + encodeURIComponent(slug), { method: 'DELETE' });
+        toast('Deleted');
+        loadCanvasArtifacts();
+      } catch { toast('Delete failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="canvas-save-as"]').forEach(b => {
+    b.onclick = async () => {
+      // Prompt for a slug. The default is slugified from the title.
+      const c = state.canvas || {};
+      if (!c.html) return;
+      const suggested = (c.title || 'untitled').toLowerCase().replace(/[^a-z0-9\-_]+/g, '-').replace(/(^-+|-+$)/g, '').slice(0, 64);
+      const slug = prompt('Save canvas as (slug):', suggested);
+      if (!slug) return;
+      try {
+        const r = await api('/api/canvas/artifacts', { method: 'POST', body: {
+          slug, title: c.title || slug, html: c.html,
+        }});
+        // Update the state's slug so subsequent saves overwrite.
+        if (r && r.slug) state.canvas = { ...c, slug: r.slug };
+        toast('Canvas saved as ' + (r && r.slug));
+        render();
+      } catch { toast('Canvas save failed', 'err'); }
+    };
+  });
   document.querySelectorAll('[data-act="toggle-anim"]').forEach(b => { b.onclick = () => { state.anim = !state.anim; render(); }; });
   document.querySelectorAll('[data-act="toggle-grain"]').forEach(b => { b.onclick = () => { state.grain = !state.grain; document.body.style.setProperty('--grain-op', state.grain ? '0.025' : '0'); render(); }; });
   document.querySelectorAll('[data-act="memory-refresh"]').forEach(b => { b.onclick = loadMemory; });
@@ -7610,6 +7864,57 @@ function openShortcutsModal() {
     actions: [{ label: 'Got it', primary: true }],
   });
 }
+
+// Canvas postMessage bridge: the sandboxed iframe can't talk to the
+// agent directly. It posts {type: 'canvas_submit', data: {...}} (or
+// 'canvas_close_request' / 'canvas_save_request') to the parent
+// window; we relay it through the WS as a canvas_event so the server
+// can resolve any pending canvas_prompt or persist a save. Attached
+// once on boot — never per-render.
+window.addEventListener('message', (e) => {
+  const iframe = document.querySelector('[data-canvas-iframe]');
+  if (!iframe || e.source !== iframe.contentWindow) return;
+  // Sandboxed-without-same-origin iframes report origin "null" — we
+  // can't use e.origin for filtering. The e.source === contentWindow
+  // identity check above is the load-bearing trust boundary.
+  const d = e.data || {};
+  const req_id = iframe.dataset.canvasRequestId || '';
+  if (d.type === 'canvas_submit') {
+    try {
+      state.ws.send(JSON.stringify({
+        type: 'canvas_event',
+        event: 'submit',
+        request_id: req_id || undefined,
+        data: d.data || {},
+      }));
+    } catch {}
+    // Close the panel optimistically — the agent's next turn will
+    // continue with the form data.
+    state.canvas = null;
+    render();
+  } else if (d.type === 'canvas_close_request') {
+    try {
+      state.ws.send(JSON.stringify({
+        type: 'canvas_event',
+        event: 'close',
+        request_id: req_id || undefined,
+      }));
+    } catch {}
+    state.canvas = null;
+    render();
+  } else if (d.type === 'canvas_save_request') {
+    try {
+      state.ws.send(JSON.stringify({
+        type: 'canvas_event',
+        event: 'save',
+        slug: d.slug || '',
+        title: d.title || (state.canvas && state.canvas.title) || 'Untitled',
+        html: d.html || (state.canvas && state.canvas.html) || '',
+      }));
+    } catch {}
+    toast('Canvas saved');
+  }
+});
 
 (async function boot() {
   render();
