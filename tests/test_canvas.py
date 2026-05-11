@@ -204,6 +204,43 @@ def test_canvas_prompt_validates_html(canvas_mod):
     assert "html" in canvas_mod.execute("canvas_prompt", {}).lower()
 
 
+def test_canvas_tools_report_stale_server_with_restart_hint(canvas_mod, monkeypatch):
+    """Reported bug: user pulled the canvas commit but didn't restart
+    `qwe-qwe --web`. The running server process is from BEFORE the
+    canvas-helper additions, so `server.broadcast_canvas_render_sync`
+    doesn't exist and the agent saw a raw AttributeError.
+
+    Fix: skills/canvas.py uses _check_server_compat() to detect the
+    missing helpers up front and return a clear "restart qwe-qwe"
+    message instead of crashing.
+    """
+    import types
+    stale = types.ModuleType("server")
+    # Pretend it's a live process — has _ws_loop and a client — but
+    # missing every canvas helper. This is exactly what happens when
+    # the running server.py is older than the canvas.py on disk.
+    stale._ws_loop = object()
+    stale._ws_clients = {object()}
+    # Intentionally no broadcast_canvas_render_sync,
+    # request_canvas_prompt_sync, _canvas_save_artifact.
+
+    monkeypatch.setattr(canvas_mod, "_server_module", lambda: stale)
+
+    for name, args in [
+        ("canvas_render", {"html": "<p>x</p>"}),
+        ("canvas_prompt", {"html": "<p>x</p>"}),
+        ("canvas_save", {"slug": "x", "html": "<p>x</p>"}),
+        ("canvas_load", {"slug": "missing-but-irrelevant"}),
+    ]:
+        out = canvas_mod.execute(name, args)
+        assert "older than the canvas skill" in out, (
+            f"{name} didn't surface a restart hint when server is stale; got: {out!r}"
+        )
+        # Must enumerate at least one missing helper so the user knows
+        # what's actually wrong, not just "something's broken".
+        assert "broadcast_canvas_render_sync" in out or "request_canvas_prompt_sync" in out or "_canvas_save_artifact" in out
+
+
 def test_canvas_render_without_ws_returns_helpful_message(canvas_mod):
     """No WS client connected → tool returns a message the agent can
     relay to the user, not a stacktrace."""

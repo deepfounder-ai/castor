@@ -296,6 +296,44 @@ def _server_module():
     return sys.modules.get("server")
 
 
+# Names of every server-side helper this skill depends on. Used by
+# `_check_server_compat` below to produce a precise "your server is
+# stale" diagnostic when the user has pulled the canvas skill files
+# but is still running an older `qwe-qwe --web` process.
+_REQUIRED_SERVER_ATTRS = (
+    "broadcast_canvas_render_sync",
+    "broadcast_canvas_close_sync",
+    "request_canvas_prompt_sync",
+    "_canvas_save_artifact",
+)
+
+
+def _check_server_compat(server) -> str | None:
+    """Return an error message if the loaded server module is missing
+    canvas helpers, else None. Catches the "pulled new code but didn't
+    restart qwe-qwe" footgun — without this the failure surfaces as
+    a raw AttributeError up the agent loop.
+    """
+    if server is None:
+        return (
+            "Canvas unavailable — server module not loaded. If you're "
+            "running from the CLI without --web, open the Web UI to "
+            "render canvases."
+        )
+    missing = [a for a in _REQUIRED_SERVER_ATTRS if not hasattr(server, a)]
+    if missing:
+        return (
+            "Canvas unavailable — your qwe-qwe server is older than the "
+            "canvas skill files on disk.\n"
+            f"  Missing helpers: {', '.join(missing)}\n"
+            "Restart the qwe-qwe process (Ctrl+C the `qwe-qwe --web` or "
+            "`python cli.py --web` process and start it again). Pulling "
+            "code from git does NOT reload a running Python process; the "
+            "module stays in memory until the process restarts."
+        )
+    return None
+
+
 # ── canvas_render ──────────────────────────────────────────────────
 
 
@@ -308,7 +346,10 @@ def _do_render(args: dict) -> str:
     slug = (args.get("slug") or "").strip() or None
 
     server = _server_module()
-    if server is None or not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
+    compat = _check_server_compat(server)
+    if compat:
+        return compat
+    if not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
         return (
             "Canvas panel cannot open — no Web UI client is connected. "
             "Open the Web UI (python cli.py --web) and try again."
@@ -333,7 +374,10 @@ def _do_prompt(args: dict) -> str:
     timeout_s = max(5.0, min(1800.0, timeout_s))
 
     server = _server_module()
-    if server is None or not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
+    compat = _check_server_compat(server)
+    if compat:
+        return compat
+    if not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
         return (
             "Canvas prompt cannot open — no Web UI client is connected. "
             "Open the Web UI and try again."
@@ -366,8 +410,9 @@ def _do_save(args: dict) -> str:
     slug = (args.get("slug") or "").strip()
 
     server = _server_module()
-    if server is None:
-        return "Canvas save unavailable — server module not loaded."
+    compat = _check_server_compat(server)
+    if compat:
+        return compat
     try:
         slug_used = server._canvas_save_artifact(
             slug=slug, title=title or (slug or "Untitled"), html=html,
@@ -391,6 +436,14 @@ def _do_load(args: dict) -> str:
     if not slug:
         return "Error: 'slug' required. Use canvas_list to see saved artifacts."
 
+    # Check server compatibility BEFORE the DB lookup — otherwise a
+    # "not found" response could mask the real problem (server is stale
+    # and missing the broadcast helper anyway).
+    server = _server_module()
+    compat = _check_server_compat(server)
+    if compat:
+        return compat
+
     import db
     row = db.fetchone(
         "SELECT slug, title, html FROM canvas_artifacts WHERE slug=?", (slug,)
@@ -398,8 +451,7 @@ def _do_load(args: dict) -> str:
     if not row:
         return f"Canvas '{slug}' not found. Use canvas_list to see saved artifacts."
 
-    server = _server_module()
-    if server is None or not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
+    if not getattr(server, "_ws_loop", None) or not getattr(server, "_ws_clients", None):
         return f"Canvas '{slug}' found but no Web UI client is connected to render it."
 
     ok = server.broadcast_canvas_render_sync(html=row[2], title=row[1], slug=row[0])
