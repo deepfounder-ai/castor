@@ -1648,6 +1648,18 @@ const I = {
   copy:'M216,32H88A16,16,0,0,0,72,48V72H48A16,16,0,0,0,32,88V216a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V192h24a16,16,0,0,0,16-16V48A16,16,0,0,0,216,32ZM176,216H48V88H176ZM216,176H192V88a16,16,0,0,0-16-16H88V48H216Z',
   info:'M128,24A104,104,0,1,0,232,128,104.2,104.2,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z',
   heart:'M178,32c-20.7,0-38.7,8.9-50,23.9C116.7,40.9,98.7,32,78,32A62.1,62.1,0,0,0,16,94c0,70,103.8,126.7,108.2,129a8,8,0,0,0,7.6,0C136.2,220.7,240,164,240,94A62.1,62.1,0,0,0,178,32ZM128,206.8C109.7,196.2,32,147.4,32,94A46.1,46.1,0,0,1,78,48c19.5,0,35.9,10.4,42.7,27.1a8,8,0,0,0,14.6,0C142.1,58.4,158.5,48,178,48a46.1,46.1,0,0,1,46,46C224,147.3,146.3,196.2,128,206.8Z',
+  // Side panel — content area with a filled strip on the RIGHT,
+  // hollow content area on the LEFT. Used by the `canvas` skill to
+  // distinguish "open the right-side canvas panel" from "attach an
+  // image" (which uses the `image` icon).
+  //
+  // Single SVG path with two subpaths under nonzero fill-rule:
+  //   1. Outer rounded rect, CCW → filled (+1 winding)
+  //   2. Inner rect at (40,56)→(152,200), CW (right→down→left→up) →
+  //      subtracts (-1 winding), producing a hole in the left content
+  //      area. The right strip (152-216, 56-200) remains filled =
+  //      visually the "panel" the canvas opens into.
+  sidepanel:'M216,40H40A16,16,0,0,0,24,56V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM40,56H152V200H40Z',
 };
 const ico = (n, s = 14, extra = '') =>
   '<svg width="'+s+'" height="'+s+'" viewBox="0 0 256 256" fill="currentColor" style="display:inline-block;vertical-align:middle;flex-shrink:0" '+extra+'><path d="'+(I[n]||'')+'"/></svg>';
@@ -3675,7 +3687,7 @@ function renderRail() {
     { id: 'memory', icon: 'brain', label: 'Memory' },
     { id: 'scheduler', icon: 'clock', label: 'Routines' },
     { id: 'presets', icon: 'package', label: 'Presets' },
-    { id: 'canvases', icon: 'image', label: 'Canvases' },
+    { id: 'canvases', icon: 'sidepanel', label: 'Canvases' },
   ];
   const bottom = [{ id: 'settings', icon: 'settings', label: 'Settings' }];
   const navBtn = (it) =>
@@ -4074,7 +4086,7 @@ function renderChatView() {
   const tCanvases = state.threadCanvases || [];
   const canvasStrip = tCanvases.length
     ? '<div class="canvas-strip">' +
-        '<span class="canvas-strip-lbl">' + ico('image', 11, 'style="color:var(--fg-4)"') + ' Canvases this session</span>' +
+        '<span class="canvas-strip-lbl">' + ico('sidepanel', 11, 'style="color:var(--fg-4)"') + ' Canvases this session</span>' +
         tCanvases.slice().reverse().map((c, i) => {
           const isOpen = state.canvas && (
             (c.slug && state.canvas.slug === c.slug) ||
@@ -4084,7 +4096,7 @@ function renderChatView() {
           return '<button class="canvas-chip ' + (isOpen ? 'active' : '') +
               '" data-act="reopen-canvas" data-canvas-idx="' + (tCanvases.length - 1 - i) + '" ' +
               'title="' + esc(label) + (sub ? ' (' + esc(sub) + ')' : '') + '">' +
-            ico('image', 10) +
+            ico('sidepanel', 10) +
             '<span class="lbl">' + esc(label) + '</span>' +
             (sub ? '<span class="sub mono">' + esc(sub) + '</span>' : '') +
           '</button>';
@@ -4115,11 +4127,13 @@ function renderChatView() {
             //     the most recent one
             //   - nothing rendered this session → go to Canvases gallery
             // Highlighted "active" when state.canvas is set.
+            // Uses the `sidepanel` icon (NOT `image`) so it's visually
+            // distinct from the adjacent "attach image" button.
             '<button class="icon-btn ' + (state.canvas ? 'active' : '') +
               '" data-act="canvas-toggle-composer" title="' +
               (state.canvas ? 'Hide canvas panel' :
                 (tCanvases.length ? 'Re-open last canvas' : 'Open canvases gallery')) +
-              '">' + ico('image', 14) + '</button>' +
+              '">' + ico('sidepanel', 14) + '</button>' +
             voiceStateBadge +
             '<div class="vdivider" style="margin:0 6px"></div>' +
             '<span class="agent-pill">' + ico('bolt', 10) + ' Agent ' + ico('arrow', 8, 'style="transform:rotate(-90deg)"') + '</span>' +
@@ -4163,7 +4177,7 @@ function renderCanvasPanel() {
   const slug = c.slug ? '<span class="canvas-slug">' + esc(c.slug) + '</span>' : '';
   return '<aside class="canvas-panel">' +
     '<div class="canvas-head">' +
-      ico('image', 14, 'style="color:var(--fg-3)"') +
+      ico('sidepanel', 14, 'style="color:var(--fg-3)"') +
       '<h2>' + esc(title) + slug + '</h2>' +
       (c.slug
         ? '<button class="icon-btn" data-act="canvas-save" data-slug="' + esc(c.slug) + '" title="Save artifact">' + ico('download', 14) + '</button>'
@@ -6290,7 +6304,7 @@ function renderCanvasesView() {
           const updated = fmtTime(it.updated_at);
           return '<div class="preset-card" data-act="canvas-open" data-slug="' + esc(it.slug) + '" style="cursor:pointer">' +
             '<div class="stripe" style="background:' + c + '"></div>' +
-            '<div class="row1"><div class="p-icon" style="color:' + c + '">' + ico('image', 16) + '</div>' +
+            '<div class="row1"><div class="p-icon" style="color:' + c + '">' + ico('sidepanel', 16) + '</div>' +
             '<div style="flex:1"><div class="p-name">' + esc(it.title || it.slug) + '</div>' +
               '<div class="p-desc mono" style="font-size:11px;color:var(--fg-4)">' + esc(it.slug) + '</div></div></div>' +
             '<div class="p-foot">' +
@@ -6312,7 +6326,7 @@ function renderPalette() {
     { group: 'go', label: 'Go to Memory', icon: 'brain', act: () => go('memory'), kbd: ALT_MOD + ' M' },
     { group: 'go', label: 'Go to Routines', icon: 'clock', act: () => go('scheduler'), kbd: ALT_MOD + ' S' },
     { group: 'go', label: 'Go to Presets', icon: 'package', act: () => go('presets'), kbd: ALT_MOD + ' P' },
-    { group: 'go', label: 'Go to Canvases', icon: 'image', act: () => go('canvases') },
+    { group: 'go', label: 'Go to Canvases', icon: 'sidepanel', act: () => go('canvases') },
     { group: 'go', label: 'Go to Settings', icon: 'settings', act: () => go('settings'), kbd: ALT_MOD + ' ,' },
     { group: 'action', label: 'New thread', icon: 'plusSmall', act: () => newThread(), kbd: MOD + ' N' },
     { group: 'action', label: (state.inspectorOn ? 'Hide' : 'Show') + ' right-side inspector (token gauge, memories, tools)', icon: 'eye', act: () => { state.inspectorOn = !state.inspectorOn; render(); } },
