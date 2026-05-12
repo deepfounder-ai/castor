@@ -858,12 +858,34 @@ def run_loop(
         _finished = time.time()
         if ctx and getattr(ctx, "abort_event", None) and ctx.abort_event.is_set() and _final_status == "ok":
             _final_status = "aborted"
+        _is_aborted = (_final_status == "aborted")
+
+        # Flush partial assistant content as a message row so resume sees it
+        # in conversation history. On clean exit, agent.py's reply-save path
+        # handles this — skip here to avoid duplicates.
+        if _is_aborted and final_content:
+            try:
+                db.save_message(
+                    role="assistant",
+                    content=final_content,
+                    thread_id=_thread_id,
+                    meta={
+                        "interrupted": True,
+                        "run_id": _run_id,
+                        "partial_tokens": {
+                            "input": int(stats.input_tokens or 0),
+                            "output": int(stats.output_tokens or 0),
+                        },
+                    },
+                )
+            except Exception as e:
+                _log.debug(f"interrupt flush failed: {e}")
+
         _cost = None
         try:
             _cost = pricing.compute_cost(model, stats.input_tokens, stats.output_tokens)
         except Exception:
             pass
-        _is_aborted = (_final_status == "aborted")
         db.finalize_agent_run(
             run_id=_run_id,
             finished_at=(None if _is_aborted else _finished),
