@@ -275,6 +275,10 @@ main.canvas { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 }
 .tl-row:hover .tl-actions { opacity: 1; }
 .tl-row .tl-actions .icon-btn { width: 24px; height: 24px; }
+.tl-cost-row { display: flex; gap: 5px; margin-top: 3px; flex-wrap: wrap; }
+.tl-cost-chip { font-family: var(--font-mono); font-size: 10px; color: var(--fg-4); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 5px; }
+.tl-cost-usd { cursor: pointer; }
+.tl-cost-usd:hover { color: var(--accent); border-color: var(--accent); }
 .tl-foot {
   padding: 10px 14px; border-top: 1px solid var(--line);
   display: flex; align-items: center; gap: 8px;
@@ -1791,6 +1795,17 @@ const fmtTime = (ts) => {
   if (diff < 7) return d.toLocaleDateString('en', { weekday: 'short' });
   return d.toLocaleDateString('en', { month: 'short', day: 'numeric' });
 };
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return String(n);
+}
+function fmtCost(c) {
+  if (c == null) return '—';
+  if (c < 0.01) return '$' + c.toFixed(4);
+  return '$' + c.toFixed(2);
+}
 const toast = (text, kind) => {
   const MAX_TOASTS = 5;
   const DEDUP_MS = 500;
@@ -2852,7 +2867,14 @@ function patchThreadList() {
   el.replaceWith(next);
   // Re-wire thread row clicks on the new element
   next.querySelectorAll('[data-thread]').forEach(b => {
-    b.onclick = (e) => { if (e.target.closest('.tl-actions')) return; switchThread(b.dataset.thread); };
+    b.onclick = (e) => {
+      if (e.target.closest('.tl-actions')) return;
+      if (e.target.closest('[data-open-runs]')) return;
+      switchThread(b.dataset.thread);
+    };
+  });
+  next.querySelectorAll('[data-open-runs]').forEach(b => {
+    b.onclick = (e) => { e.stopPropagation(); openSessionRunsModal(b.dataset.openRuns, b.dataset.openRunsTitle); };
   });
   next.querySelectorAll('[data-act="new-thread"]').forEach(b => { b.onclick = newThread; });
   const search = next.querySelector('[data-search="thread"]');
@@ -3915,6 +3937,12 @@ function renderThreadList() {
         '<span class="tl-time">' + esc(fmtTime(t.updated_at || t.created_at)) + '</span>' +
       '</div>' +
       '<div class="tl-preview">' + esc(t.preview || t.last_message || '') + '</div>' +
+      ((t.input_tokens || t.output_tokens || t.cost_usd != null)
+        ? '<div class="tl-cost-row">' +
+            '<span class="tl-cost-chip" title="Tokens in/out">' + fmtTokens(t.input_tokens) + ' / ' + fmtTokens(t.output_tokens) + '</span>' +
+            '<span class="tl-cost-chip tl-cost-usd" title="Estimated cost" data-open-runs="' + esc(t.id) + '" data-open-runs-title="' + esc(t.name || '(untitled)') + '">' + fmtCost(t.cost_usd) + '</span>' +
+          '</div>'
+        : '') +
       '<div class="tl-actions">' +
         '<button class="icon-btn" data-thread-act="folder" data-id="' + esc(t.id) + '" title="Move to folder">' + ico('package', 12) + '</button>' +
         '<button class="icon-btn" data-thread-act="rename" data-id="' + esc(t.id) + '" title="Rename">' + ico('edit', 12) + '</button>' +
@@ -6784,7 +6812,15 @@ function wireEvents() {
     b.onclick = (e) => {
       // Don't switch when clicking inline action buttons
       if (e.target.closest('.tl-actions')) return;
+      // Don't switch when clicking the cost/runs chip
+      if (e.target.closest('[data-open-runs]')) return;
       switchThread(b.dataset.thread);
+    };
+  });
+  document.querySelectorAll('[data-open-runs]').forEach(b => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      openSessionRunsModal(b.dataset.openRuns, b.dataset.openRunsTitle);
     };
   });
   document.querySelectorAll('[data-thread-act]').forEach(b => {
