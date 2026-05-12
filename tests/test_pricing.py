@@ -223,3 +223,9 @@ def test_background_refresher_runs_when_on(qwe_temp_data_dir, monkeypatch):
     _p.start_background_refresher()
     _t.sleep(0.18)
     assert len(fired) >= 2  # at least two fires in ~150ms
+
+
+def test_pricing_settings_have_defaults(qwe_temp_data_dir):
+    import config as _c
+    assert _c.get("pricing_url").startswith("https://")
+    assert _c.get("pricing_auto_update") is True
