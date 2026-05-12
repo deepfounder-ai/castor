@@ -28,3 +28,50 @@ def test_get_price_unknown_model_returns_none(qwe_temp_data_dir):
 def test_compute_cost_unknown_returns_none(qwe_temp_data_dir):
     import pricing
     assert pricing.compute_cost("totally-fake-model-9000", 1000, 500) is None
+
+
+def test_kv_override_beats_bundled(qwe_temp_data_dir):
+    import json
+    import pricing
+    import db
+    db.kv_set("pricing_override_gpt-4o-mini",
+              json.dumps({"input": 9.99e-7, "output": 1.23e-6}))
+    # Force reload to make sure no memory cache shadows
+    pricing._pricing_cache = None
+    assert pricing.get_price("gpt-4o-mini", "input") == 9.99e-7
+    assert pricing.get_price("gpt-4o-mini", "output") == 1.23e-6
+
+
+def test_kv_override_invalid_json_warns_and_continues(qwe_temp_data_dir, caplog):
+    import pricing
+    import db
+    db.kv_set("pricing_override_gpt-4o-mini", "{not json")
+    pricing._pricing_cache = None
+    with caplog.at_level("WARNING"):
+        v = pricing.get_price("gpt-4o-mini", "input")
+    # falls through to bundled
+    assert v == pricing._BUNDLED_FALLBACK["gpt-4o-mini"]["input"]
+    assert any("invalid pricing_override" in r.message for r in caplog.records)
+
+
+def test_disk_cache_loaded_on_first_call(qwe_temp_data_dir):
+    import json
+    import pricing
+    pricing._pricing_cache = None  # force reload
+    pricing._cache_fetched_at = None
+    payload = {
+        "fetched_at": 1700000000.0,
+        "source_url": "test",
+        "models": {"my-custom-model": {"input": 1e-6, "output": 2e-6}},
+    }
+    pricing._cache_path().write_text(json.dumps(payload))
+    assert pricing.get_price("my-custom-model", "input") == 1e-6
+    assert pricing.last_updated() == 1700000000.0
+
+
+def test_corrupt_cache_file_falls_back_gracefully(qwe_temp_data_dir):
+    import pricing
+    pricing._pricing_cache = None
+    pricing._cache_path().write_text("{ malformed ")
+    # Should not raise; falls back to bundled
+    assert pricing.get_price("gpt-4o-mini", "input") > 0
