@@ -352,6 +352,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     scheduler.start()
+    # Start pricing background refresher
+    try:
+        import pricing
+        pricing.start_background_refresher()
+    except Exception as e:
+        _log.warning(f"pricing startup: {e}")
     # Start MCP servers
     try:
         mcp_client.start_all()
