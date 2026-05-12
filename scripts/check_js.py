@@ -34,7 +34,7 @@ HTML_PATH = ROOT / "static" / "index.html"
 # captured in group 1. DOTALL so `.` spans newlines; non-greedy so we don't
 # glue multiple blocks together.
 _SCRIPT_RE = re.compile(
-    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>",
+    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script[^>]*>",
     re.DOTALL | re.IGNORECASE,
 )
 

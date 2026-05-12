@@ -337,6 +337,14 @@ def _fts_escape(query: str) -> str:
     return " ".join(f'"{w}"' for w in words if w.strip())
 
 
+_SAFE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _safe_ident(name: str) -> bool:
+    """Return True iff *name* is a safe SQL identifier (alpha/underscore start, alphanumeric/underscore body)."""
+    return bool(_SAFE_IDENT_RE.match(name))
+
+
 def fts_upsert(table: str, id_col: str, id_val: str, fields: dict):
     """Insert or replace a row in an FTS5 table.
 
@@ -345,18 +353,26 @@ def fts_upsert(table: str, id_col: str, id_val: str, fields: dict):
     """
     if table not in ("fts_rag", "fts_memory"):
         return
+    # Validate identifier names to prevent injection via column names
+    if not _safe_ident(id_col):
+        _log.warning("fts_upsert: unsafe id_col rejected: %r", id_col)
+        return
+    for col in fields:
+        if not _safe_ident(col):
+            _log.warning("fts_upsert: unsafe column name rejected: %r", col)
+            return
     try:
         conn = _get_conn()
         # Delete existing row with this id
         conn.execute(
-            f"DELETE FROM {table} WHERE {id_col} = ?", (id_val,)
+            f"DELETE FROM {table} WHERE {id_col} = ?", (id_val,)  # noqa: S608 — table/id_col validated above
         )
         # Build INSERT
         cols = [id_col] + list(fields.keys())
         vals = [id_val] + list(fields.values())
         placeholders = ",".join("?" for _ in cols)
         col_names = ",".join(cols)
-        conn.execute(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})", vals)
+        conn.execute(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})", vals)  # noqa: S608
         conn.commit()
     except Exception as e:
         _log.debug(f"fts_upsert({table}) failed: {e}")

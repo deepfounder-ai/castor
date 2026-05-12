@@ -922,11 +922,11 @@ def uninstall(preset_id: str) -> None:
 
         # Also delete by file_path — full cleanup (Qdrant chunks + SQLite kv tracking)
         import rag
-        k_dir = d / "knowledge"
+        k_dir = d / "knowledge"  # lgtm[py/path-injection] — d validated by _is_within(d_resolved, PRESETS_DIR) above
         if k_dir.exists():
             for f in k_dir.rglob("*"):
                 if f.is_file():
-                    rag.delete_file(str(f.resolve()))
+                    rag.delete_file(str(f.resolve()))  # lgtm[py/path-injection]
     except Exception as e:
         _log.warning(f"uninstall: knowledge cleanup failed: {e}")
 
@@ -946,7 +946,7 @@ def uninstall(preset_id: str) -> None:
 
     # Remove on-disk contents
     if d.exists():
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)  # lgtm[py/path-injection] — d validated by _is_within(d_resolved, PRESETS_DIR) above
 
     # Remove DB row
     db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
@@ -1127,7 +1127,7 @@ def ensure_preset_workspace(preset_id: str) -> None:
     # Switch workspace
     p_dir = preset_dir(preset_id)
     p_workspace = p_dir / "workspace"
-    p_workspace.mkdir(exist_ok=True)
+    p_workspace.mkdir(exist_ok=True)  # lgtm[py/path-injection] — p_dir is preset_dir(preset_id); preset_id validated by _ensure_id
     if config.WORKSPACE_DIR != p_workspace:
         if not db.kv_get("preset_original_workspace"):
             db.kv_set("preset_original_workspace", str(config.WORKSPACE_DIR))
@@ -1281,14 +1281,14 @@ def _index_knowledge(preset_id: str, manifest: dict) -> None:
         if not pth:
             continue
         try:
-            full = (base / pth).resolve()
+            full = (base / pth).resolve()  # lgtm[py/path-injection] — validated by _is_within(full, base_resolved) below
         except Exception:
             _log.warning(f"knowledge path unresolvable: {pth}")
             continue
         if not _is_within(full, base_resolved):
             _log.error(f"knowledge path escapes preset dir: {pth}")
             continue
-        if not full.exists():
+        if not full.exists():  # lgtm[py/path-injection]
             _log.debug(f"knowledge path missing: {full}")
             continue
         try:

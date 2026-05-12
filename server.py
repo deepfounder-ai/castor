@@ -462,10 +462,26 @@ app = FastAPI(title="qwe-qwe", version="0.3.0", lifespan=lifespan)
 # ── Optional auth (set QWE_PASSWORD env to enable) ──
 _AUTH_PASSWORD = os.environ.get("QWE_PASSWORD", "")
 _AUTH_COOKIE = "qwe_auth"
-_AUTH_TOKEN = hashlib.sha256(f"qwe-auth-{_AUTH_PASSWORD}".encode()).hexdigest()[:32] if _AUTH_PASSWORD else ""
+# Use HMAC-SHA256 so the token derivation is domain-separated and resistant
+# to length-extension attacks. SHA256 alone is fine for tokens (not stored
+# password hashes), but HMAC is the better practice here.
+_AUTH_TOKEN = (
+    hmac.new(b"qwe-auth-v1", _AUTH_PASSWORD.encode(), hashlib.sha256).hexdigest()[:32]
+    if _AUTH_PASSWORD else ""
+)
 
 # Max upload size (10 MB)
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+# ── Error message sanitisation ──────────────────────────────────────────────
+# Strip filesystem paths from exception messages before returning them in HTTP
+# responses to avoid leaking internal directory structure to clients.
+_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s,;:\"'<>()]+|/(?:home|root|Users|var|tmp|usr|etc)/[^\s,;:\"'<>()]+")
+
+
+def _sanitize_err(e: Exception) -> str:
+    """Return *str(e)* with filesystem paths replaced by '[path]'."""
+    return _PATH_RE.sub("[path]", str(e))
 
 # ── Rate limiting (in-memory, per-IP) ──
 _rate_log: dict[str, list[float]] = {}  # ip -> [timestamps]
@@ -760,7 +776,7 @@ async def transcribe_audio(request: Request):
         )
     except Exception as e:
         _log.error(f"transcription error: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
 
     if text.startswith("[STT Error]"):
         return JSONResponse({"error": text}, status_code=500)
@@ -842,7 +858,7 @@ async def install_whisper():
             return {"ok": True, "message": "faster-whisper installed successfully"}
         return {"ok": False, "error": proc.stderr[:500]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _sanitize_err(e)}
 
 
 @app.get("/api/voice/mode")
@@ -1020,7 +1036,7 @@ async def trigger_update():
             result = updater.perform_update(on_progress=on_progress)
             _update_status["result"] = result
         except Exception as e:
-            _update_status["result"] = {"success": False, "error": str(e)}
+            _update_status["result"] = {"success": False, "error": _sanitize_err(e)}
         finally:
             _update_status["running"] = False
 
@@ -1251,10 +1267,14 @@ async def history(limit: int = 20, thread_id: str | None = None):
 @app.get("/api/logs")
 async def logs(file: str = "qwe-qwe.log", lines: int = 50):
     """Tail log files."""
+    # Whitelist allowed filenames — only .log files, no path separators
+    import re as _re_mod
+    if not _re_mod.match(r"^[\w\-]+\.log$", file):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
     logs_dir = config.LOGS_DIR.resolve()
     log_path = (logs_dir / file).resolve()
-    # Prevent path traversal
-    if not str(log_path).startswith(str(logs_dir)):
+    # Prevent path traversal using is_relative_to (stricter than startswith)
+    if not log_path.is_relative_to(logs_dir):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if not log_path.exists():
         return {"lines": []}
@@ -1379,7 +1399,7 @@ async def memory_save_direct(data: dict):
                              dedup=True, chunk=chunk, synth=True)
     except Exception as e:
         _log.warning(f"manual memory save failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
     return {"ok": True, "id": point_id, "tag": tag}
 
 
@@ -2115,7 +2135,7 @@ def _run_knowledge_index(task_id: int, files: list[dict], tags: list[str] | None
         errors = [r for r in results if r.get("status") not in ("indexed", "already up to date")]
     except Exception as e:
         _log.error(f"knowledge indexing failed: {e}", exc_info=True)
-        errors.append({"error": str(e)})
+        errors.append({"error": _sanitize_err(e)})
 
     # Calculate totals
     total_chunks = sum(r.get("chunks", 0) for r in results)
@@ -2177,9 +2197,9 @@ async def file_browse(request: Request):
     try:
         p = _validate_home_path(raw_path)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=403)
     except FileNotFoundError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=404)
 
     if not p.is_dir():
         # If it's a file, return its parent directory
@@ -2341,7 +2361,7 @@ async def blog_feed():
             stale = list(_feed_cache["items"])
             stale_ts = _feed_cache["fetched_at"]
         return {"items": stale, "cached": False, "fetched_at": stale_ts,
-                "error": str(e)[:200]}
+                "error": _sanitize_err(e)[:200]}
 
 
 # ── Canvas artifacts (saved dashboards / forms / mockups) ──────────────
@@ -2524,12 +2544,12 @@ async def presets_install(request: Request):
     except FileExistsError as e:
         _log.info(f"preset install: already exists: {e}")
         return JSONResponse(
-            {"error": str(e), "code": "already_installed"},
+            {"error": _sanitize_err(e), "code": "already_installed"},
             status_code=409,
         )
     except Exception as e:
         _log.error(f"preset install failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
     finally:
         try:
             staged.path.unlink(missing_ok=True)
@@ -2547,7 +2567,7 @@ async def presets_activate(preset_id: str):
         return presets.activate(preset_id)
     except Exception as e:
         _log.error(f"preset activate failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
 
 
 @app.get("/api/presets/{preset_id}")
@@ -2567,7 +2587,7 @@ async def presets_delete(preset_id: str):
         presets.uninstall(preset_id)
     except Exception as e:
         _log.error(f"preset uninstall failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
     return {"ok": True, "id": preset_id}
 
 
@@ -2602,9 +2622,9 @@ async def knowledge_scan(data: dict):
     try:
         p = _validate_home_path(path)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=403)
     except FileNotFoundError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=404)
 
     recursive = data.get("recursive", True)
     result = rag.scan_path(str(p), recursive=recursive)
@@ -2879,7 +2899,7 @@ async def knowledge_search(data: dict):
         results = rag.search(query, limit=limit, tags=tags)
         return {"results": results}
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
 
 
 @app.delete("/api/knowledge/file")
@@ -3294,7 +3314,7 @@ async def websocket_chat(ws: WebSocket):
                     fname_safe = re.sub(r'[^\w.\-]+', '_', Path(fname_raw).name)[:80] or "file.txt"
                     ext = Path(fname_safe).suffix or ".txt"
                     stem = Path(fname_safe).stem
-                    doc_file = UPLOADS_DIR / f"{doc_id}_{stem}{ext}"
+                    doc_file = UPLOADS_DIR / f"{doc_id}_{stem}{ext}"  # lgtm[py/path-injection] — fname_safe uses Path.name + regex, path is under UPLOADS_DIR
                     doc_file.write_bytes(base64.b64decode(document["file_b64"]))
                     file_name = fname_raw
                     file_path = str(doc_file.resolve())
@@ -3688,7 +3708,7 @@ async def mcp_add_server(request: Request):
     # Auto-start if enabled
     if data.get("enabled", True):
         result = mcp_client.start_server(name)
-        return {"ok": True, "message": result}
+        return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
     return {"ok": True, "message": f"MCP '{name}' saved (disabled)"}
 
 
@@ -3702,7 +3722,7 @@ async def mcp_remove_server(name: str):
 async def mcp_restart_server(name: str):
     """Restart an MCP server connection."""
     result = mcp_client.start_server(name)
-    return {"ok": True, "message": result}
+    return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
 
 
 @app.post("/api/mcp/servers/{name}/toggle")
@@ -3719,7 +3739,7 @@ async def mcp_toggle_server(name: str, request: Request):
         result = mcp_client.start_server(name)
     else:
         result = mcp_client.stop_server(name)
-    return {"ok": True, "message": result}
+    return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
 
 
 @app.get("/api/telegram/status")

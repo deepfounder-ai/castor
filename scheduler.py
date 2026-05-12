@@ -182,9 +182,11 @@ _DRY_RUN_ERROR_MARKERS = [
     "\nerrno ", "importerror:",
 ]
 
-# Patterns that look like errors only at line start or after newline
+# Patterns that look like errors only at line start or after newline.
+# Use MULTILINE so ^ anchors to each line; avoid (?:^|\n)\s* which can
+# cause O(n²) backtracking on inputs with many leading whitespace chars.
 _DRY_RUN_ERROR_PATTERNS = re.compile(
-    r"(?:^|\n)\s*(?:error:|http error:|fatal:|exception:)", re.IGNORECASE
+    r"^[ \t]*(?:error:|http error:|fatal:|exception:)", re.IGNORECASE | re.MULTILINE
 )
 
 
@@ -319,7 +321,7 @@ def _parse_schedule(schedule: str) -> tuple:
 
     # Weekly: "weekdays HH:MM", "weekends HH:MM", "mon HH:MM",
     # "mon,wed,fri HH:MM". Aliases expand before day parsing.
-    m = re.match(r"([a-z,а-яё]+)\s+(\d{1,2}):(\d{2})$", s)
+    m = re.match(r"([a-z,а-яё]{1,50})\s+(\d{1,2}):(\d{2})$", s)
     if m:
         days_spec = _DOW_ALIASES.get(m.group(1), m.group(1))
         h, mi = int(m.group(2)), int(m.group(3))

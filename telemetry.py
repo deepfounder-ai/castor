@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
@@ -883,30 +884,40 @@ def track_feature_first_use(feature: str) -> bool:
 def provider_kind_from_url(url: str | None) -> str:
     """URL-based heuristic to classify a provider when only the URL is known.
 
-    Substring match on host. Falls through to "unknown" when nothing matches —
-    we never want to send a URL fragment off-machine, even if classification
-    fails. This is a defense-in-depth mapping for callers that don't have
-    access to the provider name.
+    Uses hostname matching via urlparse so that a URL like
+    ``https://evil.com/openai.com`` doesn't get misclassified as "openai".
+    Falls through to "unknown" when nothing matches — we never want to send
+    a URL fragment off-machine, even if classification fails.
     """
     if not url:
         return "unknown"
-    u = url.lower()
-    if "openai.com" in u:
+    try:
+        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return "unknown"
+    # Hostname suffix checks: prevent "evil.openai.com.attacker.com" false-matches
+    def _host_matches(*domains: str) -> bool:
+        return any(host == d or host.endswith(f".{d}") for d in domains)
+
+    if _host_matches("openai.com", "api.openai.com"):
         return "openai"
-    if "openrouter.ai" in u:
+    if _host_matches("openrouter.ai"):
         return "openrouter"
-    if "groq.com" in u:
+    if _host_matches("groq.com", "api.groq.com"):
         return "groq"
-    if "together.xyz" in u or "together.ai" in u:
+    if _host_matches("together.xyz", "together.ai", "api.together.ai"):
         return "together"
-    if "deepseek.com" in u:
+    if _host_matches("deepseek.com", "api.deepseek.com"):
         return "deepseek"
-    if "azure.com" in u or "azure-api.net" in u or ".azureml." in u:
+    if _host_matches("azure.com", "azure-api.net") or ".azureml." in host:
         return "azure"
-    if "amazonaws.com" in u or "bedrock" in u:
+    if _host_matches("amazonaws.com") or "bedrock" in host:
         return "bedrock"
-    if "11434" in u:
+    # Port-based heuristics for local providers
+    port = parsed.port
+    if port == 11434 or host in ("localhost", "127.0.0.1") and port == 11434:
         return "ollama"
-    if "1234" in u or "localhost:1234" in u:
+    if port == 1234 or host in ("localhost", "127.0.0.1") and port == 1234:
         return "lmstudio"
     return "unknown"
