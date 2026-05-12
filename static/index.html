@@ -285,6 +285,7 @@ main.canvas { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .tl-topline-sel { font-size: 11px; font-family: var(--font-mono); background: var(--bg-inspector); border: 1px solid var(--line-2); color: var(--fg-2); border-radius: 4px; padding: 2px 6px; }
 .tl-topline-refresh { font-size: 10.5px; font-family: var(--font-mono); background: var(--surface); border: 1px solid var(--line-2); color: var(--fg-3); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
 .tl-topline-refresh:hover { border-color: var(--accent); color: var(--accent); }
+.routine-cost-chip { font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 6px; margin-left: auto; flex-shrink: 0; }
 .tl-foot {
   padding: 10px 14px; border-top: 1px solid var(--line);
   display: flex; align-items: center; gap: 8px;
@@ -3460,6 +3461,8 @@ async function loadCron(opts) {
     // every 2s. Full render() would blow them away.
     if (opts.silent) patchThreadHeader();
     else render();
+    // Load per-routine 30d costs on non-silent scheduler view loads
+    if (!opts.silent && state.view === 'scheduler') loadRoutineCosts();
   } catch { state.cronJobs = []; if (!opts.silent) render(); }
   if (!opts.silent) {
     try {
@@ -3468,6 +3471,28 @@ async function loadCron(opts) {
       render();
     } catch {}
   }
+}
+
+async function loadRoutineCosts() {
+  const jobs = state.cronJobs || [];
+  if (!jobs.length) return;
+  const since = (Date.now() / 1000) - 30 * 86400;
+  const costs = {};
+  for (var i = 0; i < jobs.length; i++) {
+    var id = jobs[i].id;
+    try {
+      var r = await fetch('/api/routines/' + encodeURIComponent(id) + '/runs?limit=500');
+      var runs = await r.json();
+      if (!Array.isArray(runs)) runs = runs.runs || runs.items || [];
+      costs[id] = runs
+        .filter(function(x) { return (x.started_at || 0) >= since; })
+        .reduce(function(s, x) { return s + (x.cost_usd || 0); }, 0);
+    } catch (e) {
+      costs[id] = null;
+    }
+  }
+  state.routineCosts = costs;
+  render();
 }
 
 // Surgical thread-header swap — used by the routine-thread poll so the
@@ -5090,6 +5115,9 @@ function renderSchedulerView() {
         const isPaused = j.status === 'paused';
         const cardStyle = 'cursor:' + (hasThread ? 'pointer' : 'default') + ';' +
                           (isPaused ? 'opacity:0.55;' : '');
+        const rc = state.routineCosts || {};
+        const jobCost = rc[j.id] !== undefined ? rc[j.id] : null;
+        const costChip = '<span class="routine-cost-chip" title="Cost (last 30 days)">30d: ' + fmtCost(jobCost) + '</span>';
         return '<div class="job-card"' + (hasThread ? ' data-open-thread="' + esc(j.threadId) + '"' : '') + ' style="' + cardStyle + '">' +
           '<div class="job-hdr"><div style="flex:1">' +
             '<div class="job-title-row">' +
@@ -5106,8 +5134,8 @@ function renderSchedulerView() {
               '<button class="icon-btn" data-cron="' + esc(j.id) + '" data-cron-act="delete" title="Delete routine (archives the thread)">' + ico('trash', 11) + '</button>' +
             '</div></div>' +
           (j.last
-            ? '<div style="font-size:11px;color:' + (errLast ? 'var(--err)' : 'var(--fg-4)') + ';margin-top:6px;font-family:var(--font-mono)">last ' + esc(j.last) + ' · ' + (j.runs||0).toLocaleString() + ' runs</div>'
-            : '<div style="font-size:11px;color:var(--fg-5);margin-top:6px;font-family:var(--font-mono)">not run yet</div>') +
+            ? '<div style="font-size:11px;color:' + (errLast ? 'var(--err)' : 'var(--fg-4)') + ';margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">last ' + esc(j.last) + ' · ' + (j.runs||0).toLocaleString() + ' runs' + costChip + '</div>'
+            : '<div style="font-size:11px;color:var(--fg-5);margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">not run yet' + costChip + '</div>') +
           // Sparkline of last 20 fires — one dot per attempt, colored
           // by status. Shows missed (server-offline) runs alongside
           // ok/err so users see the real timeline.
