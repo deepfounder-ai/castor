@@ -434,6 +434,7 @@ def run_loop(
         cron_id=(ctx.cron_id if ctx else None),
         model=model,
         provider=_provider,
+        resumed_from_run_id=(ctx.resumed_from_run_id if ctx else None),  # NEW
     )
     _final_status = "ok"
     _final_error: str | None = None

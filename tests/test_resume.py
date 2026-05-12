@@ -263,3 +263,69 @@ def test_crash_recovery_idempotent_no_running_rows(qwe_temp_data_dir):
     from server import _recover_interrupted_runs_on_startup
     # Should not raise
     _recover_interrupted_runs_on_startup()
+
+
+def test_resume_interrupted_run_happy(qwe_temp_data_dir, mock_llm):
+    import agent
+    import db
+    import time
+    original = db.insert_agent_run(thread_id="t-resume", source="web",
+                                    started_at=time.time(), status="running")
+    db.finalize_agent_run(original, finished_at=None, duration_ms=None,
+                           status="aborted",
+                           result_preview="I'll start by searching...")
+    agent.resume_interrupted_run(original)
+    # A new run row exists with resumed_from_run_id = original
+    new_run = db._get_conn().execute(
+        "SELECT id, status FROM agent_runs WHERE resumed_from_run_id=?", (original,)
+    ).fetchone()
+    assert new_run is not None
+    # The new run should have finished (ok or err depending on mock_llm)
+    assert new_run[1] in ("ok", "err", "aborted")
+
+
+def test_resume_dismissed_run_raises(qwe_temp_data_dir):
+    import agent
+    import db
+    import time
+    rid = db.insert_agent_run(thread_id="t1", source="web",
+                               started_at=time.time(), status="running")
+    db.finalize_agent_run(rid, finished_at=None, duration_ms=None, status="aborted")
+    db.dismiss_run(rid)
+    with pytest.raises(ValueError, match="dismissed"):
+        agent.resume_interrupted_run(rid)
+
+
+def test_resume_unknown_run_raises(qwe_temp_data_dir):
+    import agent
+    with pytest.raises(ValueError, match="not found"):
+        agent.resume_interrupted_run(99999)
+
+
+def test_resume_already_resumed_raises(qwe_temp_data_dir, mock_llm):
+    import agent
+    import db
+    import time
+    original = db.insert_agent_run(thread_id="t1", source="web",
+                                    started_at=time.time(), status="running")
+    db.finalize_agent_run(original, finished_at=None, duration_ms=None, status="aborted")
+    # First resume succeeds
+    agent.resume_interrupted_run(original)
+    # Second attempt fails
+    with pytest.raises(ValueError, match="already resumed"):
+        agent.resume_interrupted_run(original)
+
+
+def test_resume_cannot_resume_a_resume_run(qwe_temp_data_dir, mock_llm):
+    """A row that is itself a resume run (resumed_from_run_id NOT NULL)
+    cannot be resumed."""
+    import agent
+    import db
+    import time
+    # Manually create a "resume run" (would normally come from agent.run via ctx)
+    rid = db.insert_agent_run(thread_id="t1", source="web",
+                               started_at=time.time(), status="running",
+                               resumed_from_run_id=999)
+    db.finalize_agent_run(rid, finished_at=None, duration_ms=None, status="aborted")
+    with pytest.raises(ValueError, match="resume run"):
+        agent.resume_interrupted_run(rid)

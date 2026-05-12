@@ -1359,6 +1359,76 @@ def run(user_input: "str | None", thread_id: str | None = None,
                       system_note=system_note)
 
 
+def resume_interrupted_run(
+    run_id: int, ctx: "TurnContext | None" = None
+) -> "TurnResult":
+    """Resume a previously interrupted agent run.
+
+    Loads run metadata, validates the run is resumable, builds (or reuses)
+    a TurnContext carrying the original source / cron_id, and fires a
+    normal agent.run() with a one-shot system_note nudging the model to
+    continue. The conversation history (loaded inside agent.run via
+    db.list_messages) already contains the partial assistant message
+    flushed at abort time, so the model sees its own incomplete output
+    plus the system_note instruction.
+
+    Raises:
+        ValueError: if the run is unknown, dismissed, itself a resume run,
+                    or has already been resumed from.
+    """
+    import db as _db
+    import turn_context as _tc
+
+    conn = _db._get_conn()
+    row = conn.execute(
+        "SELECT thread_id, source, cron_id, dismissed_at, resumed_from_run_id "
+        "FROM agent_runs WHERE id=?",
+        (int(run_id),),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"run #{run_id} not found")
+    thread_id, source, cron_id, dismissed_at, already_resume = row
+    if dismissed_at is not None:
+        raise ValueError(f"run #{run_id} was dismissed")
+    if already_resume is not None:
+        raise ValueError(f"run #{run_id} is itself a resume run")
+
+    # Reverse-lookup: was this run already resumed from by something later?
+    referenced_by = conn.execute(
+        "SELECT id FROM agent_runs WHERE resumed_from_run_id = ?",
+        (int(run_id),),
+    ).fetchone()
+    if referenced_by:
+        raise ValueError(
+            f"run #{run_id} already resumed by run #{referenced_by[0]}"
+        )
+
+    # NOTE: do NOT block CLI source here. Trigger layer (Web banner / Telegram
+    # /resume) filters by source; direct executor calls (tests, tooling)
+    # accept any source.
+
+    if ctx is None:
+        ctx = _tc.TurnContext(
+            source=source,
+            cron_id=cron_id,
+            session_id=f"resume-{run_id}",
+        )
+    ctx.resumed_from_run_id = int(run_id)
+
+    return run(
+        user_input=None,
+        system_note=(
+            "The previous turn was interrupted before completing. "
+            "Continue from where you left off — do not restart, do not "
+            "repeat tool calls that already ran. If your prior partial "
+            "reply was on the right track, pick up the thread."
+        ),
+        thread_id=thread_id,
+        ctx=ctx,
+        source=source,
+    )
+
+
 def _run_inner(user_input: "str | None", thread_id: str | None,
                source: str, image_b64: str | None,
                model_override: str | None = None,
