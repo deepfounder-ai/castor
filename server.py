@@ -3070,6 +3070,12 @@ async def thread_stats(thread_id: str):
     }
 
 
+@app.get("/api/threads/{thread_id}/runs")
+async def get_thread_runs(thread_id: str, limit: int = 50, offset: int = 0):
+    """Per-thread agent run history, newest first."""
+    return db.get_runs_for_thread(thread_id, limit=limit, offset=offset)
+
+
 @app.post("/api/threads/{thread_id}/model")
 async def set_thread_model(thread_id: str, request: Request):
     """Set a model override for a specific thread."""
