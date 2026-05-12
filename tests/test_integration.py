@@ -524,3 +524,27 @@ def test_synthesis_call_writes_agent_runs_row(qwe_temp_data_dir, monkeypatch):
 
     rows = [r for r in db.get_runs_for_thread("t-syn") if r["source"] == "synthesis"]
     assert len(rows) >= 1, "expected at least one agent_runs row with source='synthesis'"
+
+
+def test_compaction_folds_into_parent_run(monkeypatch, qwe_temp_data_dir):
+    """Internal compaction calls inside agent_loop should NOT create separate
+    agent_runs rows — they're folded into the parent turn's totals."""
+    import agent
+    import db
+    import providers
+
+    fake = FakeStreamingClient(reply="ok")
+    monkeypatch.setattr(providers, "get_client", lambda: fake, raising=False)
+    monkeypatch.setattr(providers, "get_model", lambda: "fake-model", raising=False)
+    monkeypatch.setattr(providers, "get_active_name", lambda: "fake", raising=False)
+
+    for _ in range(5):
+        agent.run("hi", thread_id="compact-test", source="cli")
+
+    rows = db.get_runs_for_thread("compact-test")
+    # 5 turns → 5 rows. Compaction internal LLM calls should NOT add new rows.
+    assert len(rows) == 5, (
+        f"expected exactly 5 agent_runs rows for 5 turns, got {len(rows)}. "
+        "Compaction calls may be creating extra rows instead of folding into "
+        "the parent run."
+    )
