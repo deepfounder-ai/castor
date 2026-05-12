@@ -3287,6 +3287,29 @@ async def regenerate_turn(thread_id: str):
 
 # ── WebSocket chat ──
 
+async def _check_for_resumable_interrupt(ws: WebSocket, thread_id: str) -> None:
+    """Probe for one resumable aborted run in this thread; emit event on hit."""
+    try:
+        ttl = float(config.get("resume_ttl_web_sec") or 604800)
+    except Exception:
+        ttl = 604800
+    row = db.get_resumable_run_for_thread(thread_id, source_filter=None, ttl_sec=ttl)
+    if not row or row.get("source") == "cli":
+        return
+    try:
+        await ws.send_json({
+            "event": "interrupted_turn",
+            "run_id": row["id"],
+            "started_at": row["started_at"],
+            "preview": row.get("result_preview") or "",
+            "model": row.get("model"),
+            "source": row.get("source"),
+            "thread_id": thread_id,
+        })
+    except Exception as e:
+        _log.debug(f"interrupted_turn send failed: {e}")
+
+
 async def _ws_send_safe(ws: WebSocket, data: dict) -> bool:
     """Send JSON to a WebSocket, returning False if the connection is dead."""
     try:
@@ -3321,6 +3344,9 @@ async def websocket_chat(ws: WebSocket):
         _ws_abort_events.add(my_abort_event)
     _ws_loop = asyncio.get_event_loop()
     _log.info(f"websocket client connected ({len(_ws_clients)} total)")
+
+    # Emit interrupted_turn event if the active thread has an eligible aborted run.
+    await _check_for_resumable_interrupt(ws, threads.get_active_id() or "default")
 
     try:
         while True:
