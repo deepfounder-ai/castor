@@ -67,3 +67,66 @@ def test_get_routine_budget_set(qwe_temp_data_dir):
     cron_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     b = db.get_routine_budget(cron_id)
     assert b == {"cap": 1.50, "period_sec": 3600}
+
+
+def test_scheduler_skips_fire_when_budget_exceeded(qwe_temp_data_dir, mock_llm):
+    import db
+    import scheduler
+    conn = db._get_conn()
+    conn.execute(
+        "INSERT INTO scheduled_tasks (name, task, schedule, next_run, enabled, "
+        " budget_usd_cap, budget_period_sec) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("test", "do something", "0 9 * * *", time.time() + 3600, 1, 0.50, 86400),
+    )
+    conn.commit()
+    cron_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # Pre-populate $0.60 of spend — over the $0.50 cap
+    for _ in range(2):
+        rid = db.insert_agent_run(thread_id="t1", cron_id=cron_id, source="routine",
+                                   started_at=time.time(), status="running")
+        db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
+                               status="ok", input_tokens=100, output_tokens=50,
+                               cost_usd=0.30)
+
+    scheduler._execute_routine(
+        task_desc="do something", routine_name="test", cron_id=cron_id,
+        thread_id="t1", scheduled_at=time.time(),
+    )
+
+    # Most recent agent_runs row should be a skipped row with budget_exceeded
+    row = db._get_conn().execute(
+        "SELECT status, error FROM agent_runs WHERE cron_id=? "
+        "ORDER BY id DESC LIMIT 1",
+        (cron_id,)
+    ).fetchone()
+    assert row[0] == "skipped"
+    assert "budget" in (row[1] or "").lower()
+
+
+def test_scheduler_fires_normally_when_under_budget(qwe_temp_data_dir, mock_llm):
+    import db
+    import scheduler
+    conn = db._get_conn()
+    conn.execute(
+        "INSERT INTO scheduled_tasks (name, task, schedule, next_run, enabled, "
+        " budget_usd_cap, budget_period_sec) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("test", "do something", "0 9 * * *", time.time() + 3600, 1, 10.00, 86400),
+    )
+    conn.commit()
+    cron_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # No spend yet — fire should proceed
+    scheduler._execute_routine(
+        task_desc="do something", routine_name="test", cron_id=cron_id,
+        thread_id="t1", scheduled_at=time.time(),
+    )
+
+    row = db._get_conn().execute(
+        "SELECT status FROM agent_runs WHERE cron_id=? ORDER BY id DESC LIMIT 1",
+        (cron_id,)
+    ).fetchone()
+    # Should NOT be skipped — actual run happens (status='ok' or 'err' via mock)
+    assert row[0] != "skipped"
