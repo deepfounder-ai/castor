@@ -329,3 +329,32 @@ def test_resume_cannot_resume_a_resume_run(qwe_temp_data_dir, mock_llm):
     db.finalize_agent_run(rid, finished_at=None, duration_ms=None, status="aborted")
     with pytest.raises(ValueError, match="resume run"):
         agent.resume_interrupted_run(rid)
+
+
+def test_scheduler_auto_resumes_routine_within_window(qwe_temp_data_dir, mock_llm):
+    """Aborted routine run within 5-min window -> auto-resume fired."""
+    import db
+    import scheduler
+    rid = db.insert_agent_run(thread_id="t-routine", cron_id=42, source="routine",
+                               started_at=time.time(), status="running")
+    db.finalize_agent_run(rid, finished_at=None, duration_ms=None, status="aborted")
+    scheduler.detect_missed_runs()
+    fwd = db._get_conn().execute(
+        "SELECT id FROM agent_runs WHERE resumed_from_run_id=?", (rid,)
+    ).fetchone()
+    assert fwd is not None  # auto-resume fired
+
+
+def test_scheduler_skips_old_routine_runs(qwe_temp_data_dir, mock_llm):
+    """Aborted routine run older than 5 min -> NOT resumed."""
+    import db
+    import scheduler
+    long_ago = time.time() - 1000  # > 5 min (300 s)
+    rid = db.insert_agent_run(thread_id="t-routine", cron_id=42, source="routine",
+                               started_at=long_ago, status="running")
+    db.finalize_agent_run(rid, finished_at=None, duration_ms=None, status="aborted")
+    scheduler.detect_missed_runs()
+    fwd = db._get_conn().execute(
+        "SELECT id FROM agent_runs WHERE resumed_from_run_id=?", (rid,)
+    ).fetchone()
+    assert fwd is None
