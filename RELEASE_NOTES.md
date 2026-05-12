@@ -1,168 +1,167 @@
-# v0.18.6 — Hardware support: serial / USB-COM (scales, scanners, GPS, label printers, PLCs)
+# v0.18.7 — Canvas (sandboxed HTML side panel) + Skill import (skills.sh / Anthropic SKILL.md spec)
 
-The headline of this release is **first-class hardware integration** via the new built-in **`serial_port`** skill. qwe-qwe runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your warehouse floor; qwe-qwe can. This release closes that gap.
+Two big features land together because they're the same idea from opposite directions: **richer output → user** (Canvas), and **more capabilities ← community** (Skill import). Plus a Tools & skills tab rebuild so the growing skill list stays usable.
 
-Cross-platform via `pyserial`: same API on **Windows** (`COM3`), **macOS** (`/dev/tty.usbserial-…`), and **Linux** (`/dev/ttyUSB0`). Auto-active on every install — `tool_search("serial")` (or `"scale"`, `"modbus"`, `"rfid"`, `"barcode"`, `"gps"`, `"plc"`, `"hardware"`) unlocks the tools without any manual setup.
+---
 
-## 🔌 What this means in practice
+## 🎨 Canvas — sandboxed HTML in a side panel
 
-The universe of devices that talk USB-serial / RS-232 / RS-485 is exactly the universe of hardware sitting in real businesses:
+The agent can now ship arbitrary HTML to a 480px right-side panel. Three concrete things this unlocks:
 
-| Category | Examples | What qwe-qwe can now do |
-|---|---|---|
-| **Weighing scales** | Mettler Toledo, CAS, Ohaus | Read weight, log it, route to ERP / Telegram, trigger reorder thresholds |
-| **Barcode / RFID readers** | Datalogic, Honeywell (RS-232), UHF inventory readers | Receiving, stocktake, asset tracking, real-time inventory |
-| **GPS modules** | u-blox NEO-6M / 9M | Fleet tracking, geofence triggers, route logging |
-| **Label printers** | Zebra (ZPL), TSC, Godex (ESC/P) | "Print this shipping label for the order I just packed" |
-| **Receipt printers** | Epson / Star / Bixolon (ESC/POS) | POS, kitchen tickets, queue numbers |
-| **Industrial PLCs** | Anything Modbus RTU / RS-485 | Read sensors, command motors, monitor production lines |
-| **VFDs / inverters** | Modbus-RTU drives | Pump and motor control with safety gating |
-| **Environmental sensors** | pH, conductivity, gas, humidity, temperature | Greenhouses, labs, cold-chain monitoring |
-| **Energy meters** | RS-485 with DLMS/COSEM | Plant-floor power monitoring, billing |
-| **Cash drawers / fingerprint scanners / SCUD turnstiles** | Standard serial-trigger devices | POS, time tracking, access control |
-
-### Three concrete scenarios
-
-**1. Weighing flow — warehouse digitization in 30 seconds of conversation:**
+### 1. Interactive forms — the agent asks back, structured
 
 ```
-You:    Scales on COM3, baud 9600. When something is weighed, ask me what
-        it is on Telegram and remember it.
-Agent:  [tool_search("scale")] → 3 serial tools activated
-        [serial_list_ports] → "COM3 — USB-Serial CH340 (wch.cn)"
-        [serial_read_once port=COM3 until="newline"] → "ST,GS,+00012.345,kg"
-        [telegram_notify_owner "Weighed 12.345 kg — what was it?"]
-        [memory_save "Weighed 12.345 kg of pears, 2026-05-09 14:32"]
+You:    Сделай форму записи нового клиента: ФИО, телефон, источник.
+Agent:  [canvas_prompt html="<form>…</form>" title="New client"]
+        → panel slides in on the right
+You:    *fills the form, hits Submit*
+Agent:  → receives {name:"...", phone:"...", source:"..."} as the tool result
+        [memory_save "Новый клиент: ..."]
+        Saved. Записал.
 ```
 
-A week later you ask "сколько яблок я завесил в среду?" and the answer comes from memory. No ERP integration, no custom dashboard — just chat + scales.
+`canvas_prompt` **blocks** until the user submits, exactly like `camera_capture` blocks until a frame is grabbed. The agent gets the form data back as JSON in the same turn — no manual "type each field into chat" step.
 
-**2. Modbus RTU on a VFD with safety gate:**
-
-```
-You:    Read frequency setpoint from the VFD on COM5 (Modbus addr 1, reg 0x2000).
-Agent:  [serial_read_once] constructs "01 03 20 00 00 01 8E 0B" frame,
-        decodes response → "Setpoint: 50.0 Hz"
-
-You:    Set it to 30 Hz.
-Agent:  [serial_write data="01 06 20 00 01 2C ..." confirm=false]
-        DRY RUN — pass confirm=true to actually send.
-          port: COM5  bytes: 8  hex: 010620000 12C...
-        This will write 30.0 Hz (0x012C) to register 0x2000.
-        Confirm to proceed.
-You:    yes
-Agent:  [serial_write ... confirm=true] → "Wrote 8 bytes to COM5."
-```
-
-**Every actuator write is gated by `confirm=true`.** Default is dry-run that shows a hex preview without opening the port. Read-only on dry-run, ack-then-act on live. Set wrong, a Modbus write can damage motors or open valves — the gate is mandatory.
-
-**3. GPS-triggered scheduled routine:**
+### 2. Dashboards & status views — pin them, come back next week
 
 ```
-You:    Every 5 min read GPS on COM4. If I'm within 200m of the warehouse
-        coordinates (52.0123, 4.5678) — ping me on Telegram.
-Agent:  [tool_search("schedule")] [tool_search("gps")]
-        [schedule_task every="5m"] →
-          serial_read_once port=COM4 until="newline"
-          parse $GPRMC, haversine, telegram_notify_owner if <200m
-        Routine #4 scheduled.
+You:    Покажи дашборд по продажам за последнюю неделю.
+Agent:  [canvas_render html="<div style='…'>…<canvas id='chart'></canvas>…"]
+        → renders a styled HTML page with a Chart.js bar chart
+You:    Сохрани его как weekly-sales.
+Agent:  [canvas_save slug="weekly-sales"]
+        ✓
 ```
 
-These three patterns — read sensors → route signals, command actuators with safety, schedule polling — cover the majority of real shop-floor automation.
+Saved artifacts show up in a new **Canvases** left-nav view (card grid alongside Memory / Scheduler / Presets). Click a card → panel reopens with the saved dashboard. Reload the chat → the message that opened it has a chip "📊 Canvas: weekly-sales" you can click to reopen.
 
-## ⚙️ How it ships
-
-### Three tools, gated by `tool_search`
-
-```python
-serial_list_ports                                 # discovery
-serial_read_once(port, baud, until, format)       # text or hex frames
-serial_write(port, data, format, confirm=True)    # safety-gated writes
-```
-
-`format="hex"` works for any binary protocol (Modbus RTU, vendor frames). Whitespace, colons, commas, semicolons are stripped automatically — paste a copied hex stream from a manual and it parses.
-
-### Cross-platform error handling
-
-`Permission denied` and `Could not open port` get translated into platform-aware advice:
-
-- **Linux**: "Run `sudo usermod -aG dialout $USER` and re-login."
-- **macOS**: "Apple Silicon CH340 cables need the WCH driver: <link>."
-- **Windows**: "Check Device Manager — yellow triangle means missing driver."
-
-### Doctor check
-
-`qwe-qwe --doctor` (or auto-run on startup) now reports:
+### 3. Mockups & prototypes — visual iteration in chat
 
 ```
-Serial: + 2 port(s): COM3, COM7
+You:    Накидай мокап лендинга для приложения «Поход в горы».
+Agent:  [canvas_render html="<header>…</header><section class='hero'>…"]
+        → panel renders the layout
+You:    Сделай hero на тёмном фоне и кнопку CTA крупнее.
+Agent:  [canvas_render …]
+        ✓
 ```
 
-or, on a fresh Linux install where the user isn't in `dialout`:
+The agent iterates the HTML in chat, you see each version side-by-side with the conversation.
 
-```
-Serial: + 1 port(s): /dev/ttyUSB0  [note: 'kir' not in 'dialout' group —
-                                    serial reads may need: sudo usermod -aG dialout kir]
-```
+### Security model — iframe sandbox is load-bearing
 
-The agent itself reads this diagnostic on startup. **In one user's actual install, the agent saw "pyserial not installed" and ran `pip install pyserial` itself before the user had a chance to** — exactly the closed-loop self-repair the diagnostic is designed for.
+`<iframe sandbox="allow-scripts allow-forms" srcdoc="...">`. Note what's **NOT** there:
 
-### Mocked tests, real CI
+- ❌ `allow-same-origin` — iframe origin is `"null"`, no parent cookies / localStorage / DOM
+- ❌ `allow-top-navigation` — can't redirect the host page
+- ❌ `allow-popups` — no `window.open`
 
-24 new unit tests in `tests/test_serial_port_skill.py` that mock pyserial entirely — CI runs identically on Linux runners with no hardware. Coverage:
+The parent listens for `postMessage` from the iframe and filters by `event.source === iframe.contentWindow` (origin-string filtering is useless when the origin is `"null"`). The iframe CAN load public CDN scripts (Chart.js, D3) without cookies, documented as a privacy note in `docs/CANVAS.md`.
 
-- Discovery: empty list with platform hints, multi-device render, handles None metadata from cheap clones
-- Reads: text and hex output, all `until` modes (`newline` / `bytes:N` / `timeout`), parity validation, port-not-found / permission-error translation
-- Writes: dry-run NEVER opens the port (Serial() raises if called), `confirm=true` actually writes, hex payload decoding with separator stripping, odd-length / non-hex rejection
-- Wiring: skill is in `_DEFAULT_SKILLS`, all 16 tool_search keywords resolve to the right tool subset
+256 KB HTML cap enforced at both skill-side and the REST `POST /api/canvas/artifacts` endpoint. Charts with inlined SVG fit comfortably; LLMs can't reliably emit more anyway.
 
-### `docs/HARDWARE.md`
+### Five tools, auto-active
 
-New pattern doc — serial_port as the reference, then a checklist for adding new hardware skills:
+`tool_search("dashboard")` / `"form"` / `"mockup"` / `"chart"` / `"widget"` → activates the canvas tools without manual setup:
 
-1. Closed parameter schemas
-2. Safety gates on actuators (`confirm=true` mandatory)
-3. Lazy imports of heavy hardware libraries
-4. Doctor check with platform-aware hints
-5. Mocked tests (no real hardware in CI)
-6. Tight `tool_search` keyword wiring
-7. Honest platform support declaration
-8. Bridge to Home Assistant for the 2000+ devices that don't speak serial
+- `canvas_render(html, title?, slug?)` — fire-and-forget, opens the panel
+- `canvas_prompt(html, title?, timeout_s=300)` — blocks until submit / close / timeout, returns user data as JSON
+- `canvas_save(slug, title?, html?)` — persist as artifact
+- `canvas_load(slug)` — reopen a saved artifact
+- `canvas_list(limit=20)` — markdown table of saved artifacts
 
-## 🐛 Other fixes shipped this cycle
+Full postMessage protocol, sandbox limits, and a reference HTML template live in `docs/CANVAS.md`.
 
-### `splitFiles()` in the chat reload path (#26)
+---
 
-Reported: an image the agent sent via `send_file` rendered inline during the live turn, then flipped to a download chip after the user left the thread and came back. Root cause: the live WS path ran `msg.files` through `splitFiles()` (which routes image-extensions to `_images` for inline render), but the reload path treated all of `meta.files` as plain attachments. Same data, different bucket. Fix mirrors the live path so live + reload render identically. Pinned by `tests/test_ws_attachments.py::test_reload_path_runs_meta_files_through_splitfiles`.
+## 📦 Skill import — install community skills from skills.sh / GitHub
 
-### `CLAUDE.md` refresh for v0.18.x
+Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification) — the same format Claude Code / Claude.ai use — now works in qwe-qwe via a thin adapter layer. Browse [skills.sh](https://skills.sh) or any compatible GitHub repo, paste the URL into Settings → Tools & skills → **Import skill**, click Import.
 
-Surgical update keeping the existing structure: test count refresh, telemetry section bumped to 6 events with `thread_created` documented, new "Project blog feed" subsection covering `/api/feed/blog`, two cache-related Web UI contracts pinned (`api()` no-store + `splitFiles` symmetry).
+### Recognised URL shapes
 
-## 🚀 Upgrade
+- `https://skills.sh/<owner>/<repo>/<skill-name>`
+- `https://github.com/<owner>/<repo>/tree/<ref>/<path-to-skill>`
+- `https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path-to-skill>/SKILL.md`
+
+### How the bridge works
+
+skills.sh skills are **markdown instructions for an LLM** + optional executable scripts. qwe-qwe skills are **single Python modules with `TOOLS` + `execute()`**. The importer generates a thin adapter `.py` at `~/.qwe-qwe/skills/<name>.py` that exposes one tool — `<name>_help` — returning the full SKILL.md body. Scripts / references / assets land at `~/.qwe-qwe/skills_imported/<name>/`. The agent reads them via the regular `read_file` / `shell` tools.
+
+Best for **knowledge-heavy procedures** (PDF manipulation patterns, document conversion recipes, etc.). Pure-code wrappers around a specific API are still better written natively via `create_skill`.
+
+### Safety surface — none of this is optional
+
+| Layer | What it does |
+|---|---|
+| **Domain allowlist** | Only `skills.sh` / `github.com` / `raw.githubusercontent.com` / `api.github.com`. Everything else → HTTP 403 `host_not_allowed`. |
+| **SSRF guard** | Private / loopback / link-local IPs blocked via `socket.getaddrinfo` + `ipaddress.ip_address`. Plus a custom `HTTPRedirectHandler` re-validates every redirect hop — a public-host fetch can't 302 into 127.0.0.1 or cloud metadata IPs. |
+| **Name validation** | `^[a-z0-9]+(-[a-z0-9]+)*$`, ≤64 chars (the agentskills.io regex). |
+| **Built-in collision** | `browser`, `canvas`, `skill_creator`, etc. **cannot be replaced** even with `overwrite: true`. Typosquatting defense. |
+| **License surfacing** | Word-anchored SPDX-ish regex + denylist of non-OSS riders (Commons Clause / BUSL / SSPL / Elastic / "Complete terms in LICENSE.txt"). Non-OSS licenses return HTTP **451 `license_confirm_required`** — the UI shows a confirmation panel with the license text before installing. |
+| **Size caps** | SKILL.md ≤100 KB, total fetch ≤1 MB, ≤50 files, binaries / images filtered out. |
+| **Atomic write** | Adapter writes to a tempfile, runs `skills.validate_skill` on it, **then** `os.replace` into final position. A broken renderer can never leave a half-written `.py` in `~/.qwe-qwe/skills/`. |
+| **Sentinel-protected delete** | `delete_import` checks for the auto-generated sentinel before unlinking. If you replaced an imported skill's `.py` with hand-written code, your file survives. |
+| **Audit trail** | Every install recorded in the `skill_imports` table — source URL, SHA-256 hash, license, timestamp. Query via `GET /api/skills/imports`. |
+
+### REST round-trip
 
 ```bash
-pip install -e . --upgrade        # from a checkout
-# or
-pip install --upgrade qwe-qwe     # if installed as a package
+curl -X POST http://localhost:7861/api/skills/import \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://skills.sh/anthropics/skills/pdf"}'
 ```
 
-`pyserial` is now a hard dependency (~100 KB pure Python, no native compile). It auto-installs on upgrade. If somehow you end up without it, the doctor check flags the gap and the skill returns a friendly install hint.
+Returns HTTP 451 if the upstream license isn't OSS; re-POST with `"accept_license": true` to confirm.
 
-## 🔢 Stats
+Full pattern doc + reference implementations: `docs/SKILLS_IMPORT.md`.
 
-- **546 tests pass**, 3 skipped, 0 failing (was 522)
-- **24 new unit tests** for the serial_port skill
-- **+8 built-in skill** (`serial_port` joins browser, mcp_manager, skill_creator, soul_editor, notes, timer, weather)
-- **+3 always-discoverable tools** via `tool_search`
-- New 16 keywords in `_TOOL_SEARCH_INDEX` mapping hardware vocabulary to the same three tools
+---
 
-## What's NOT in scope yet
+## 🔍 Tools & skills tab — search + collapsible categories
 
-- **Listener mode** (`serial_listen(port, on_frame=...)` — sit on a port and trigger turns when frames arrive). Requires async event-driven turns, which is an architecture change. Tracked.
-- **Hardware abstraction layer** in core. Premature until ~5 hardware skills exist and we see real shared patterns.
-- **Auto-discovery dialog** in Settings → Hardware tab. For now, call `serial_list_ports` from chat.
+The Tools tab in Settings used to be a flat list. As the skill ecosystem grows (built-ins + user-created + imported), that flat list becomes unscannable. New layout:
 
-For non-serial hardware, the practical bridge today is **Home Assistant via MCP**: add an HA MCP server through `mcp_manager` and expose all 2000+ integrations to the agent. A reference `home_assistant` skill is on the roadmap.
+- **Search box** at the top — filters across tool name, description, and category
+- **Collapsible category headers** — Memory / Files / Web / Browser / Hardware / Skills / Meta. Expand only what you need.
+- **Import skill button** in the header — paste URL, install in one step.
 
-— Full pattern docs: [`docs/HARDWARE.md`](docs/HARDWARE.md). Privacy: [`docs/PRIVACY.md`](docs/PRIVACY.md). Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md). Contributor flow: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+The user-created and imported skills appear in their own categories so you can tell where each tool came from at a glance.
+
+---
+
+## 🐛 Notable fixes
+
+- **`fix(agent)` — tool_call argument normalization.** Some models (notably Qwen 3 variants) emit `tool_calls` with already-stringified-but-invalid JSON in `arguments` (single quotes, trailing commas). Replay through `_history_with_tool_calls` would crash with `JSONDecodeError` and break the turn. Now normalized to valid JSON before replay.
+
+- **`fix(canvas)` — cross-thread leak + tool confusion.** The model couldn't "read forms back" because `_pending_canvas_renders` was a module global keyed by request_id only — concurrent threads would step on each other. Now bucketed by thread_id.
+
+- **`fix(canvas)` — stale server message.** If you reload qwe-qwe after upgrading the server, the JS knows about canvas tools but the server doesn't have the endpoint yet. We now show a clear "restart qwe-qwe" toast instead of a confusing 404.
+
+---
+
+## 📈 By the numbers
+
+- **+725 tests passing** (was 545 at v0.18.6) — +180 new tests covering canvas + skill_import + their JS contracts
+- **109 tests in `test_skill_import.py`** alone — including a "live integration" path gated by `RUN_LIVE_TESTS=1` that fetches a real skills.sh skill
+- **Coverage floor unchanged** at 24% — actual 25.93%
+- **Two new SQLite migrations** — `006_canvas_artifacts.sql`, `007_skill_imports.sql`
+- **Two new pattern docs** — `docs/CANVAS.md`, `docs/SKILLS_IMPORT.md`
+
+---
+
+## ⬆️ Upgrade
+
+```bash
+git pull
+pip install -e . --upgrade
+python cli.py --web --ssl --port 7861
+```
+
+Two new migrations apply automatically on first boot. No config changes needed. Telemetry consent unchanged (no new event types).
+
+---
+
+## 🙏 Inspirations
+
+Canvas takes obvious inspiration from Claude.ai's Artifacts — but the sandboxed-iframe-only approach matters more here, since qwe-qwe runs on your own machine and Anthropic doesn't sit between the LLM and your filesystem. Skill import works because Anthropic published the [agentskills.io spec](https://agentskills.io/specification) as a portable format — you can drop the same `SKILL.md` into Claude Code, Claude.ai, and qwe-qwe and it works in all three. The [skills.sh](https://skills.sh) catalog made discovery trivial.
