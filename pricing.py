@@ -71,7 +71,7 @@ def get_price(model: str, kind: Literal["input", "output"]) -> float | None:
     if entry and kind in entry:
         return entry[kind]
     fb = _BUNDLED_FALLBACK.get(model)
-    if fb:
+    if fb and kind in fb:
         return fb[kind]
     return None
 
