@@ -101,16 +101,25 @@ _pending_canvas_prompts: dict = {}  # request_id → asyncio.Event + result
 
 # Per-turn capture of every canvas render/prompt the skill broadcast,
 # drained by the WS reply assembly to attach to the assistant message's
-# meta.canvas so the chat history remembers what was rendered. This is
-# what makes the composer's "re-open last canvas" affordance + the
-# threadCanvases chip strip survive page reloads + thread switches.
-# Mirrors the `_pending_files` pattern in tools.py.
+# meta.canvas. This is what makes the composer's "re-open last canvas"
+# affordance + the threadCanvases chip strip survive page reloads +
+# thread switches.
 #
-# Each entry: {"title": str, "slug": str|None, "html": str, "ts": float}
+# Bucketed by thread_id to prevent cross-thread leaks. A user-reported
+# bug: render in thread A, switch to thread B, canvas from A shows up
+# in B's chip strip. Root cause was that the previous single-list
+# design let a partially-failed turn's leftover renders attach to the
+# NEXT turn's reply — even if that next turn was a different thread.
+# With per-thread buckets, the WS reply assembly drains ONLY its own
+# thread's entries, leaving any orphaned others to be cleaned up by
+# the next turn's agent.run() reset.
+#
+# Each entry: {"title": str, "slug": str|None, "html": str,
+#              "html_size": int, "ts": float, "truncated"?: bool}
 # Cap html at 64KB per entry to bound message-meta growth; over that,
 # entries get a `truncated: True` flag and the html is replaced with a
 # short hint so the agent can re-render fresh if needed.
-_pending_canvas_renders: list[dict] = []
+_pending_canvas_renders: dict[str, list[dict]] = {}  # thread_id → list of renders
 _CANVAS_META_HTML_CAP = 64 * 1024  # per-render cap when persisting to message meta
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -1588,11 +1597,36 @@ def broadcast_canvas_render_sync(html: str, title: str = "",
         return False
 
 
-def _track_canvas_render_for_history(title: str, html: str, slug: str | None) -> None:
-    """Append a canvas render to the per-turn pending list so the WS
+def _resolve_canvas_thread_id() -> str:
+    """Best-effort thread-id resolution for a canvas-render event.
+
+    The skill calls _track_canvas_render_for_history from the agent's
+    executor thread. The current turn's thread is most reliably
+    available via threads.get_active_id() (per-process), which is the
+    same source `db._tid(None)` falls back to.
+
+    Multi-client races (web + telegram concurrent turns) can still
+    misattribute, but that's the documented TurnContext-violation
+    limit and not in scope here — the user-reported bug is the
+    single-client cross-thread leak, which thread-bucketing solves.
+    """
+    try:
+        import threads
+        return threads.get_active_id() or "default"
+    except Exception:
+        return "default"
+
+
+def _track_canvas_render_for_history(title: str, html: str, slug: str | None,
+                                       thread_id: str | None = None) -> None:
+    """Append a canvas render to the per-thread pending list so the WS
     reply assembly can persist it onto the assistant message's
     meta.canvas. This is what makes the threadCanvases chip strip
     survive page reloads + thread switches.
+
+    `thread_id` defaults to the currently-active thread. Each thread
+    has its own bucket — WS reply for thread A only drains A's bucket,
+    so a leftover from thread B can't be misattributed.
 
     HTML is capped at `_CANVAS_META_HTML_CAP` per entry to keep
     message-meta rows bounded. Over the cap, entries store the
@@ -1604,6 +1638,7 @@ def _track_canvas_render_for_history(title: str, html: str, slug: str | None) ->
     try:
         if not isinstance(html, str):
             return
+        tid = thread_id or _resolve_canvas_thread_id()
         size = len(html.encode("utf-8", errors="replace"))
         if size > _CANVAS_META_HTML_CAP:
             entry = {
@@ -1622,7 +1657,7 @@ def _track_canvas_render_for_history(title: str, html: str, slug: str | None) ->
                 "html_size": size,
                 "ts": time.time(),
             }
-        _pending_canvas_renders.append(entry)
+        _pending_canvas_renders.setdefault(tid, []).append(entry)
     except Exception as e:
         _log.debug(f"canvas render tracking failed (non-fatal): {e}")
 
@@ -3360,8 +3395,15 @@ async def websocket_chat(ws: WebSocket):
                 # land in the assistant message's meta so the chip strip
                 # + composer's "re-open last canvas" affordance work
                 # across reloads + thread switches.
-                pending_canvases = list(_pending_canvas_renders)
-                _pending_canvas_renders.clear()
+                #
+                # Pop ONLY this thread's bucket. Other threads' leftover
+                # entries (if any — typically from a partially-failed
+                # earlier turn) stay until that thread's next turn
+                # drains them, or until agent.run()'s reset wipes the
+                # whole dict at the start of the next turn anywhere.
+                # This is the fix for the cross-thread canvas leak.
+                _turn_tid = result["thread_id"]
+                pending_canvases = _pending_canvas_renders.pop(_turn_tid, [])
                 if pending or pending_canvases:
                     if pending:
                         reply_payload["files"] = pending

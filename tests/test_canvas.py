@@ -502,9 +502,13 @@ def test_track_canvas_render_appends_to_pending(fresh_server):
     fresh_server._pending_canvas_renders.clear()
     fresh_server._track_canvas_render_for_history(
         title="Weekly sales", html="<h1>Sales</h1>", slug="weekly-sales",
+        thread_id="t_abc",
     )
-    assert len(fresh_server._pending_canvas_renders) == 1
-    entry = fresh_server._pending_canvas_renders[0]
+    # Bucketed by thread_id now (was a flat list pre-fix).
+    assert "t_abc" in fresh_server._pending_canvas_renders
+    bucket = fresh_server._pending_canvas_renders["t_abc"]
+    assert len(bucket) == 1
+    entry = bucket[0]
     assert entry["title"] == "Weekly sales"
     assert entry["slug"] == "weekly-sales"
     assert entry["html"] == "<h1>Sales</h1>"
@@ -522,9 +526,11 @@ def test_track_canvas_render_truncates_oversize_html(fresh_server):
     big_html = "x" * (fresh_server._CANVAS_META_HTML_CAP + 100)
     fresh_server._track_canvas_render_for_history(
         title="Big dashboard", html=big_html, slug=None,
+        thread_id="t_big",
     )
-    assert len(fresh_server._pending_canvas_renders) == 1
-    entry = fresh_server._pending_canvas_renders[0]
+    bucket = fresh_server._pending_canvas_renders.get("t_big", [])
+    assert len(bucket) == 1
+    entry = bucket[0]
     assert entry["title"] == "Big dashboard"
     assert entry["truncated"] is True
     assert entry["html"] == ""
@@ -535,10 +541,13 @@ def test_track_canvas_render_swallows_bad_input(fresh_server):
     """Robustness: a misbehaving caller (passes a dict, an int, None)
     shouldn't crash the agent turn. Just no-op."""
     fresh_server._pending_canvas_renders.clear()
-    fresh_server._track_canvas_render_for_history("t", None, None)
-    fresh_server._track_canvas_render_for_history("t", 42, None)
-    fresh_server._track_canvas_render_for_history("t", {"oops": 1}, None)
-    assert len(fresh_server._pending_canvas_renders) == 0
+    fresh_server._track_canvas_render_for_history("t", None, None, thread_id="t1")
+    fresh_server._track_canvas_render_for_history("t", 42, None, thread_id="t1")
+    fresh_server._track_canvas_render_for_history("t", {"oops": 1}, None, thread_id="t1")
+    # Bad inputs should not create a bucket, OR (if a bucket exists)
+    # it should be empty. Either way, no entries leaked through.
+    bucket = fresh_server._pending_canvas_renders.get("t1", [])
+    assert len(bucket) == 0
 
 
 def test_broadcast_helper_appends_render_to_pending(fresh_server, monkeypatch):
@@ -568,12 +577,20 @@ def test_broadcast_helper_appends_render_to_pending(fresh_server, monkeypatch):
         return type("F", (), {"result": lambda *a, **k: None})()
     monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _consume)
 
+    # broadcast_canvas_render_sync doesn't take thread_id explicitly —
+    # it falls back to threads.get_active_id() via _resolve_canvas_
+    # thread_id. Mock that to a known value so we know which bucket
+    # to inspect.
+    import threads
+    monkeypatch.setattr(threads, "get_active_id", lambda: "t_broadcast_test")
+
     ok = fresh_server.broadcast_canvas_render_sync(
         html="<p>test</p>", title="Test", slug="test-slug",
     )
     assert ok is True
-    assert len(fresh_server._pending_canvas_renders) == 1
-    entry = fresh_server._pending_canvas_renders[0]
+    bucket = fresh_server._pending_canvas_renders.get("t_broadcast_test", [])
+    assert len(bucket) == 1
+    entry = bucket[0]
     assert entry["title"] == "Test"
     assert entry["slug"] == "test-slug"
     assert entry["html"] == "<p>test</p>"
@@ -767,3 +784,166 @@ def test_gallery_open_pushes_to_threadCanvases():
         "into state.threadCanvases — chip strip will silently miss it "
         "compared to agent-rendered canvases."
     )
+
+
+# ── Bug-fix round 2: thread isolation + form misuse ──────────────
+
+
+def test_pending_canvas_renders_is_thread_bucketed(fresh_server):
+    """User-reported bug: a canvas rendered in thread A leaked into
+    thread B after the user switched chats. Root cause was that
+    `_pending_canvas_renders` was a flat list — a partially-failed
+    drain in thread A left entries that the next thread's WS reply
+    grabbed wholesale.
+
+    Fix: bucket by thread_id. Each thread drains ONLY its own bucket.
+    Pin the shape so a refactor can't quietly revert."""
+    assert isinstance(fresh_server._pending_canvas_renders, dict), (
+        "_pending_canvas_renders must be a dict keyed by thread_id, "
+        "not a flat list — otherwise cross-thread leaks are possible."
+    )
+
+
+def test_track_canvas_render_buckets_by_thread(fresh_server, monkeypatch):
+    """Verify renders attributed to different threads land in
+    different buckets, and WS-reply-style drain of thread A doesn't
+    affect thread B's bucket."""
+    fresh_server._pending_canvas_renders.clear()
+    fresh_server._track_canvas_render_for_history(
+        title="A1", html="<p>a</p>", slug=None, thread_id="thread_A")
+    fresh_server._track_canvas_render_for_history(
+        title="B1", html="<p>b</p>", slug=None, thread_id="thread_B")
+    fresh_server._track_canvas_render_for_history(
+        title="A2", html="<p>a2</p>", slug=None, thread_id="thread_A")
+
+    assert len(fresh_server._pending_canvas_renders["thread_A"]) == 2
+    assert len(fresh_server._pending_canvas_renders["thread_B"]) == 1
+    assert fresh_server._pending_canvas_renders["thread_A"][0]["title"] == "A1"
+    assert fresh_server._pending_canvas_renders["thread_A"][1]["title"] == "A2"
+    assert fresh_server._pending_canvas_renders["thread_B"][0]["title"] == "B1"
+
+    # Drain thread A (the per-thread pop the WS reply does):
+    drained = fresh_server._pending_canvas_renders.pop("thread_A", [])
+    assert len(drained) == 2
+    # Thread B's bucket survived — that's the whole point.
+    assert "thread_B" in fresh_server._pending_canvas_renders
+    assert len(fresh_server._pending_canvas_renders["thread_B"]) == 1
+
+
+def test_ws_reply_drains_only_current_thread_bucket():
+    """Source-grep: the WS reply assembly must `.pop(thread_id, [])`,
+    not `list(_pending_canvas_renders)` over the whole structure.
+    Otherwise cross-thread leak is back."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "server.py").read_text(encoding="utf-8")
+    # Find the WS reply assembly drain spot
+    drain_at = src.find("pending_canvases = _pending_canvas_renders")
+    assert drain_at >= 0, "WS reply drain anchor not found"
+    window = src[drain_at: drain_at + 200]
+    assert ".pop(" in window, (
+        "WS reply doesn't .pop() a single thread's bucket — it's "
+        "draining the whole dict, which re-enables cross-thread leaks."
+    )
+
+
+def test_resolve_canvas_thread_id_falls_back_gracefully(fresh_server, monkeypatch):
+    """When threads.get_active_id() raises or returns None, the
+    resolver returns 'default' rather than crashing the broadcast
+    helper. Skill should never hard-fail because a thread lookup
+    is unhappy."""
+    import threads
+    monkeypatch.setattr(threads, "get_active_id", lambda: None)
+    assert fresh_server._resolve_canvas_thread_id() == "default"
+
+    def _boom():
+        raise RuntimeError("db gone")
+    monkeypatch.setattr(threads, "get_active_id", _boom)
+    assert fresh_server._resolve_canvas_thread_id() == "default"
+
+
+def test_canvas_render_warns_when_html_contains_form(canvas_mod, monkeypatch):
+    """User-reported bug (the model's own self-diagnosis): "canvas is
+    a sandbox — I can't read form field values back. It's one-way."
+    The model used canvas_render (fire-and-forget) when it actually
+    wanted canvas_prompt (blocking, returns submitted data).
+
+    To prevent this confusion, canvas_render now detects <form> in
+    the supplied HTML and appends a warning to its tool result
+    telling the model to use canvas_prompt instead. Defense in depth
+    on top of the strengthened INSTRUCTION."""
+    # Mock server module so canvas_render reaches the post-broadcast
+    # success path where the warning is appended.
+    import types
+    fake = types.ModuleType("server")
+    fake._ws_loop = object()
+    fake._ws_clients = {object()}
+    fake.broadcast_canvas_render_sync = lambda html, title, slug: True
+    # Required compat helpers (else _check_server_compat would short-circuit)
+    fake.broadcast_canvas_close_sync = lambda: True
+    fake.request_canvas_prompt_sync = lambda **kw: None
+    fake._canvas_save_artifact = lambda **kw: ""
+
+    monkeypatch.setattr(canvas_mod, "_server_module", lambda: fake)
+
+    # Plain dashboard (no form) — no warning
+    out = canvas_mod.execute("canvas_render", {
+        "html": "<!doctype html><h1>Dashboard</h1>",
+        "title": "Plain",
+    })
+    assert "WARNING" not in out
+    assert "wrong tool" not in out.lower()
+
+    # Form HTML — warning fires
+    out_form = canvas_mod.execute("canvas_render", {
+        "html": "<!doctype html><form><input name=x></form>",
+        "title": "Form by mistake",
+    })
+    assert "WARNING" in out_form
+    assert "canvas_prompt" in out_form
+    assert "form data is NOT returned" in out_form or "submitted form data is NOT returned" in out_form
+    # Self-explanatory enough that the agent should redo the call
+    assert "wrong tool" in out_form.lower() or "re-render" in out_form.lower()
+
+
+def test_canvas_render_warning_matches_uppercase_FORM_tag(canvas_mod, monkeypatch):
+    """Case-insensitive — the model might emit <FORM> or <Form>
+    depending on whether it's writing XHTML / generated output.
+    Don't let a casing accident bypass the safety hint."""
+    import types
+    fake = types.ModuleType("server")
+    fake._ws_loop = object()
+    fake._ws_clients = {object()}
+    fake.broadcast_canvas_render_sync = lambda html, title, slug: True
+    fake.broadcast_canvas_close_sync = lambda: True
+    fake.request_canvas_prompt_sync = lambda **kw: None
+    fake._canvas_save_artifact = lambda **kw: ""
+    monkeypatch.setattr(canvas_mod, "_server_module", lambda: fake)
+
+    for tag in ("<form>", "<FORM>", "<Form action='/x'>"):
+        out = canvas_mod.execute("canvas_render", {"html": f"<html>{tag}</html>", "title": "x"})
+        assert "WARNING" in out, f"form variant {tag!r} did not trigger warning"
+
+
+def test_canvas_instruction_teaches_render_vs_prompt_distinction(canvas_mod):
+    """INSTRUCTION is injected into the LLM's system prompt when any
+    canvas tool is active. After the "model can't read forms back"
+    confusion, INSTRUCTION was rewritten with a prominent
+    decision-tree section. Make sure key phrases survive a refactor."""
+    inst = canvas_mod.INSTRUCTION
+    # The "BLOCKS" + "RETURNS" pairing is what teaches the model
+    # which tool actually gives them data back.
+    assert "BLOCKS" in inst and "RETURNS" in inst, (
+        "INSTRUCTION lost the BLOCKS/RETURNS contrast — model can't "
+        "tell that canvas_prompt is the one that returns data."
+    )
+    # Concrete pattern: a wrong-tool warning explicitly tells the
+    # agent to switch.
+    assert "wrong tool" in inst.lower() or "switch to canvas_prompt" in inst, (
+        "INSTRUCTION doesn't explicitly tell the agent to switch tools "
+        "when they need form data back."
+    )
+    # Concrete submit-handler example pinned — without it the model
+    # writes <form action="/whatever"> which won't work in a
+    # sandboxed-no-same-origin iframe.
+    assert "parent.postMessage" in inst
+    assert "canvas_submit" in inst

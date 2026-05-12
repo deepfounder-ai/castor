@@ -1390,7 +1390,11 @@ def _run_inner_body(user_input: str, thread_id: str | None,
     tools._reset_active_tools()
     # Also clear any canvas renders left over from a prior turn (e.g.
     # if the previous turn crashed mid-flight, server.py's drain
-    # wouldn't have run). Keeps server._pending_canvas_renders bounded.
+    # wouldn't have run). The structure is now thread-bucketed, but
+    # we clear ALL buckets here — every turn that reaches agent.run
+    # gets a fresh start, and orphaned entries from a crashed turn in
+    # any thread are wiped. WS-reply drain is the happy-path drain;
+    # this is the defensive sweep.
     try:
         import server as _srv
         if hasattr(_srv, "_pending_canvas_renders"):

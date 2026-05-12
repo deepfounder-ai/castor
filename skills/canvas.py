@@ -57,6 +57,7 @@ endpoint) bounds storage growth.
 from __future__ import annotations
 
 import json
+import re
 
 DESCRIPTION = (
     "Render HTML in a sandboxed right-side panel. Use for interactive "
@@ -67,31 +68,47 @@ DESCRIPTION = (
 )
 
 INSTRUCTION = (
-    "When the user asks you to show structured information visually "
-    "(dashboard, table, chart, mockup), or to collect structured "
-    "input from them (form with multiple fields), use the canvas "
-    "skill instead of long markdown.\n\n"
-    "Two tools, two intents:\n"
-    "  - canvas_render(html, title) — fire-and-forget. For dashboards, "
-    "mockups, status views. Returns immediately, panel stays open until "
-    "the user closes it.\n"
-    "  - canvas_prompt(html, title) — BLOCKS until the user submits the "
-    "form. Returns the form data as JSON. Use for any interaction "
-    "where you NEED the answer in this turn.\n\n"
-    "The iframe is sandboxed. To send form data back, your HTML's "
-    "submit handler MUST call:\n"
-    "  parent.postMessage({type: 'canvas_submit', data: {...}}, '*')\n"
-    "  // (request_id is auto-injected by the parent — don't try to "
-    "set it yourself)\n\n"
-    "HTML hard limits: 256 KB total. Inline CSS is fine. Inline JS "
-    "is fine. External CDN scripts (https://cdn.jsdelivr.net/...) "
-    "are allowed but slower — prefer inlined for offline-friendly. "
-    "DO NOT attempt to access cookies, localStorage, parent.document, "
-    "or fetch /api/* — the sandbox blocks all of that.\n\n"
-    "For dashboards the user wants to keep: after rendering, call "
-    "canvas_save(slug='descriptive-slug', title='Human Title', "
-    "html=<same html>) — slug becomes the permanent id, shown in the "
-    "Canvases left-nav view."
+    "Use the canvas skill when text isn't enough — dashboards, forms, "
+    "mockups, prototypes.\n\n"
+    "──────────────────────────────────────────────────────────\n"
+    "CRITICAL: pick the right tool based on whether YOU need the\n"
+    "user's input back this turn.\n"
+    "──────────────────────────────────────────────────────────\n\n"
+    "  canvas_prompt(html, title?)   ← FOR FORMS that you NEED data from\n"
+    "    • BLOCKS your turn until the user submits.\n"
+    "    • RETURNS the submitted form data as a JSON string —\n"
+    "      that's how you read the answers.\n"
+    "    • Your form's submit handler MUST be:\n"
+    "        form.addEventListener('submit', e => {\n"
+    "          e.preventDefault();\n"
+    "          const data = Object.fromEntries(new FormData(e.target));\n"
+    "          parent.postMessage({type:'canvas_submit', data}, '*');\n"
+    "        });\n"
+    "    • Without that handler the agent will hang for 5 min then time out.\n\n"
+    "  canvas_render(html, title?)   ← FOR READ-ONLY DISPLAY ONLY\n"
+    "    • Dashboards, charts, status views, mockups, prototypes.\n"
+    "    • Returns IMMEDIATELY. Does NOT return any user input.\n"
+    "    • If your HTML contains <form> and you need the answers,\n"
+    "      you used the wrong tool — switch to canvas_prompt.\n\n"
+    "──────────────────────────────────────────────────────────\n\n"
+    "Other tools:\n"
+    "  canvas_save(slug, title?, html)\n"
+    "    Persist a dashboard for the user to reopen later from the\n"
+    "    Canvases left-nav view. Idempotent (upserts by slug).\n"
+    "  canvas_load(slug)\n"
+    "    Re-open a saved artifact.\n"
+    "  canvas_list(limit?)\n"
+    "    See what's saved.\n\n"
+    "Sandbox: iframe is `<iframe sandbox=\"allow-scripts allow-forms\"\n"
+    "srcdoc>` with origin \"null\". You CANNOT read parent.document,\n"
+    "cookies, or fetch /api/* with credentials. External CDN scripts\n"
+    "(Chart.js, fonts) work but slow first load — prefer inline JS/CSS.\n\n"
+    "Size limits:\n"
+    "  • Hard cap 256 KB per render — trim inlined assets if you hit it.\n"
+    "  • Renders >64 KB persist as truncated chips on reload (the user\n"
+    "    can still see what title you used, but can't re-open the html\n"
+    "    inline). For anything important the user might want later, call\n"
+    "    canvas_save(slug='...') — that survives full-size."
 )
 
 _HTML_CAP_BYTES = 256 * 1024  # mirror server.py::_CANVAS_HTML_CAP_BYTES
@@ -337,6 +354,9 @@ def _check_server_compat(server) -> str | None:
 # ── canvas_render ──────────────────────────────────────────────────
 
 
+_FORM_DETECT_RE = re.compile(r"<form\b", re.IGNORECASE)
+
+
 def _do_render(args: dict) -> str:
     html = args.get("html") or ""
     err = _check_html(html)
@@ -358,7 +378,26 @@ def _do_render(args: dict) -> str:
     ok = server.broadcast_canvas_render_sync(html=html, title=title, slug=slug)
     if not ok:
         return "Canvas render: WS broadcast failed (no client?)."
-    return f"Canvas opened: {title} ({len(html)} bytes of HTML)."
+    msg = f"Canvas opened: {title} ({len(html)} bytes of HTML)."
+    # Misuse-detection: if the caller passed a <form> through
+    # canvas_render, they probably wanted canvas_prompt. canvas_render
+    # is fire-and-forget — it CANNOT return the form data. Without this
+    # hint the agent will sit there confused after the user "submits"
+    # (the data only ever reaches the agent via canvas_prompt's blocking
+    # tool result). Reported repeatedly: model says "canvas is one-way,
+    # I can't read fields back" — that's the SYMPTOM, the cause is
+    # picking the wrong tool.
+    if _FORM_DETECT_RE.search(html or ""):
+        msg += (
+            "\n\nWARNING: your HTML contains <form>. canvas_render is "
+            "fire-and-forget — submitted form data is NOT returned to "
+            "you. If you need to read the user's answers, you used the "
+            "WRONG tool. Close this panel (it's still informational) "
+            "and re-render the form via `canvas_prompt(html=..., "
+            "title=...)`. canvas_prompt BLOCKS until submit and "
+            "returns the form data as a JSON string."
+        )
+    return msg
 
 
 # ── canvas_prompt ──────────────────────────────────────────────────
