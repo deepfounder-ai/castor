@@ -1289,6 +1289,16 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
   animation: slideUp 0.18s ease-out;
 }
 .modal-panel.wide { max-width: 720px; }
+.runs-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.runs-table th, .runs-table td { padding: 6px 10px; border-bottom: 1px solid var(--line-2, #444); text-align: left; }
+.runs-table th { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-4); }
+.modal-summary { padding: 8px 0 14px; font-weight: 600; font-size: 13px; color: var(--fg-2); }
+.status-ok { background: rgba(46,204,113,0.18); color: #2ecc71; }
+.status-err { background: rgba(231,76,60,0.18); color: #e74c3c; }
+.status-aborted { background: rgba(149,165,166,0.18); color: #95a5a6; }
+.status-missed { background: rgba(241,196,15,0.18); color: #f1c40f; }
+.status-skipped { background: rgba(127,140,141,0.18); color: #7f8c8d; }
+.status-running { background: rgba(52,152,219,0.18); color: #3498db; }
 .modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .modal-head h2 { font-family: var(--font-serif); font-size: 20px; font-weight: 400; color: var(--fg); line-height: 1.2; flex: 1; letter-spacing: -0.01em; }
 .modal-head .modal-close { color: var(--fg-3); transition: color 0.12s; }
@@ -6704,6 +6714,41 @@ function closeModal() {
   render();
   if (typeof cb === 'function') try { cb(); } catch {}
 }
+
+// ── Session Runs Modal ──────────────────────────────────────────────────────
+async function openSessionRunsModal(threadId, title) {
+  let runs = [];
+  try {
+    const resp = await fetch('/api/threads/' + encodeURIComponent(threadId) + '/runs?limit=50');
+    runs = await resp.json();
+    if (!Array.isArray(runs)) runs = runs.runs || runs.items || [];
+  } catch (e) { console.error('failed to load runs', e); }
+  const totalIn  = runs.reduce(function(s, r) { return s + (r.input_tokens || 0); }, 0);
+  const totalOut = runs.reduce(function(s, r) { return s + (r.output_tokens || 0); }, 0);
+  const totalCost = runs.reduce(function(s, r) { return s + (r.cost_usd || 0); }, 0);
+  const rows = runs.map(function(r) {
+    const started = r.started_at ? new Date((r.started_at > 1e12 ? r.started_at : r.started_at * 1000)).toLocaleString() : '—';
+    const statusCls = 'status-' + esc(r.status || 'unknown');
+    return '<tr class="run-row">' +
+      '<td>' + started + '</td>' +
+      '<td>' + esc(r.source || '—') + '</td>' +
+      '<td class="mono" style="font-size:0.85em">' + esc(r.model || '—') + '</td>' +
+      '<td class="mono">' + fmtTokens(r.input_tokens) + ' / ' + fmtTokens(r.output_tokens) + '</td>' +
+      '<td class="mono">' + fmtCost(r.cost_usd) + '</td>' +
+      '<td><span class="status-badge ' + statusCls + '">' + esc(r.status || '—') + '</span></td>' +
+      '</tr>';
+  }).join('');
+  const body =
+    '<div class="modal-summary">Total: ' + fmtTokens(totalIn) + ' in / ' + fmtTokens(totalOut) + ' out · ' + fmtCost(totalCost) + ' · ' + runs.length + ' runs</div>' +
+    '<div style="overflow-x:auto">' +
+      '<table class="runs-table">' +
+        '<thead><tr><th>Started</th><th>Source</th><th>Model</th><th>Tokens (in/out)</th><th>Cost</th><th>Status</th></tr></thead>' +
+        '<tbody>' + (rows || '<tr><td colspan="6" style="text-align:center;color:var(--fg-4)">No runs yet.</td></tr>') + '</tbody>' +
+      '</table>' +
+    '</div>';
+  openModal({ title: title || threadId, body: body, wide: true });
+}
+
 function renderModal() {
   const m = state.modal; if (!m) return '';
   const actionsHtml = (m.actions || []).map((a, i) =>
