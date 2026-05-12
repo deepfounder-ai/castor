@@ -971,6 +971,20 @@ def _llm_call(system: str, user: str, max_tokens: int = 2048) -> str:
     return raw
 
 
+def _tools_to_python_literal(tools_list: list) -> str:
+    """Render a JSON-shaped tools list as a Python literal.
+
+    `json.dumps` produces `true`/`false`/`null` — embedding that verbatim
+    in a `.py` template gives bare identifier names that Python's AST
+    parses but `import` rejects with NameError. `pprint.pformat` with
+    `sort_dicts=False` preserves insertion order and emits `True`/
+    `False`/`None`, so the rendered module is both syntactically valid
+    AND runtime-importable.
+    """
+    import pprint
+    return pprint.pformat(tools_list, indent=4, width=100, sort_dicts=False)
+
+
 def _extract_json(raw: str):
     """Extract JSON from LLM output, handling markdown fences and thinking text."""
     # Strip thinking tags (tagged and untagged)
@@ -1368,10 +1382,16 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             # ── Step 2: Tool definitions ──
             _progress(f"Step 2/5: generating tools (attempt {attempt})")
             _log.info(f"[{skill_name}] step 2: generating tool definitions")
+            # Scale token budget to planned tool count — a single tool
+            # definition with parameters easily takes 400-600 tokens; 3+
+            # tools at the old flat 2048 cap truncated mid-output and the
+            # JSON repair couldn't reconstruct what wasn't streamed.
+            planned_tool_count = max(1, len(plan.get("tools", [])))
+            step2_tokens = max(2048, 800 * planned_tool_count)
             tools_raw = _llm_call(
                 STEP2_TOOLS,
                 f"Skill: {skill_name}\nPlan:\n{json.dumps(plan, indent=2, ensure_ascii=False)}",
-                max_tokens=2048,
+                max_tokens=step2_tokens,
             )
             tools_list = _extract_json(tools_raw)
             if not tools_list or not isinstance(tools_list, list):
@@ -1427,7 +1447,14 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                     f"returns a string. All code for a tool MUST be indented "
                     f"under its branch — no top-level statements between branches."
                 )
-                custom_raw = _llm_call(STEP3_CODE, custom_prompt, max_tokens=2048)
+                # Each custom tool branch with a full implementation
+                # (not stub `pass`) takes 400-1500 tokens. At the old
+                # flat 2048 cap with 3 custom tools, the LLM ran out
+                # mid-function — left an unterminated string literal at
+                # the truncation point and `ast.parse` rejected the
+                # whole file. Scale the budget.
+                step3_tokens = max(2048, 1500 * len(custom_tools))
+                custom_raw = _llm_call(STEP3_CODE, custom_prompt, max_tokens=step3_tokens)
                 custom_code = _extract_code(custom_raw)
                 custom_code = _fix_indentation(custom_code)
                 custom_code = _fix_empty_blocks(custom_code)
@@ -1452,7 +1479,13 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             # ── Step 5: Assemble & validate ──
             _progress(f"Step 5/5: validating (attempt {attempt})")
             _log.info(f"[{skill_name}] step 5: assembling and validating")
-            tools_json = json.dumps(tools_list, indent=4, ensure_ascii=False)
+            # Render TOOLS as a Python literal, not raw JSON. The OpenAI
+            # function-schema spec uses `true`/`false`/`null` (e.g. the
+            # newer `"additionalProperties": false`); embedding the JSON
+            # text verbatim leaves bare `false` / `true` / `null` names
+            # in the module body, which `ast.parse` accepts but `import`
+            # fails with NameError. Use pprint to emit valid Python.
+            tools_json = _tools_to_python_literal(tools_list)
 
             code = SKILL_TEMPLATE.format(
                 docstring=plan.get("docstring", f"{skill_name} skill"),

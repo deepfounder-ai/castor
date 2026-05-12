@@ -189,6 +189,92 @@ def test_assemble_from_mapping_produces_valid_python(sc):
     ast.parse(wrapped)
 
 
+# ── TOOLS literal rendering — JSON true/false/null → Python ─────────
+
+
+def test_tools_literal_converts_json_booleans_to_python(sc):
+    """OpenAI's strict-mode function schemas use `additionalProperties:
+    false`. json.dumps emits `false`; embedding that in a Python file
+    parses fine but imports with NameError. The helper must produce
+    Python's `False` instead.
+
+    Regression: 2026-05-11 `notebooklm` skill generation failed because
+    three `"additionalProperties": false` markers landed in the rendered
+    module as bare `false` identifiers.
+    """
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "test_tool",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    ]
+    rendered = sc._tools_to_python_literal(tools_list)
+    # No bare JSON keywords should leak through
+    assert ": false" not in rendered
+    assert ": true" not in rendered
+    assert ": null" not in rendered
+    # And the Python equivalent should be there
+    assert "False" in rendered
+
+
+def test_tools_literal_round_trips_through_module_import(sc, tmp_path):
+    """End-to-end pin: the rendered module must IMPORT cleanly, not
+    just `ast.parse`. The notebooklm bug bypassed ast.parse (bare
+    `false` is a valid Name node) and only blew up at import time.
+    """
+    import importlib.util
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "foo",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "additionalProperties": False,
+                    "required": [],
+                },
+            },
+        },
+    ]
+    rendered = sc._tools_to_python_literal(tools_list)
+    module_src = (
+        '"""test"""\n'
+        f'TOOLS = {rendered}\n'
+        'def execute(name, args): return ""\n'
+    )
+    p = tmp_path / "test_skill.py"
+    p.write_text(module_src, encoding="utf-8")
+    # If conversion is broken, this raises NameError at exec time
+    spec = importlib.util.spec_from_file_location("test_skill", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Verify the value made it through correctly
+    assert mod.TOOLS[0]["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_tools_literal_preserves_insertion_order(sc):
+    """OpenAI's function-schema spec is order-sensitive for some clients;
+    pprint.pformat with sort_dicts=False keeps dict insertion order."""
+    tools_list = [{
+        "type": "function",
+        "function": {"name": "a", "description": "x", "parameters": {"type": "object"}},
+    }]
+    rendered = sc._tools_to_python_literal(tools_list)
+    # `type` must appear before `function` in the rendered output
+    assert rendered.find("'type'") < rendered.find("'function'")
+
+
 # ── delete_skill protections ─────────────────────────────────────────
 
 
