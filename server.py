@@ -65,6 +65,10 @@ _abort_event = threading.Event()
 # Signals that the user has discovered the cost-tracking feature.
 _cost_tracking_first_use_seen = False
 
+# Fired once per process when the resume endpoint is first called.
+# Signals that the user has discovered the auto-resume feature.
+_auto_resume_first_use_seen = False
+
 # Connected WebSocket clients for broadcast (thread-safe via copy-on-iterate)
 import threading as _threading
 _ws_clients: set = set()
@@ -3198,6 +3202,14 @@ async def get_thread_runs(thread_id: str, limit: int = 50, offset: int = 0):
 async def resume_run_endpoint(run_id: int, background_tasks: BackgroundTasks):
     """Trigger resume of an aborted agent run. Returns immediately;
     streaming output flows via WS."""
+    global _auto_resume_first_use_seen
+    if not _auto_resume_first_use_seen:
+        _auto_resume_first_use_seen = True
+        try:
+            import telemetry
+            telemetry.track_event("feature_first_use", {"feature": "auto_resume"})
+        except Exception:
+            pass
     row = db._get_conn().execute(
         "SELECT status, dismissed_at, resumed_from_run_id FROM agent_runs WHERE id=?",
         (run_id,),
