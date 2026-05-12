@@ -1955,6 +1955,31 @@ async def get_analytics_period(days: int = 30, source: str | None = None):
     return db.get_period_totals(start_ts, end_ts, source=src)
 
 
+@app.get("/api/pricing/status")
+async def pricing_status():
+    """Return pricing cache metadata: model count, source URL, cache age."""
+    import pricing, config, time as _time
+    fetched = pricing.last_updated()
+    return {
+        "last_updated": fetched,
+        "model_count": len(pricing.all_known_models()),
+        "source_url": config.get("pricing_url"),
+        "auto_update": config.get("pricing_auto_update"),
+        "cache_age_sec": (_time.time() - fetched) if fetched else None,
+    }
+
+
+@app.post("/api/pricing/refresh")
+async def pricing_refresh():
+    """Force-refresh the pricing table from the configured source URL."""
+    import pricing
+    ok = pricing.refresh_pricing(force=True)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "refresh failed"}, status_code=502)
+    return {"ok": True, "model_count": len(pricing.all_known_models()),
+            "fetched_at": pricing.last_updated()}
+
+
 # ── Cron/Tasks endpoints ──
 
 @app.get("/api/cron")

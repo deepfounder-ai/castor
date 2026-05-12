@@ -73,3 +73,27 @@ def test_analytics_period_source_filter(client, qwe_temp_data_dir):
                               status="ok", input_tokens=tok, output_tokens=tok)
     r = client.get("/api/analytics/period?days=30&source=routine")
     assert r.json()["total_input_tokens"] == 200
+
+
+def test_pricing_status(client, qwe_temp_data_dir):
+    r = client.get("/api/pricing/status")
+    j = r.json()
+    assert "model_count" in j
+    assert "source_url" in j
+    assert "auto_update" in j
+
+
+def test_pricing_refresh_success(client, qwe_temp_data_dir, monkeypatch):
+    import pricing
+    monkeypatch.setattr(pricing, "refresh_pricing", lambda force=False: True)
+    monkeypatch.setattr(pricing, "all_known_models", lambda: ["x", "y"])
+    r = client.post("/api/pricing/refresh")
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_pricing_refresh_failure(client, qwe_temp_data_dir, monkeypatch):
+    import pricing
+    monkeypatch.setattr(pricing, "refresh_pricing", lambda force=False: False)
+    r = client.post("/api/pricing/refresh")
+    assert r.status_code == 502
+    assert r.json()["ok"] is False
