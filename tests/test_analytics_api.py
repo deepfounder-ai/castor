@@ -49,3 +49,27 @@ def test_thread_runs_empty_thread_returns_empty_list(client, qwe_temp_data_dir):
     r = client.get("/api/threads/never-existed/runs")
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_analytics_period_aggregates(client, qwe_temp_data_dir):
+    import db, time
+    for src, tok in [("web", 100), ("routine", 200), ("synthesis", 50)]:
+        rid = db.insert_agent_run(thread_id="t1", source=src,
+                                  started_at=time.time(), status="running")
+        db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
+                              status="ok", input_tokens=tok, output_tokens=tok)
+    r = client.get("/api/analytics/period?days=30")
+    j = r.json()
+    assert j["total_input_tokens"] == 350
+    assert "by_source" in j and "synthesis" in j["by_source"]
+
+
+def test_analytics_period_source_filter(client, qwe_temp_data_dir):
+    import db, time
+    for src, tok in [("web", 100), ("routine", 200)]:
+        rid = db.insert_agent_run(thread_id="t1", source=src,
+                                  started_at=time.time(), status="running")
+        db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
+                              status="ok", input_tokens=tok, output_tokens=tok)
+    r = client.get("/api/analytics/period?days=30&source=routine")
+    assert r.json()["total_input_tokens"] == 200

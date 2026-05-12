@@ -1943,6 +1943,18 @@ async def add_provider(data: dict):
     return {"result": providers.add(name, url, key, models)}
 
 
+# ── Analytics endpoints ──
+
+@app.get("/api/analytics/period")
+async def get_analytics_period(days: int = 30, source: str | None = None):
+    """Aggregated token/cost metrics for a rolling time window."""
+    import time as _time
+    end_ts = _time.time()
+    start_ts = end_ts - max(1, int(days)) * 86400
+    src = None if not source or source == "all" else source
+    return db.get_period_totals(start_ts, end_ts, source=src)
+
+
 # ── Cron/Tasks endpoints ──
 
 @app.get("/api/cron")
