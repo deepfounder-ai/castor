@@ -183,6 +183,16 @@ Full data inventory + privacy contract: `docs/PRIVACY.md`.
 
 User-facing doc: `docs/COST_TRACKING.md`.
 
+### Routine budget caps (v0.21.0)
+
+Per-routine USD spending caps over a configurable rolling window. Migration `010_routine_budget.sql` adds `budget_usd_cap` (NULL = no cap) and `budget_period_sec` (default 86400) to `scheduled_tasks`.
+
+- `db.get_routine_budget(cron_id)` — returns `{"cap": float, "period_sec": int}` or `None`.
+- `db.get_routine_period_spend(cron_id, period_sec)` — sums `agent_runs.cost_usd` over the window. NULL costs treated as 0 (local/unknown-price models never hit caps).
+- `scheduler._execute_routine` checks budget **after** acquiring the fire lock (atomic w.r.t. concurrent fires). On cap exceeded: calls `db.insert_skipped_run(..., reason="skipped")` then sets `error='budget_exceeded'` on that row, releases the lock, and returns without running `agent.run`.
+- API: `GET /api/routines/{id}/budget` returns `{cap, period_sec, spent}`; `POST /api/routines/{id}/budget` sets or clears the cap. `cap=null` disables enforcement.
+- UI: Routines page shows a color-coded budget chip per routine (green < 80%, orange 80–99%, red >= 100%). Click opens a `prompt()` dialog to set/clear cap + period. `loadRoutineBudgets()` runs alongside `loadRoutineCosts()` on every non-silent Routines view load.
+
 ### Skill import from skills.sh / GitHub (`skills/skill_import.py`)
 
 **Added v0.18.x.** Imports community skills following the agentskills.io SKILL.md spec (YAML frontmatter + markdown body + optional `scripts/` `references/` `assets/`). Two layers:
