@@ -5552,6 +5552,7 @@ function openSettingsTab(id) {
   if (id === 'advanced') loadAdvanced();
   if (id === 'tools') loadSpicy();
   if (id === 'privacy') loadTelemetry();
+  if (id === 'cost') { state._pricingStatusLoading = false; loadPricingStatus(); }
 }
 
 // ───── Modal bodies ─────
@@ -5780,6 +5781,7 @@ function renderSettingsTab() {
   if (tab === 'appearance') return renderTabAppearance();
   if (tab === 'advanced') return renderTabAdvanced();
   if (tab === 'account') return renderTabAccount();
+  if (tab === 'cost') return renderTabCost();
   return '';
 }
 
@@ -6617,6 +6619,97 @@ function renderTabAccount() {
 }
 
 
+async function loadPricingStatus() {
+  try {
+    const r = await fetch('/api/pricing/status');
+    state.pricingStatus = await r.json();
+  } catch (e) {
+    state.pricingStatus = {};
+  }
+  render();
+}
+
+function renderTabCost() {
+  const ps = state.pricingStatus || {};
+  if (!ps.last_updated && !ps.source_url) {
+    // kick off the load if not already done
+    if (!state._pricingStatusLoading) { state._pricingStatusLoading = true; loadPricingStatus(); }
+  }
+  const DEFAULT_PRICING_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+  const lastUpdated = ps.last_updated
+    ? new Date((ps.last_updated > 1e12 ? ps.last_updated : ps.last_updated * 1000)).toLocaleString()
+    : 'never';
+  return '<h2>Cost tracking</h2><p class="intro">Token pricing data used to calculate per-run costs. Prices are sourced from LiteLLM\'s public price list.</p>' +
+    settingsSection('Pricing source',
+      settingRow('Source URL', 'JSON file with model price data.',
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          '<input class="setting-input mono" id="pricing-url-input" value="' + esc(ps.source_url || DEFAULT_PRICING_URL) + '" style="flex:1">' +
+          '<button class="btn-secondary" id="pricing-url-save" style="flex-shrink:0">Save</button>' +
+          '<button class="btn-secondary" id="pricing-url-restore" style="flex-shrink:0">Default</button>' +
+        '</div>'
+      ) +
+      settingRow('Auto-update', 'Re-fetch prices every 24h automatically.',
+        '<button class="toggle ' + (ps.auto_update ? 'on' : '') + '" id="pricing-autoupdate-btn"><span class="knob"></span></button>'
+      ) +
+      settingRow('Last updated', ps.model_count ? (lastUpdated + ' · ' + ps.model_count + ' models') : lastUpdated,
+        '<button class="btn-secondary" id="pricing-refresh-now">Refresh now</button>'
+      )
+    );
+}
+
+function wireTabCost() {
+  const DEFAULT_PRICING_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
+  const restoreBtn = document.getElementById('pricing-url-restore');
+  if (restoreBtn) {
+    restoreBtn.onclick = function() {
+      const inp = document.getElementById('pricing-url-input');
+      if (inp) inp.value = DEFAULT_PRICING_URL;
+    };
+  }
+  const saveBtn = document.getElementById('pricing-url-save');
+  if (saveBtn) {
+    saveBtn.onclick = async function() {
+      const inp = document.getElementById('pricing-url-input');
+      if (!inp) return;
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        await api('/api/settings', { method: 'POST', body: { pricing_url: inp.value.trim() } });
+        toast('pricing URL saved');
+        state._pricingStatusLoading = false;
+        await loadPricingStatus();
+      } catch (e) { toast('save failed', 'err'); }
+      saveBtn.disabled = false; saveBtn.textContent = 'Save';
+    };
+  }
+  const autoBtn = document.getElementById('pricing-autoupdate-btn');
+  if (autoBtn) {
+    autoBtn.onclick = async function() {
+      const current = autoBtn.classList.contains('on');
+      autoBtn.classList.toggle('on', !current);
+      try {
+        await api('/api/settings', { method: 'POST', body: { pricing_auto_update: !current } });
+        toast(!current ? 'auto-update enabled' : 'auto-update disabled');
+        state._pricingStatusLoading = false;
+        await loadPricingStatus();
+      } catch (e) { toast('save failed', 'err'); }
+    };
+  }
+  const refreshBtn = document.getElementById('pricing-refresh-now');
+  if (refreshBtn) {
+    refreshBtn.onclick = async function() {
+      refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
+      try {
+        const r = await fetch('/api/pricing/refresh', { method: 'POST' });
+        const j = await r.json();
+        toast(j.ok ? ('Updated: ' + j.model_count + ' models') : ('Failed: ' + (j.error || 'unknown error')), j.ok ? 'ok' : 'err');
+        state._pricingStatusLoading = false;
+        await loadPricingStatus();
+      } catch (e) { toast('refresh failed', 'err'); }
+      refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh now';
+    };
+  }
+}
+
 function renderSettingsView() {
   const groups = [
     { label: 'Agent', items: [
@@ -6634,6 +6727,7 @@ function renderSettingsView() {
     { label: 'Automation', items: [
       { id: 'heartbeat',  label: 'Heartbeat',  icon: 'bolt' },
       { id: 'inference',  label: 'Inference',  icon: 'cpu' },
+      { id: 'cost',       label: 'Cost',       icon: 'graph' },
     ]},
     { label: 'System', items: [
       { id: 'network',    label: 'Network',    icon: 'globe' },
@@ -7734,6 +7828,7 @@ function wireEvents() {
   });
 
   document.querySelectorAll('[data-settings]').forEach(b => { b.onclick = () => openSettingsTab(b.dataset.settings); });
+  if (state.settingsTab === 'cost') wireTabCost();
   document.querySelectorAll('[data-soul]').forEach(inp => {
     inp.addEventListener('change', async () => {
       const key = inp.dataset.soul;
