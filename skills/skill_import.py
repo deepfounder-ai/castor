@@ -753,8 +753,17 @@ def delete_import(name: str) -> bool:
     if the user replaced it with hand-written content, their file
     survives (DB row + staged assets are still removed).
     """
+    # Validate name before building any path — prevents path traversal
+    if not _NAME_RE.match(name) or len(name) > _MAX_NAME_LEN:
+        return False
     py = _user_skills_dir() / f"{name}.py"
     asset_dir = _imported_assets_dir() / name
+    # Belt-and-suspenders: confirm resolved paths stay within expected dirs
+    try:
+        py.resolve().relative_to(_user_skills_dir().resolve())
+        asset_dir.resolve().relative_to(_imported_assets_dir().resolve())
+    except ValueError:
+        return False
     deleted_any = False
 
     try:

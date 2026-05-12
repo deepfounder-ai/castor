@@ -5,11 +5,14 @@ Skills are loaded from two directories:
   2. User skills: ~/.qwe-qwe/skills/ (safe from git updates)
 """
 
-import importlib, importlib.util, sys
+import importlib, importlib.util, re, sys
 from pathlib import Path
 from types import ModuleType
 import db
 import config
+
+# Skill names: lowercase alphanumeric + underscores only, no path separators
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9_]+$")
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
 USER_SKILLS_DIR = config.USER_SKILLS_DIR
@@ -72,6 +75,9 @@ def _find_skill(name: str) -> Path | None:
         2. User skills
         3. Built-in skills
     """
+    # Reject names that contain path separators or other unsafe characters
+    if not _SKILL_NAME_RE.match(name):
+        return None
     preset_dir = _active_preset_skills_dir()
     if preset_dir is not None:
         p = preset_dir / f"{name}.py"

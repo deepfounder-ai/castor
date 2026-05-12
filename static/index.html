@@ -286,6 +286,11 @@ main.canvas { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .tl-topline-refresh { font-size: 10.5px; font-family: var(--font-mono); background: var(--surface); border: 1px solid var(--line-2); color: var(--fg-3); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
 .tl-topline-refresh:hover { border-color: var(--accent); color: var(--accent); }
 .routine-cost-chip { font-family: var(--font-mono); font-size: 10px; color: var(--fg-3); background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 6px; margin-left: auto; flex-shrink: 0; }
+.budget-chip { display:inline-flex;align-items:center;padding:2px 8px;margin-left:6px;border-radius:8px;font-size:.8em;cursor:pointer;font-family:var(--font-mono); }
+.budget-chip-green { background:#e7f5e7;color:#1a661a; }
+.budget-chip-orange { background:#fff3cd;color:#b8860b; }
+.budget-chip-red { background:#fde2e2;color:#a32020; }
+.budget-chip-unset { background:var(--surface-2);color:var(--fg-4);border:1px solid var(--line-2); }
 .tl-foot {
   padding: 10px 14px; border-top: 1px solid var(--line);
   display: flex; align-items: center; gap: 8px;
@@ -3515,8 +3520,11 @@ async function loadCron(opts) {
     // every 2s. Full render() would blow them away.
     if (opts.silent) patchThreadHeader();
     else render();
-    // Load per-routine 30d costs on non-silent scheduler view loads
-    if (!opts.silent && state.view === 'scheduler') loadRoutineCosts();
+    // Load per-routine 30d costs + budget caps on non-silent scheduler view loads
+    if (!opts.silent && state.view === 'scheduler') {
+      loadRoutineCosts();
+      loadRoutineBudgets();
+    }
   } catch { state.cronJobs = []; if (!opts.silent) render(); }
   if (!opts.silent) {
     try {
@@ -3547,6 +3555,66 @@ async function loadRoutineCosts() {
   }
   state.routineCosts = costs;
   render();
+}
+
+async function loadRoutineBudgets() {
+  var jobs = state.cronJobs || [];
+  if (!jobs.length) return;
+  var budgets = {};
+  for (var i = 0; i < jobs.length; i++) {
+    var id = jobs[i].id;
+    try {
+      var r = await fetch('/api/routines/' + encodeURIComponent(id) + '/budget');
+      budgets[id] = await r.json();
+    } catch (e) {
+      budgets[id] = null;
+    }
+  }
+  state.routineBudgets = budgets;
+  render();
+}
+
+function renderBudgetChip(cronId, b) {
+  if (!b) return '';
+  if (b.cap === null || b.cap === undefined) {
+    return '<span class="budget-chip budget-chip-unset" data-budget-edit="' + cronId + '" title="No budget cap — click to set one">No cap</span>';
+  }
+  var pct = b.cap > 0 ? Math.min(100, (b.spent / b.cap) * 100) : 0;
+  var periodLabel = b.period_sec === 3600 ? '/hr'
+                  : b.period_sec === 604800 ? '/wk'
+                  : '/day';
+  var color = pct >= 100 ? 'red' : pct >= 80 ? 'orange' : 'green';
+  return '<span class="budget-chip budget-chip-' + color + '" data-budget-edit="' + cronId + '" title="Budget: $' + b.spent.toFixed(4) + ' spent of $' + b.cap.toFixed(2) + periodLabel + ' (' + Math.round(pct) + '%) — click to edit">' +
+    '$' + b.spent.toFixed(2) + ' / $' + b.cap.toFixed(2) + periodLabel +
+  '</span>';
+}
+
+async function openBudgetEditor(cronId) {
+  var r = await fetch('/api/routines/' + encodeURIComponent(cronId) + '/budget');
+  var b = await r.json();
+  var capStr = prompt(
+    'Set budget cap for this routine in USD (leave empty to remove cap):',
+    (b.cap !== null && b.cap !== undefined) ? String(b.cap) : ''
+  );
+  if (capStr === null) return;  // cancelled
+  var periodStr = prompt(
+    'Rolling window in seconds (3600=hour, 86400=day, 604800=week):',
+    String(b.period_sec || 86400)
+  );
+  if (periodStr === null) return;  // cancelled
+  var cap = capStr.trim() === '' ? null : parseFloat(capStr);
+  var period_sec = parseInt(periodStr) || 86400;
+  var resp = await fetch('/api/routines/' + encodeURIComponent(cronId) + '/budget', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cap: cap, period_sec: period_sec }),
+  });
+  if (resp.ok) {
+    if (typeof loadCron === 'function') loadCron();
+  } else {
+    var err = await resp.json().catch(function() { return {}; });
+    alert('Failed to save budget: ' + (err.error || resp.status));
+  }
 }
 
 // Surgical thread-header swap — used by the routine-thread poll so the
@@ -5202,6 +5270,8 @@ function renderSchedulerView() {
         const rc = state.routineCosts || {};
         const jobCost = rc[j.id] !== undefined ? rc[j.id] : null;
         const costChip = '<span class="routine-cost-chip" title="Cost (last 30 days)">30d: ' + fmtCost(jobCost) + '</span>';
+        const rb = state.routineBudgets || {};
+        const budgetChip = renderBudgetChip(j.id, rb[j.id] !== undefined ? rb[j.id] : null);
         return '<div class="job-card"' + (hasThread ? ' data-open-thread="' + esc(j.threadId) + '"' : '') + ' style="' + cardStyle + '">' +
           '<div class="job-hdr"><div style="flex:1">' +
             '<div class="job-title-row">' +
@@ -5218,8 +5288,8 @@ function renderSchedulerView() {
               '<button class="icon-btn" data-cron="' + esc(j.id) + '" data-cron-act="delete" title="Delete routine (archives the thread)">' + ico('trash', 11) + '</button>' +
             '</div></div>' +
           (j.last
-            ? '<div style="font-size:11px;color:' + (errLast ? 'var(--err)' : 'var(--fg-4)') + ';margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">last ' + esc(j.last) + ' · ' + (j.runs||0).toLocaleString() + ' runs' + costChip + '</div>'
-            : '<div style="font-size:11px;color:var(--fg-5);margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">not run yet' + costChip + '</div>') +
+            ? '<div style="font-size:11px;color:' + (errLast ? 'var(--err)' : 'var(--fg-4)') + ';margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">last ' + esc(j.last) + ' · ' + (j.runs||0).toLocaleString() + ' runs' + costChip + budgetChip + '</div>'
+            : '<div style="font-size:11px;color:var(--fg-5);margin-top:6px;font-family:var(--font-mono);display:flex;align-items:center;gap:8px">not run yet' + costChip + budgetChip + '</div>') +
           // Sparkline of last 20 fires — one dot per attempt, colored
           // by status. Shows missed (server-offline) runs alongside
           // ok/err so users see the real timeline.
@@ -8677,6 +8747,14 @@ function wireEvents() {
       }
     };
   });
+  // Budget chip click — open budget editor dialog.
+  document.querySelectorAll('[data-budget-edit]').forEach(chip => {
+    chip.onclick = async (e) => {
+      e.stopPropagation();
+      await openBudgetEditor(chip.dataset.budgetEdit);
+    };
+  });
+
   // Click on a routine card → switch to that routine's thread, go to chat.
   document.querySelectorAll('[data-open-thread]').forEach(card => {
     card.onclick = async () => {

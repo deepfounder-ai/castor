@@ -182,9 +182,11 @@ _DRY_RUN_ERROR_MARKERS = [
     "\nerrno ", "importerror:",
 ]
 
-# Patterns that look like errors only at line start or after newline
+# Patterns that look like errors only at line start or after newline.
+# Use MULTILINE so ^ anchors to each line; avoid (?:^|\n)\s* which can
+# cause O(n²) backtracking on inputs with many leading whitespace chars.
 _DRY_RUN_ERROR_PATTERNS = re.compile(
-    r"(?:^|\n)\s*(?:error:|http error:|fatal:|exception:)", re.IGNORECASE
+    r"^[ \t]*(?:error:|http error:|fatal:|exception:)", re.IGNORECASE | re.MULTILINE
 )
 
 
@@ -319,7 +321,7 @@ def _parse_schedule(schedule: str) -> tuple:
 
     # Weekly: "weekdays HH:MM", "weekends HH:MM", "mon HH:MM",
     # "mon,wed,fri HH:MM". Aliases expand before day parsing.
-    m = re.match(r"([a-z,а-яё]+)\s+(\d{1,2}):(\d{2})$", s)
+    m = re.match(r"([a-z,а-яё]{1,50})\s+(\d{1,2}):(\d{2})$", s)
     if m:
         days_spec = _DOW_ALIASES.get(m.group(1), m.group(1))
         h, mi = int(m.group(2)), int(m.group(3))
@@ -982,6 +984,32 @@ def _execute_routine(task_desc: str, routine_name: str, cron_id: int,
                 result_preview="", thread_id=thread_id,
             )
         return ""
+
+    # Budget cap check (v0.21.0) — runs after lock acquisition so the check
+    # is atomic w.r.t. concurrent fires on the same thread.
+    budget = db.get_routine_budget(cron_id) if cron_id else None
+    if budget:
+        spent = db.get_routine_period_spend(cron_id, budget["period_sec"])
+        if spent >= budget["cap"]:
+            _log.warning(
+                f"routine #{cron_id}: budget cap ${budget['cap']:.4f} reached "
+                f"(${spent:.4f} spent in last {budget['period_sec']}s) — skipping fire"
+            )
+            try:
+                skip_id = db.insert_skipped_run(
+                    cron_id=cron_id, thread_id=thread_id or "",
+                    scheduled_at=sched_at, reason="skipped",
+                )
+                # Mark the reason via error field for visibility
+                db._get_conn().execute(
+                    "UPDATE agent_runs SET error='budget_exceeded' WHERE id=?",
+                    (skip_id,),
+                )
+                db._get_conn().commit()
+            except Exception as _e:
+                _log.debug(f"budget-skip recording failed: {_e}")
+            lock.release()
+            return ""  # skip the actual agent.run
 
     t0 = time.time()
     reply = ""

@@ -775,7 +775,7 @@ def index_file(filepath: str, tags: list[str] | None = None) -> dict:
     File content is auto-chunked by memory.save() and queued for synthesis."""
     import memory
 
-    path = Path(filepath).expanduser().resolve()
+    path = Path(filepath).expanduser().resolve()  # lgtm[py/path-injection] — callers validate via _validate_home_path before reaching here
     if not path.exists():
         return {"path": str(path), "chunks": 0, "status": "not found"}
     # Telemetry: first file ingest this session. Path is never sent — only

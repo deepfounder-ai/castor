@@ -189,6 +189,173 @@ def test_assemble_from_mapping_produces_valid_python(sc):
     ast.parse(wrapped)
 
 
+# ── TOOLS literal rendering — JSON true/false/null → Python ─────────
+
+
+def test_tools_literal_converts_json_booleans_to_python(sc):
+    """OpenAI's strict-mode function schemas use `additionalProperties:
+    false`. json.dumps emits `false`; embedding that in a Python file
+    parses fine but imports with NameError. The helper must produce
+    Python's `False` instead.
+
+    Regression: 2026-05-11 `notebooklm` skill generation failed because
+    three `"additionalProperties": false` markers landed in the rendered
+    module as bare `false` identifiers.
+    """
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "test_tool",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    ]
+    rendered = sc._tools_to_python_literal(tools_list)
+    # No bare JSON keywords should leak through
+    assert ": false" not in rendered
+    assert ": true" not in rendered
+    assert ": null" not in rendered
+    # And the Python equivalent should be there
+    assert "False" in rendered
+
+
+def test_tools_literal_round_trips_through_module_import(sc, tmp_path):
+    """End-to-end pin: the rendered module must IMPORT cleanly, not
+    just `ast.parse`. The notebooklm bug bypassed ast.parse (bare
+    `false` is a valid Name node) and only blew up at import time.
+    """
+    import importlib.util
+    tools_list = [
+        {
+            "type": "function",
+            "function": {
+                "name": "foo",
+                "description": "x",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "additionalProperties": False,
+                    "required": [],
+                },
+            },
+        },
+    ]
+    rendered = sc._tools_to_python_literal(tools_list)
+    module_src = (
+        '"""test"""\n'
+        f'TOOLS = {rendered}\n'
+        'def execute(name, args): return ""\n'
+    )
+    p = tmp_path / "test_skill.py"
+    p.write_text(module_src, encoding="utf-8")
+    # If conversion is broken, this raises NameError at exec time
+    spec = importlib.util.spec_from_file_location("test_skill", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    # Verify the value made it through correctly
+    assert mod.TOOLS[0]["function"]["parameters"]["additionalProperties"] is False
+
+
+def test_tools_literal_preserves_insertion_order(sc):
+    """OpenAI's function-schema spec is order-sensitive for some clients;
+    pprint.pformat with sort_dicts=False keeps dict insertion order."""
+    tools_list = [{
+        "type": "function",
+        "function": {"name": "a", "description": "x", "parameters": {"type": "object"}},
+    }]
+    rendered = sc._tools_to_python_literal(tools_list)
+    # `type` must appear before `function` in the rendered output
+    assert rendered.find("'type'") < rendered.find("'function'")
+
+
+# ── Template escape: docstring / description / instruction ──────────
+
+
+def test_docstring_block_escapes_triple_quote(sc):
+    """A docstring containing `\"\"\"` would prematurely close the
+    rendered module docstring. The helper must escape."""
+    block = sc._docstring_block('Has """ in it')
+    assert '"""\\"\\"\\"' in block or '\\"\\"\\"' in block
+    # Result must still ast.parse as a module
+    import ast
+    ast.parse(block + '\nX = 1\n')
+
+
+def test_docstring_block_handles_trailing_backslash(sc):
+    """`text\\\\` at the end of a triple-quoted string escapes the
+    closing quote. The helper must defuse."""
+    import ast
+    block = sc._docstring_block('Has a trailing backslash\\')
+    ast.parse(block + '\nX = 1\n')
+
+
+def test_skill_template_survives_quotes_in_user_strings(sc):
+    """Regression: a planner returning `"docstring": 'Logs "important"
+    events'` used to break the rendered .py because the embedded `"`
+    closed the DESCRIPTION literal early. With repr() on the user
+    strings + _docstring_block on the docstring, rendering survives."""
+    import ast
+    code = sc.SKILL_TEMPLATE.format(
+        docstring_block=sc._docstring_block('Has " quotes'),
+        short_description_repr=repr('Quote\'s in here " too'),
+        instruction_repr=repr('Triple """ inside instruction'),
+        tools_json="[]",
+        table_ddl="    pass  # no tables",
+        execute_body="    pass  # no body",
+    )
+    ast.parse(code)
+
+
+def test_skill_template_runs_imports_cleanly(sc, tmp_path):
+    """The escape contract is import-time, not just ast-parse. Bug #2
+    from the recent fix slipped past ast.parse but failed at import.
+    Pin both layers."""
+    import ast
+    import importlib.util
+    code = sc.SKILL_TEMPLATE.format(
+        docstring_block=sc._docstring_block("normal docstring"),
+        short_description_repr=repr("Has 'mixed' \"quotes\""),
+        instruction_repr=repr("Use \"this\" tool."),
+        tools_json="[]",
+        table_ddl="    pass",
+        execute_body='    if name == "x":\n        return ""',
+    )
+    ast.parse(code)
+    p = tmp_path / "test_skill.py"
+    p.write_text(code, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("test_skill", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.DESCRIPTION == "Has 'mixed' \"quotes\""
+    assert "Use" in mod.INSTRUCTION
+
+
+# ── _extract_code accepts parenthesised condition ────────────────────
+
+
+def test_extract_code_accepts_parenthesised_name_check(sc):
+    """Gemma 4B sometimes wraps: `if (name == "x"):`. The anchor
+    regex must catch it; otherwise the rest of the pipeline gets
+    garbage to indent-fix."""
+    raw = (
+        "Some preamble text.\n"
+        '```python\n'
+        'if (name == "foo"):\n'
+        '    return "ok"\n'
+        '```\n'
+    )
+    extracted = sc._extract_code(raw)
+    assert 'if (name == "foo"):' in extracted
+    assert 'return "ok"' in extracted
+
+
 # ── delete_skill protections ─────────────────────────────────────────
 
 

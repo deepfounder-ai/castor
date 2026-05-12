@@ -245,3 +245,16 @@ def test_migration_009_adds_dismissed_at_index(qwe_temp_data_dir):
         "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='agent_runs'"
     ).fetchall()}
     assert "idx_agent_runs_dismissed_at" in indexes
+
+
+# ---------------------------------------------------------------------------
+# Migration 010 — routine budget caps
+# ---------------------------------------------------------------------------
+
+def test_migration_010_adds_budget_columns(qwe_temp_data_dir):
+    import db
+    db._migrated = False
+    conn = db._get_conn()
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
+    assert "budget_usd_cap" in cols
+    assert "budget_period_sec" in cols
