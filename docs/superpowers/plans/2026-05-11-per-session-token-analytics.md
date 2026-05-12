@@ -32,7 +32,7 @@
 - `synthesis.py` — bracket each LLM call.
 - `skills/skill_creator.py` — bracket whole `_run_pipeline()`.
 - `scheduler.py` — replace `_append_run` / `list_runs` to use `agent_runs`. Pass `cron_id` via ctx.
-- `server.py` — extend `/api/sessions`, add 4 new endpoints, start pricing refresher on boot.
+- `server.py` — extend `/api/threads`, add 4 new endpoints, start pricing refresher on boot.
 - `config.py` — add `pricing_url` + `pricing_auto_update` to `EDITABLE_SETTINGS`.
 - `telemetry.py` — add `"cost_tracking"` to `FEATURES`, bump `_CURRENT_CONSENT_VERSION`.
 - `static/index.html` — Sessions list columns, `SessionRunsModal`, topline widget, Settings section, Routines page column.
@@ -1388,66 +1388,88 @@ git commit -m "feat(agent_loop): instrument run_loop with agent_runs bracket"
 **Files:**
 - Modify: `synthesis.py`
 
-- [ ] **Step 1: Find synthesis LLM calls**
+**Context:** The public entry is `run_synthesis()` (no args) which iterates `pending` groups via `_process_group(client, model, group_name, chunks)`. The actual LLM call site is **`_extract_entities(client, model, text)` at line 128** — that's the only `client.chat.completions.create(...)` in the file. Synthesis chunks carry their originating `thread_id` via the chunk dict; when missing, default to a sentinel "__synthesis__" string so the run still groups together in analytics.
 
-Run: `grep -n "providers\.chat\|client\.chat\|completions\.create" synthesis.py`
-This locates the LLM-call sites that need wrapping.
+- [ ] **Step 1: Confirm the LLM call site**
 
-- [ ] **Step 2: Wrap each call with insert/finalize**
+Run: `grep -n "client.chat.completions.create\|client\.chat" synthesis.py`
+Expected: exactly one hit around line 128 inside `_extract_entities`.
 
-For each LLM call site, change:
+- [ ] **Step 2: Change `_extract_entities` signature to accept `thread_id`**
+
+Modify the signature to take `thread_id: str = "__synthesis__"`:
 
 ```python
-resp = client.chat.completions.create(...)
+def _extract_entities(client, model: str, text: str, thread_id: str = "__synthesis__") -> dict | None:
 ```
 
-into:
+And in `_process_group`, pass it through:
+
+```python
+# in _process_group, find chunks[0] thread_id (fall back to group_name)
+src_thread = chunks[0].get("thread_id") or group_name or "__synthesis__"
+extraction = _extract_entities(client, model, full_text, thread_id=src_thread)
+```
+
+- [ ] **Step 3: Wrap the LLM call**
+
+Inside `_extract_entities`, before the existing `try:` that wraps `client.chat.completions.create(...)`, add the bracket:
 
 ```python
 import db, pricing, time as _t
+import providers as _providers
 _started = _t.time()
-_rid = db.insert_agent_run(thread_id=thread_id, source="synthesis",
-                            started_at=_started, status="running",
-                            model=model, provider=provider)
-_status = "ok"; _err = None
+_rid = db.insert_agent_run(
+    thread_id=thread_id, source="synthesis",
+    started_at=_started, status="running",
+    model=model, provider=_providers.current_kind(),
+)
+_status = "ok"; _err = None; in_tok = out_tok = 0
 try:
     resp = client.chat.completions.create(...)
-    in_tok = getattr(resp.usage, 'prompt_tokens', 0) or 0
-    out_tok = getattr(resp.usage, 'completion_tokens', 0) or 0
+    if getattr(resp, "usage", None):
+        in_tok = int(getattr(resp.usage, "prompt_tokens", 0) or 0)
+        out_tok = int(getattr(resp.usage, "completion_tokens", 0) or 0)
+    # ... existing JSON-parse logic unchanged ...
 except Exception as e:
-    _status = "err"; _err = str(e)[:500]; in_tok = out_tok = 0
+    _status = "err"; _err = str(e)[:500]
     raise
 finally:
     _finished = _t.time()
-    db.finalize_agent_run(_rid, finished_at=_finished,
+    db.finalize_agent_run(
+        _rid, finished_at=_finished,
         duration_ms=int((_finished - _started) * 1000),
         status=_status, error=_err,
         input_tokens=in_tok, output_tokens=out_tok,
-        cost_usd=pricing.compute_cost(model, in_tok, out_tok))
+        cost_usd=pricing.compute_cost(model, in_tok, out_tok),
+    )
 ```
 
-- [ ] **Step 3: Write the test**
+(`providers.current_kind()` may need verification — substitute with whichever helper returns "openai" / "anthropic" / "lmstudio" / etc. Check `providers.py` for the actual name.)
+
+- [ ] **Step 4: Write the test**
 
 Append to `tests/test_integration.py`:
 
 ```python
-def test_synthesis_call_writes_agent_runs_row(qwe_temp_data_dir, mock_llm):
-    import synthesis, db
-    synthesis.run_one_pass(thread_id="t1")  # adjust to actual public entry
-    rows = [r for r in db.get_runs_for_thread("t1") if r["source"] == "synthesis"]
+def test_synthesis_call_writes_agent_runs_row(qwe_temp_data_dir, mock_llm, monkeypatch):
+    import synthesis, db, memory
+    # Seed a single pending chunk so synthesis has work to do
+    monkeypatch.setattr(memory, "get_pending_synthesis",
+                        lambda limit: {"grp1": [{"id": "c1", "text": "hello world",
+                                                 "thread_id": "t-syn", "source": "test"}]})
+    monkeypatch.setattr(memory, "mark_synthesized", lambda ids: None)
+    synthesis.run_synthesis()
+    rows = [r for r in db.get_runs_for_thread("t-syn") if r["source"] == "synthesis"]
     assert len(rows) >= 1
 ```
 
-- [ ] **Step 4: Run tests**
-
-Run: `pytest tests/test_integration.py::test_synthesis_call_writes_agent_runs_row -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Run + Commit**
 
 ```bash
+pytest tests/test_integration.py::test_synthesis_call_writes_agent_runs_row -v
 git add synthesis.py tests/test_integration.py
-git commit -m "feat(synthesis): instrument LLM calls with agent_runs"
+git commit -m "feat(synthesis): instrument _extract_entities with agent_runs"
 ```
 
 ---
@@ -1515,10 +1537,25 @@ git commit -m "feat(skill_creator): instrument pipeline with agent_runs"
 
 **Files:**
 - Modify: `scheduler.py`
+- Test: `tests/test_scheduler.py` (existing — adjust failing cases)
+
+**Call sites to refactor** (verified line ranges from current `scheduler.py`):
+
+| Line | What to do |
+|---|---|
+| ~389 | `firing: true iff agent.run is currently executing` — docstring only, leave |
+| ~576 | `_fire()`: passes ctx into `agent.run`; **add `ctx.cron_id = cron_id` before the call** so agent_loop's instrumentation links the row |
+| ~634 | "Routines run through agent.run" — comment, leave |
+| ~752 | `_append_run(...)`: full body rewrite — see Step 2 below |
+| ~777 | `list_runs(cron_id, limit)`: replace body with `return db.get_runs_for_routine(cron_id, limit=limit)` |
+| ~807 | `count_recent_runs_by_status(cron_id, limit)`: change SQL to `agent_runs` table |
+| ~821 | `detect_missed_runs()`: where it currently inserts a `missed` row into `routine_runs`, switch to `db.insert_skipped_run(cron_id, thread_id, scheduled_at, reason='missed')` |
+| ~894 | `_fire` body: **remove** the `_append_run` call for ok/err completions — agent_loop now writes that row. Keep the `_append_run` call ONLY for the per-thread-lock-held `skipped` case |
 
 - [ ] **Step 1: Find current call sites**
 
 Run: `grep -n "_append_run\|list_runs\|count_recent_runs\|detect_missed_runs\|routine_runs" scheduler.py`
+Expected: matches the line ranges in the table above. (If the file has drifted since this plan was written, use the grep output to anchor edits.)
 
 - [ ] **Step 2: Replace `_append_run` body**
 
@@ -1595,19 +1632,22 @@ git commit -m "refactor(scheduler): point routine bookkeeping at agent_runs"
 
 ## Phase 4 — API Endpoints
 
-### Task 15: Extend `GET /api/sessions`
+### Task 15: Extend `GET /api/threads`
 
 **Files:**
-- Modify: `server.py`
+- Modify: `server.py` (handler at line 2984)
 - Test: `tests/test_analytics_api.py` (new file)
+
+**Naming note:** qwe-qwe's data layer uses "threads" everywhere. The UI's "Sessions list" is a thread list, and the endpoint is `GET /api/threads`. The spec uses "session" in user-facing copy but every code path is "thread".
 
 - [ ] **Step 1: Find existing endpoint**
 
-Run: `grep -n "@app.get.*api/sessions\b\|def list_sessions" server.py`
+Run: `grep -n '@app.get."/api/threads"' server.py`
+Expected: hits at line 2984. Read ~30 lines below to see the current response shape (the `est_tokens` / `user_messages` fields already aggregated there are computed differently — we add the new fields alongside, don't replace).
 
 - [ ] **Step 2: Add `db.get_thread_totals` calls**
 
-In the existing `GET /api/sessions` handler, after constructing each session dict, merge the totals:
+In the existing `GET /api/threads` handler, after constructing each session dict, merge the totals:
 
 ```python
 sessions = []
@@ -1646,7 +1686,7 @@ def test_sessions_endpoint_includes_token_fields(client, qwe_temp_data_dir):
     db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
                           status="ok", input_tokens=100, output_tokens=50,
                           cost_usd=0.001)
-    r = client.get("/api/sessions")
+    r = client.get("/api/threads")
     assert r.status_code == 200
     sess = [s for s in r.json() if s["thread_id"] == "t1"]
     assert sess and sess[0]["input_tokens"] == 100
@@ -1663,12 +1703,12 @@ Expected: PASS.
 
 ```bash
 git add server.py tests/test_analytics_api.py
-git commit -m "feat(api): extend /api/sessions with tokens/cost/run_count"
+git commit -m "feat(api): extend /api/threads with tokens/cost/run_count"
 ```
 
 ---
 
-### Task 16: New `GET /api/sessions/{thread_id}/runs`
+### Task 16: New `GET /api/threads/{thread_id}/runs`
 
 **Files:**
 - Modify: `server.py`
@@ -1687,7 +1727,7 @@ def test_session_runs_endpoint(client, qwe_temp_data_dir):
         db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
                               status="ok", input_tokens=tok, output_tokens=tok,
                               cost_usd=tok * 1e-6)
-    r = client.get("/api/sessions/t1/runs")
+    r = client.get("/api/threads/t1/runs")
     assert r.status_code == 200
     runs = r.json()
     assert len(runs) == 3
@@ -1696,7 +1736,7 @@ def test_session_runs_endpoint(client, qwe_temp_data_dir):
 
 
 def test_session_runs_empty_thread_returns_empty_list(client, qwe_temp_data_dir):
-    r = client.get("/api/sessions/never-existed/runs")
+    r = client.get("/api/threads/never-existed/runs")
     assert r.status_code == 200
     assert r.json() == []
 ```
@@ -1706,7 +1746,7 @@ def test_session_runs_empty_thread_returns_empty_list(client, qwe_temp_data_dir)
 In `server.py`:
 
 ```python
-@app.get("/api/sessions/{thread_id}/runs")
+@app.get("/api/threads/{thread_id}/runs")
 async def get_session_runs(thread_id: str, limit: int = 50, offset: int = 0):
     import db
     return db.get_runs_for_thread(thread_id, limit=limit, offset=offset)
@@ -1717,7 +1757,7 @@ async def get_session_runs(thread_id: str, limit: int = 50, offset: int = 0):
 ```bash
 pytest tests/test_analytics_api.py -v -k "session_runs"
 git add server.py tests/test_analytics_api.py
-git commit -m "feat(api): GET /api/sessions/{thread_id}/runs"
+git commit -m "feat(api): GET /api/threads/{thread_id}/runs"
 ```
 
 ---
@@ -1942,8 +1982,8 @@ Append a `<div id="sessionRunsModal" class="hidden">...</div>` near the other mo
 
 ```js
 async function openSessionRunsModal(threadId, title) {
-  const r = await api(`/api/sessions/${encodeURIComponent(threadId)}/runs`);
-  const totals = await api(`/api/sessions`); // already cached on page, pick this thread
+  const r = await api(`/api/threads/${encodeURIComponent(threadId)}/runs`);
+  const totals = await api(`/api/threads`); // already cached on page, pick this thread
   const row = totals.find(s => s.thread_id === threadId);
   state.sessionRunsModal = {
     threadId, title, runs: r,
@@ -2116,7 +2156,7 @@ git commit -m "feat(ui): Routines page — Cost (30d) column"
 
 - [ ] **Step 1: Add the FEATURES enum entry**
 
-In `telemetry.py`, locate the `FEATURES` enum tuple (line search: `FEATURES =`). Append `"cost_tracking"`.
+In `telemetry.py`, locate `FEATURES = frozenset({...})` at line 205. Frozensets are immutable — you cannot `.append()`. Edit the literal directly: add `"cost_tracking",` as a new element inside the `frozenset({...})` braces.
 
 - [ ] **Step 2: Bump consent version**
 
@@ -2124,7 +2164,7 @@ Same file: find `_CURRENT_CONSENT_VERSION` constant. Increment by 1.
 
 - [ ] **Step 3: Wire the trigger**
 
-In `server.py` (or a more appropriate spot), the first time `SessionRunsModal` opens we want to fire `telemetry.track_event("feature_first_use", {"feature": "cost_tracking"})`. Easiest: do it on the server-side handler the first time `GET /api/sessions/{id}/runs` is called per process — track a module-level `_first_use_seen = False` flag and call the telemetry helper once.
+In `server.py` (or a more appropriate spot), the first time `SessionRunsModal` opens we want to fire `telemetry.track_event("feature_first_use", {"feature": "cost_tracking"})`. Easiest: do it on the server-side handler the first time `GET /api/threads/{id}/runs` is called per process — track a module-level `_first_use_seen = False` flag and call the telemetry helper once.
 
 - [ ] **Step 4: Test**
 
@@ -2235,8 +2275,8 @@ Add at the top:
 - Routines page shows Cost (30d) so you can spot expensive scheduled jobs.
 - New Settings → Cost tracking section: pricing URL, auto-update toggle,
   manual refresh button, per-model overrides.
-- API: `GET /api/sessions` extended with `input_tokens / output_tokens /
-  cost_usd / run_count`; new `GET /api/sessions/{id}/runs`,
+- API: `GET /api/threads` extended with `input_tokens / output_tokens /
+  cost_usd / run_count`; new `GET /api/threads/{id}/runs`,
   `GET /api/analytics/period`, `GET /api/pricing/status`,
   `POST /api/pricing/refresh`.
 - Migration 008 atomically copies legacy `routine_runs` into the new table

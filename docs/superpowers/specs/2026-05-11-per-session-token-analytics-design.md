@@ -74,8 +74,8 @@ This spec covers the **foundational** layer: per-run token + cost tracking with 
                                  │
                                  ▼ aggregation queries
                 ┌─────────────────────────────────────┐
-                │   GET /api/sessions                 │
-                │   GET /api/sessions/{id}/runs       │
+                │   GET /api/threads                 │
+                │   GET /api/threads/{id}/runs       │
                 │   GET /api/analytics/period         │
                 │   GET /api/pricing/status           │
                 │   POST /api/pricing/refresh         │
@@ -475,7 +475,9 @@ All helpers use parametrized SQL — no string interpolation.
 
 ## 7. API endpoints
 
-### 7.1 Modified: `GET /api/sessions`
+### 7.1 Modified: `GET /api/threads`
+
+(qwe-qwe's "threads" are what the UI labels as "Sessions" in the Sessions list — same data, different name.)
 
 Add four fields to each row:
 
@@ -496,7 +498,7 @@ Add four fields to each row:
 
 Threads with no runs get `input_tokens=0, output_tokens=0, cost_usd=null, run_count=0`.
 
-### 7.2 New: `GET /api/sessions/{thread_id}/runs?limit=50&offset=0`
+### 7.2 New: `GET /api/threads/{thread_id}/runs?limit=50&offset=0`
 
 ```json
 [
@@ -727,9 +729,9 @@ Bump `_CURRENT_CONSENT_VERSION` in `telemetry.py` so opted-in users get a re-con
 
 ### 12.3 `tests/test_analytics_api.py` (~15 cases)
 
-- `/api/sessions` returns tokens/cost per thread.
-- `/api/sessions/{id}/runs` pagination works.
-- `/api/sessions/{id}/runs` for empty thread returns `[]`, not 404.
+- `/api/threads` returns tokens/cost per thread.
+- `/api/threads/{id}/runs` pagination works.
+- `/api/threads/{id}/runs` for empty thread returns `[]`, not 404.
 - `/api/analytics/period?days=30` correct aggregation.
 - `/api/analytics/period?source=routine` filters.
 - `/api/pricing/status` returns timestamp + model count.
@@ -771,7 +773,7 @@ If migration fails on a user's machine: their DB stays at schema_version=7 (pre-
 ### 13.3 Performance
 
 - Hot path overhead: 1 INSERT at run start, 1 UPDATE at run end. ~50µs each on SQLite local. Negligible vs LLM latency.
-- `GET /api/sessions` query: needs SUM/GROUP BY over `agent_runs`. Indexed on `thread_id`, so even 100k rows is sub-millisecond.
+- `GET /api/threads` query: needs SUM/GROUP BY over `agent_runs`. Indexed on `thread_id`, so even 100k rows is sub-millisecond.
 - `GET /api/analytics/period`: SUM over time window with optional source filter, indexed on `started_at`. Same story.
 
 ### 13.4 Release plan
