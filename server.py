@@ -1958,7 +1958,9 @@ async def get_analytics_period(days: int = 30, source: str | None = None):
 @app.get("/api/pricing/status")
 async def pricing_status():
     """Return pricing cache metadata: model count, source URL, cache age."""
-    import pricing, config, time as _time
+    import pricing
+    import config
+    import time as _time
     fetched = pricing.last_updated()
     return {
         "last_updated": fetched,

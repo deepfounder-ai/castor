@@ -11,7 +11,8 @@ def client():
 
 
 def test_threads_endpoint_includes_token_fields(client, qwe_temp_data_dir):
-    import db, threads
+    import db
+    import threads
     threads.create("Test Thread T1")
     # Find the created thread id
     all_t = threads.list_all()
@@ -30,7 +31,8 @@ def test_threads_endpoint_includes_token_fields(client, qwe_temp_data_dir):
 
 
 def test_thread_runs_endpoint(client, qwe_temp_data_dir):
-    import db, time
+    import db
+    import time
     for tok in (100, 200, 300):
         rid = db.insert_agent_run(thread_id="t1", source="web",
                                   started_at=time.time(), status="running")
@@ -52,7 +54,8 @@ def test_thread_runs_empty_thread_returns_empty_list(client, qwe_temp_data_dir):
 
 
 def test_analytics_period_aggregates(client, qwe_temp_data_dir):
-    import db, time
+    import db
+    import time
     for src, tok in [("web", 100), ("routine", 200), ("synthesis", 50)]:
         rid = db.insert_agent_run(thread_id="t1", source=src,
                                   started_at=time.time(), status="running")
@@ -65,7 +68,8 @@ def test_analytics_period_aggregates(client, qwe_temp_data_dir):
 
 
 def test_analytics_period_source_filter(client, qwe_temp_data_dir):
-    import db, time
+    import db
+    import time
     for src, tok in [("web", 100), ("routine", 200)]:
         rid = db.insert_agent_run(thread_id="t1", source=src,
                                   started_at=time.time(), status="running")
@@ -100,7 +104,8 @@ def test_pricing_refresh_failure(client, qwe_temp_data_dir, monkeypatch):
 
 
 def test_routine_runs_endpoint(client, qwe_temp_data_dir):
-    import db, time
+    import db
+    import time
     rid = db.insert_agent_run(thread_id="t1", cron_id=42, source="routine",
                               started_at=time.time(), status="running")
     db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
