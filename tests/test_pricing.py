@@ -190,3 +190,36 @@ def test_refresh_pricing_network_error_keeps_stale_cache(qwe_temp_data_dir, monk
     pricing.refresh_pricing(force=True)
     # Stale cache still wins
     assert pricing.get_price("old", "input") == 1
+
+
+def test_background_refresher_disabled_when_off(qwe_temp_data_dir, monkeypatch):
+    import pricing as _p
+    import config as _c
+    import time as _t
+    monkeypatch.setattr(_c, "get",
+        lambda key: False if key == "pricing_auto_update" else "")
+    called = []
+    monkeypatch.setattr(_p, "refresh_pricing",
+                        lambda force=False: called.append(force) or True)
+    # Force reset so the test starts from a clean state
+    _p._refresher_started = False
+    _p.start_background_refresher()
+    _t.sleep(0.05)
+    assert called == []  # never fired
+
+
+def test_background_refresher_runs_when_on(qwe_temp_data_dir, monkeypatch):
+    import pricing as _p
+    import config as _c
+    import time as _t
+    monkeypatch.setattr(_c, "get",
+        lambda key: True if key == "pricing_auto_update" else "")
+    monkeypatch.setattr(_p, "CACHE_TTL_SEC", 0.05)  # rapid fire
+    fired = []
+    def fake(force=False):
+        fired.append(_t.time()); return True
+    monkeypatch.setattr(_p, "refresh_pricing", fake)
+    _p._refresher_started = False
+    _p.start_background_refresher()
+    _t.sleep(0.18)
+    assert len(fired) >= 2  # at least two fires in ~150ms

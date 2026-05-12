@@ -62,6 +62,8 @@ SKIP_MODES = {"embedding", "image_generation", "audio_transcription", "audio_spe
 _lock = threading.Lock()
 _pricing_cache: dict[str, dict[str, float]] | None = None
 _cache_fetched_at: float | None = None
+_refresher_started = False
+_refresher_lock = threading.Lock()
 
 
 def _cache_path() -> Path:
@@ -220,5 +222,27 @@ def refresh_pricing(force: bool = False) -> bool:
 
 
 def start_background_refresher() -> None:
-    """Stub; full implementation in Task 8."""
-    return None
+    """Start a daemon thread that calls refresh_pricing() every CACHE_TTL_SEC.
+
+    Idempotent — safe to call multiple times; only starts one thread.
+    No-op when pricing_auto_update is disabled.
+    """
+    global _refresher_started
+    if not config.get("pricing_auto_update"):
+        return
+    with _refresher_lock:
+        if _refresher_started:
+            return
+        _refresher_started = True
+
+    def _loop():
+        while True:
+            try:
+                refresh_pricing(force=False)
+            except Exception as e:
+                _log.warning(f"pricing refresher loop error: {e}")
+            time.sleep(CACHE_TTL_SEC)
+
+    t = threading.Thread(target=_loop, name="pricing-refresher", daemon=True)
+    t.start()
+    _log.info("pricing background refresher started")
