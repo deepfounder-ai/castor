@@ -11,10 +11,9 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#interfaces">Interfaces</a> •
-  <a href="#tool-search">Tool Search</a> •
+  <a href="docs/README.md"><b>Documentation</b></a> •
   <a href="#tools">Tools</a> •
   <a href="#skills">Skills</a> •
-  <a href="#mcp">MCP</a> •
   <a href="#telegram-bot">Telegram</a> •
   <a href="#diagnostics">Doctor</a>
 </p>
@@ -663,6 +662,29 @@ skills/           Pluggable skill modules
   weather.py      Weather reports
 static/           Web UI (single-file HTML/CSS/JS)
 ```
+
+## Documentation
+
+Per-feature user guides live in [`docs/`](docs/README.md). The hub indexes everything:
+
+| Topic | Guide |
+|---|---|
+| LLM providers, where to get keys, switching per-thread | [docs/PROVIDERS.md](docs/PROVIDERS.md) |
+| Personality (8 traits + name + language + custom) | [docs/SOUL.md](docs/SOUL.md) |
+| Live Voice Mode, STT (local + API), TTS, Fish Speech | [docs/VOICE.md](docs/VOICE.md) |
+| Camera capture, PiP overlay, vision models | [docs/CAMERA.md](docs/CAMERA.md) |
+| Knowledge ingest — 50+ formats, URL/folder/YouTube | [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md) |
+| Memory — what to save, recall, secret scrubbing, vault | [docs/MEMORY.md](docs/MEMORY.md) |
+| Browser modes — visible (logged-in) vs headless | [docs/BROWSER.md](docs/BROWSER.md) |
+| Hardware — serial / USB / Modbus / scales / PLCs | [docs/HARDWARE.md](docs/HARDWARE.md) |
+| Canvas — sandboxed HTML side panel | [docs/CANVAS.md](docs/CANVAS.md) |
+| Skills — built-ins, skill_creator, anatomy | [docs/SKILLS.md](docs/SKILLS.md) |
+| Skill import — skills.sh / Anthropic SKILL.md spec | [docs/SKILLS_IMPORT.md](docs/SKILLS_IMPORT.md) |
+| Routines — scheduled tasks, debug-via-dialogue | [docs/ROUTINES.md](docs/ROUTINES.md) |
+| MCP — Model Context Protocol clients | [docs/MCP.md](docs/MCP.md) |
+| Telegram — bot setup, multi-user, voice / image | [docs/TELEGRAM.md](docs/TELEGRAM.md) |
+| Presets — bundled role-specific configs | [docs/PRESET_GUIDE.md](docs/PRESET_GUIDE.md) |
+| Privacy + telemetry contract | [docs/PRIVACY.md](docs/PRIVACY.md) |
 
 ## Contributing
 
