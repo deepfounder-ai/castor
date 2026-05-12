@@ -1,3 +1,17 @@
+## v0.21.0 — Per-routine budget caps
+
+- Set a USD spending cap per routine, rolling over a configurable window.
+- When the cap is reached, the next scheduled fire is SKIPPED with
+  `status='skipped'`, `error='budget_exceeded'` in agent_runs — history
+  shows what happened. The routine resumes once spend drops below the cap.
+- UI: Routines page shows a budget chip per routine (green / orange /
+  red based on % of cap). Click to set/clear/edit cap + period.
+- API: `GET /api/routines/{id}/budget` and `POST /api/routines/{id}/budget`.
+- Migration 010 adds `budget_usd_cap` + `budget_period_sec` to
+  `scheduled_tasks`. Pre-existing routines have no cap (default).
+
+---
+
 ## v0.19.0 — Cost tracking & per-session analytics
 
 - New `agent_runs` table replaces `routine_runs`: one row per LLM call site
