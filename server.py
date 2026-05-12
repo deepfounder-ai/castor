@@ -3021,6 +3021,11 @@ async def list_threads(include_archived: bool = False):
         t["user_messages"] = s.get("user_messages", 0)
         t["assistant_messages"] = s.get("assistant_messages", 0)
         t["tool_calls"] = s.get("tool_calls", 0)
+        totals = db.get_thread_totals(t["id"])
+        t["input_tokens"] = totals["input_tokens"] if totals["run_count"] else None
+        t["output_tokens"] = totals["output_tokens"] if totals["run_count"] else None
+        t["cost_usd"] = totals["cost_usd"] if totals["run_count"] else None
+        t["run_count"] = totals["run_count"]
     return all_threads
 
 
