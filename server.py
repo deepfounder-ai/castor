@@ -2057,6 +2057,12 @@ async def get_cron_runs(task_id: int, limit: int = 20):
     return {"runs": scheduler.list_runs(task_id, limit=limit)}
 
 
+@app.get("/api/routines/{cron_id}/runs")
+async def get_routine_runs(cron_id: int, limit: int = 50):
+    """Recent run history for a routine (reads agent_runs), newest first."""
+    return db.get_runs_for_routine(cron_id, limit=limit)
+
+
 @app.post("/api/cron/{task_id}/toggle")
 async def toggle_cron(task_id: int, data: dict | None = None):
     """Pause or resume a routine.

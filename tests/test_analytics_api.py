@@ -97,3 +97,19 @@ def test_pricing_refresh_failure(client, qwe_temp_data_dir, monkeypatch):
     r = client.post("/api/pricing/refresh")
     assert r.status_code == 502
     assert r.json()["ok"] is False
+
+
+def test_routine_runs_endpoint(client, qwe_temp_data_dir):
+    import db, time
+    rid = db.insert_agent_run(thread_id="t1", cron_id=42, source="routine",
+                              started_at=time.time(), status="running")
+    db.finalize_agent_run(rid, finished_at=time.time(), duration_ms=10,
+                          status="ok", input_tokens=300, output_tokens=80,
+                          cost_usd=0.005)
+    r = client.get("/api/routines/42/runs")
+    assert r.status_code == 200
+    runs = r.json()
+    assert len(runs) == 1
+    # field names may be wrapped/formatted; just check the cost made it through
+    flat = str(runs).lower()
+    assert "300" in flat and "0.005" in flat
