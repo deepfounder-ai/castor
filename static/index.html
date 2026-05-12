@@ -1391,6 +1391,114 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
 .entry-row .status-badge { flex-shrink: 0; }
 .entry-row .actions { display: flex; gap: 2px; margin-left: auto; }
 
+/* Tools & skills tab — search + collapsible sections.
+   With 29 core tools, 9 built-in skills, optional user skills and
+   MCP tools, the flat list got unwieldy. Categories collapse;
+   search filters both sections at once and auto-expands matches. */
+.tt-search {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; margin: 8px 0 18px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; transition: border-color 0.12s;
+}
+.tt-search:focus-within { border-color: var(--line-strong); }
+.tt-search input {
+  flex: 1; background: transparent; border: 0; outline: 0;
+  color: var(--fg); font-size: 12.5px;
+}
+.tt-search input::placeholder { color: var(--fg-4); }
+.tt-search-clear {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 4px; color: var(--fg-4);
+  background: transparent; border: 0; cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.tt-search-clear:hover { color: var(--fg); background: var(--surface-2); }
+
+.tt-section { margin: 16px 0; }
+.tt-section-hdr {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; color: var(--fg);
+  cursor: pointer; text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+.tt-section-hdr:hover { background: var(--surface-2); border-color: var(--line-2); }
+.tt-section-arrow {
+  display: inline-block; width: 12px; color: var(--fg-3);
+  transition: transform 0.15s; font-size: 11px; flex-shrink: 0;
+}
+.tt-section-arrow.open { transform: rotate(90deg); }
+.tt-section-name { font-size: 13px; font-weight: 500; }
+.tt-section-count {
+  font-family: var(--font-mono); font-size: 11px; color: var(--fg-3);
+  font-variant-numeric: tabular-nums; padding: 1px 7px;
+  background: var(--surface-2); border-radius: 10px;
+}
+.tt-section-sub {
+  font-size: 11px; color: var(--fg-4); margin-left: auto;
+}
+.tt-section-body { padding: 6px 0 10px 4px; }
+.tt-empty {
+  padding: 16px 12px; color: var(--fg-4); font-size: 12px;
+  font-style: italic;
+}
+
+.tt-cat { margin: 4px 0; }
+.tt-cat-hdr {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 6px 8px;
+  background: transparent; border: 0; color: var(--fg-2);
+  cursor: pointer; text-align: left; border-radius: 4px;
+  transition: background 0.12s;
+}
+.tt-cat-hdr:hover { background: var(--surface); }
+.tt-cat-arrow {
+  display: inline-block; width: 10px; color: var(--fg-4);
+  transition: transform 0.15s; font-size: 10px; flex-shrink: 0;
+}
+.tt-cat-arrow.open { transform: rotate(90deg); }
+.tt-cat-name {
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--fg-3); font-weight: 600;
+}
+.tt-cat-count {
+  font-family: var(--font-mono); font-size: 10px; color: var(--fg-4);
+  font-variant-numeric: tabular-nums;
+}
+.tt-cat-body { padding: 2px 0 6px 18px; }
+
+.tt-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 8px 9px 0; border-bottom: 1px solid var(--line);
+}
+.tt-row:last-child { border-bottom: 0; }
+.tt-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.tt-body { flex: 1; min-width: 0; }
+.tt-name {
+  font-size: 12px; color: var(--fg); font-weight: 500;
+  margin-bottom: 2px; display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
+}
+.tt-desc {
+  font-size: 11.5px; color: var(--fg-3); line-height: 1.45;
+  word-break: break-word;
+}
+.tt-toolcount {
+  font-family: var(--font-mono); font-size: 10px; color: var(--fg-4);
+  padding: 1px 6px; background: var(--surface); border-radius: 9px;
+  font-weight: 400; letter-spacing: 0.02em;
+}
+.tt-userbadge {
+  font-family: var(--font-mono); font-size: 9px;
+  color: var(--accent); background: var(--accent-dim);
+  border: 1px solid var(--accent-line);
+  padding: 0 5px; border-radius: 8px;
+  letter-spacing: 0.06em; text-transform: uppercase; font-weight: 500;
+}
+
 /* Spicy footer (hidden easter egg in Tools tab) */
 .spicy-footer {
   display: flex; align-items: center; gap: 10px;
@@ -1882,6 +1990,16 @@ const state = {
   status: null,
   model: { provider: '', model: '' },
   settingsTab: 'model',
+  // Tools & skills tab UI state — search query + collapsed-section
+  // bookkeeping. With 29 core tools + 9+ pluggable skills + MCP +
+  // user-created skills, the flat list gets unwieldy. Default state:
+  // skills section open, core-tools section collapsed (always-on so
+  // most users don't need to scan them), categories collapsed inside
+  // core. Search filters BOTH sections.
+  toolsTabSearch: '',
+  toolsCoreOpen: false,
+  toolsSkillsOpen: true,
+  toolsExpandedCats: {},  // {categoryName: true} — per-category collapse state
   tokenTimeline: [],
   memoryPills: [],
   inspectorOn: true,
@@ -5654,63 +5772,180 @@ function renderTabSoul() {
       : '<div style="padding:18px 0;color:var(--fg-4);font-size:12px">No custom traits yet. Add axes like <span class="mono">patience</span> / <span class="mono">snark</span> / <span class="mono">cynicism</span>.</div>');
 }
 
+// Core-tool descriptions + categorization for the Settings → Tools
+// tab. Lives at module scope (not inside renderTabTools) so unit
+// tests can grep for the table without rendering. Add new core
+// tools here when they're added to `tools.TOOLS`.
+const CORE_TOOL_DESCRIPTIONS = {
+  memory_search: 'Semantic search over stored memories.',
+  memory_save: 'Write new memories from the current thread.',
+  memory_delete: 'Delete a memory by ID.',
+  shell: 'Execute shell commands in the workspace.',
+  read_file: 'Read a local file into context.',
+  write_file: 'Create or overwrite a local file.',
+  send_file: 'Queue a file to attach to the current reply.',
+  camera_capture: 'Grab a frame and run vision analysis.',
+  open_url: 'Open a URL in the desktop browser.',
+  schedule_task: 'Schedule a task to run later or on a cron expression.',
+  list_cron: 'List scheduled cron tasks.',
+  remove_cron: 'Remove a scheduled task by ID.',
+  switch_model: 'Switch to a different LLM model / provider.',
+  spawn_task: 'Run a task in the background.',
+  secret_save: 'Store an encrypted secret in the vault.',
+  secret_get: 'Read a decrypted secret.',
+  secret_list: 'List stored secret keys (values hidden).',
+  secret_delete: 'Delete a secret from the vault.',
+  user_profile_update: "Update a key in the user's persistent profile.",
+  user_profile_get: "Read the user's profile.",
+  http_request: 'Fetch a URL and return cleaned text.',
+  rag_index: 'Index a file into the RAG knowledge base.',
+  rag_search: 'Search the RAG knowledge base.',
+  rag_status: 'Show RAG knowledge-base stats.',
+  self_config: 'Agent self-configuration (name, language, soul, heartbeat).',
+  tool_search: 'Discover + activate more tools by keyword (meta-tool).',
+  set_timer: 'Set a countdown timer.',
+};
+
+// Human-friendly categories — groups core tools into navigable
+// buckets in the Tools tab. Maps tool name → category label.
+// Categories themselves are ordered in `CORE_TOOL_CATEGORY_ORDER`.
+const CORE_TOOL_CATEGORY_ORDER = [
+  'Memory', 'Knowledge base', 'Files & shell', 'Web & HTTP', 'Vision',
+  'Automation', 'Vault', 'Profile', 'Meta',
+];
+const categoryForCoreTool = (n) => {
+  if (n.startsWith('memory_')) return 'Memory';
+  if (n.startsWith('rag_')) return 'Knowledge base';
+  if (n === 'shell' || n === 'read_file' || n === 'write_file' || n === 'send_file') return 'Files & shell';
+  if (n.startsWith('browser_') || n === 'http_request' || n === 'open_url') return 'Web & HTTP';
+  if (n === 'camera_capture') return 'Vision';
+  if (n.startsWith('schedule') || n === 'list_cron' || n === 'remove_cron' || n === 'set_timer') return 'Automation';
+  if (n.startsWith('secret_')) return 'Vault';
+  if (n.startsWith('user_profile_')) return 'Profile';
+  if (n === 'tool_search' || n === 'spawn_task' || n === 'self_config' || n === 'switch_model') return 'Meta';
+  return 'Other';
+};
+const colorForCoreTool = (n) => {
+  if (n.startsWith('memory_') || n.startsWith('rag_')) return 'var(--magic)';
+  if (n.startsWith('secret_')) return 'var(--warn)';
+  if (n === 'shell' || n === 'write_file') return 'var(--warn)';
+  if (n.startsWith('browser_') || n === 'http_request' || n === 'open_url') return 'var(--ok)';
+  if (n === 'camera_capture' || n === 'read_file' || n === 'send_file') return 'var(--info)';
+  return 'var(--fg-3)';
+};
+
 function renderTabTools() {
   const skills = state.skills || [];
   const st = state.status || {};
   // Ground-truth list from /api/status.core_tools (what tools.TOOLS actually exposes)
   const realCore = Array.isArray(st.core_tools) ? st.core_tools : [];
-  const CORE_DESCRIPTIONS = {
-    memory_search: 'Semantic search over stored memories.',
-    memory_save: 'Write new memories from the current thread.',
-    memory_delete: 'Delete a memory by ID.',
-    shell: 'Execute shell commands in the workspace.',
-    read_file: 'Read a local file into context.',
-    write_file: 'Create or overwrite a local file.',
-    send_file: 'Queue a file to attach to the current reply.',
-    camera_capture: 'Grab a frame and run vision analysis.',
-    open_url: 'Open a URL in the desktop browser.',
-    schedule_task: 'Schedule a task to run later or on a cron expression.',
-    list_cron: 'List scheduled cron tasks.',
-    remove_cron: 'Remove a scheduled task by ID.',
-    switch_model: 'Switch to a different LLM model / provider.',
-    spawn_task: 'Run a task in the background.',
-    secret_save: 'Store an encrypted secret in the vault.',
-    secret_get: 'Read a decrypted secret.',
-    secret_list: 'List stored secret keys (values hidden).',
-    secret_delete: 'Delete a secret from the vault.',
-    user_profile_update: "Update a key in the user's persistent profile.",
-    user_profile_get: "Read the user's profile.",
-    http_request: 'Fetch a URL and return cleaned text.',
-    rag_index: 'Index a file into the RAG knowledge base.',
-    rag_search: 'Search the RAG knowledge base.',
-    rag_status: 'Show RAG knowledge-base stats.',
-    self_config: 'Agent self-configuration (name, language, soul, heartbeat).',
-    tool_search: 'Discover + activate more tools by keyword (meta-tool).',
+  const q = (state.toolsTabSearch || '').toLowerCase().trim();
+  const matches = (id, desc) => {
+    if (!q) return true;
+    return id.toLowerCase().includes(q) || (desc || '').toLowerCase().includes(q);
   };
-  const colorFor = (n) => {
-    if (n.startsWith('memory_')) return 'var(--magic)';
-    if (n.startsWith('rag_')) return 'var(--magic)';
-    if (n.startsWith('secret_')) return 'var(--warn)';
-    if (n === 'shell' || n === 'write_file') return 'var(--warn)';
-    if (n.startsWith('browser_') || n === 'http_request' || n === 'open_url') return 'var(--ok)';
-    if (n === 'camera_capture' || n === 'read_file' || n === 'send_file') return 'var(--info)';
-    if (n === 'tool_search' || n === 'spawn_task' || n === 'self_config') return 'var(--fg-3)';
-    return 'var(--fg-3)';
-  };
-  const coreTools = realCore.length
-    ? realCore.map(id => ({ id, desc: CORE_DESCRIPTIONS[id] || '', c: colorFor(id) }))
-    : [];
-  const renderToolRow = (t) =>
-    '<div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)">' +
-      '<span style="width:8px;height:8px;border-radius:50%;background:' + t.c + ';box-shadow:' + (t.on === false ? 'none' : '0 0 6px ' + t.c) + ';opacity:' + (t.on === false ? 0.35 : 1) + '"></span>' +
-      '<div style="flex:1"><div class="mono" style="font-size:12px;color:var(--fg);font-weight:500;margin-bottom:2px">' + t.id + '</div>' +
-      '<div style="font-size:11.5px;color:var(--fg-3)">' + esc(t.desc || '') + '</div></div>' +
-      (t.core
-        ? '<span class="tag">core</span>'
-        : '<button class="toggle ' + (t.on ? 'on' : '') + '" data-toggle-skill="' + esc(t.id) + '"><span class="knob"></span></button>') +
+
+  // ── Core tools — grouped by category, each collapsible ──────────
+  const filteredCore = realCore.filter(id => matches(id, CORE_TOOL_DESCRIPTIONS[id] || ''));
+  const grouped = {};
+  for (const id of filteredCore) {
+    const cat = categoryForCoreTool(id);
+    (grouped[cat] = grouped[cat] || []).push(id);
+  }
+  const orderedCats = CORE_TOOL_CATEGORY_ORDER.filter(c => grouped[c]);
+  // Stick any unmapped category at the end
+  for (const c of Object.keys(grouped)) {
+    if (!orderedCats.includes(c)) orderedCats.push(c);
+  }
+
+  const coreToolRow = (id) =>
+    '<div class="tt-row">' +
+      '<span class="tt-dot" style="background:' + colorForCoreTool(id) + ';box-shadow:0 0 6px ' + colorForCoreTool(id) + '"></span>' +
+      '<div class="tt-body">' +
+        '<div class="tt-name mono">' + esc(id) + '</div>' +
+        '<div class="tt-desc">' + esc(CORE_TOOL_DESCRIPTIONS[id] || '') + '</div>' +
+      '</div>' +
+      '<span class="tag">core</span>' +
     '</div>';
+
+  // Active search expands ALL categories (else search results are
+  // hidden inside collapsed groups — confusing UX).
+  const catOpen = (cat) => !!q || !!state.toolsExpandedCats[cat];
+  const renderCategoryGroup = (cat) => {
+    const items = grouped[cat] || [];
+    if (!items.length) return '';
+    const open = catOpen(cat);
+    return '<div class="tt-cat">' +
+      '<button class="tt-cat-hdr" data-toggle-toolcat="' + esc(cat) + '">' +
+        '<span class="tt-cat-arrow ' + (open ? 'open' : '') + '">▸</span>' +
+        '<span class="tt-cat-name">' + esc(cat) + '</span>' +
+        '<span class="tt-cat-count">' + items.length + '</span>' +
+      '</button>' +
+      (open ? '<div class="tt-cat-body">' + items.map(coreToolRow).join('') + '</div>' : '') +
+    '</div>';
+  };
+
+  const coreOpen = !!q || state.toolsCoreOpen;
+  const coreSection =
+    '<div class="tt-section">' +
+      '<button class="tt-section-hdr" data-toggle-tools="core">' +
+        '<span class="tt-section-arrow ' + (coreOpen ? 'open' : '') + '">▸</span>' +
+        '<span class="tt-section-name">Core tools</span>' +
+        '<span class="tt-section-count">' + filteredCore.length +
+        (filteredCore.length !== realCore.length ? ' / ' + realCore.length : '') +
+        '</span>' +
+        '<span class="tt-section-sub">always on</span>' +
+      '</button>' +
+      (coreOpen
+        ? (filteredCore.length
+          ? '<div class="tt-section-body">' + orderedCats.map(renderCategoryGroup).join('') + '</div>'
+          : '<div class="tt-empty">No core tools match "' + esc(q) + '"</div>')
+        : '') +
+    '</div>';
+
+  // ── Pluggable skills — flat list with toggle, tool count, desc ──
+  const skillRow = (s) => {
+    const id = s.name || s.id;
+    const desc = s.description || s.doc || '';
+    if (!matches(id, desc)) return '';
+    const on = !!(s.active || s.enabled);
+    const tools = s.tools != null ? s.tools : null;
+    return '<div class="tt-row">' +
+      '<span class="tt-dot" style="background:var(--info);box-shadow:' + (on ? '0 0 6px var(--info)' : 'none') + ';opacity:' + (on ? 1 : 0.35) + '"></span>' +
+      '<div class="tt-body">' +
+        '<div class="tt-name mono">' + esc(id) +
+          (tools != null ? '<span class="tt-toolcount">' + tools + ' tool' + (tools === 1 ? '' : 's') + '</span>' : '') +
+          (s.user_skill ? '<span class="tt-userbadge">user</span>' : '') +
+        '</div>' +
+        (desc ? '<div class="tt-desc">' + esc(desc) + '</div>' : '') +
+      '</div>' +
+      '<button class="toggle ' + (on ? 'on' : '') + '" data-toggle-skill="' + esc(id) + '"><span class="knob"></span></button>' +
+    '</div>';
+  };
+  const skillRows = skills.length === 0 ? '' : skills.map(skillRow).join('');
+  const filteredSkillCount = skills.filter(s => matches(s.name || s.id, s.description || s.doc || '')).length;
+  const skillsOpen = !!q || state.toolsSkillsOpen;
+  const skillsSection =
+    '<div class="tt-section">' +
+      '<button class="tt-section-hdr" data-toggle-tools="skills">' +
+        '<span class="tt-section-arrow ' + (skillsOpen ? 'open' : '') + '">▸</span>' +
+        '<span class="tt-section-name">Pluggable skills</span>' +
+        '<span class="tt-section-count">' + filteredSkillCount +
+        (filteredSkillCount !== skills.length ? ' / ' + skills.length : '') +
+        '</span>' +
+        '<span class="tt-section-sub">toggle individually · unlocked by <span class="mono">tool_search</span></span>' +
+      '</button>' +
+      (skillsOpen
+        ? (skills.length === 0
+          ? '<div class="tt-empty">Loading…</div>'
+          : (filteredSkillCount
+            ? '<div class="tt-section-body">' + skillRows + '</div>'
+            : '<div class="tt-empty">No skills match "' + esc(q) + '"</div>'))
+        : '') +
+    '</div>';
+
   // Easter-egg: tap the heart cluster 7 times → Spicy mode
-  const hearts = Array.from({ length: 5 }, (_, i) =>
+  const hearts = Array.from({ length: 5 }, () =>
     '<button class="spicy-heart" data-spicy-click aria-label="heart" tabindex="-1">' + ico('heart', 13) + '</button>'
   ).join('');
   const spicyFoot =
@@ -5722,20 +5957,21 @@ function renderTabTools() {
         : '<span class="spicy-label">qwe-qwe</span>') +
     '</div>';
 
-  return '<h2>Tools &amp; skills</h2><p class="intro">Capabilities the agent can invoke. Core tools are always active. Extended skills load on demand via <span class="mono">tool_search</span>.</p>' +
-    settingsSection('Core tools',
-      coreTools.map(t => renderToolRow(Object.assign({ core: true, on: true }, t))).join('')
-    ) +
-    settingsSection('Pluggable skills',
-      skills.length === 0
-        ? '<div style="padding:14px 0;color:var(--fg-4);font-size:12px">Loading…</div>'
-        : skills.map(s => renderToolRow({
-            id: s.name || s.id,
-            desc: s.description || s.doc || '',
-            c: 'var(--info)',
-            on: !!(s.active || s.enabled),
-          })).join('')
-    ) +
+  const searchBar =
+    '<div class="tt-search">' +
+      ico('search', 12, 'style="color:var(--fg-4)"') +
+      '<input type="text" placeholder="Filter tools or skills…" ' +
+        'data-tools-search value="' + esc(state.toolsTabSearch || '') + '">' +
+      (state.toolsTabSearch
+        ? '<button class="tt-search-clear" data-act="tools-search-clear" title="Clear">' + ico('close', 12) + '</button>'
+        : '') +
+    '</div>';
+
+  return '<h2>Tools &amp; skills</h2>' +
+    '<p class="intro">Capabilities the agent can invoke. Core tools are always active. Pluggable skills load on demand via <span class="mono">tool_search</span>.</p>' +
+    searchBar +
+    coreSection +
+    skillsSection +
     spicyFoot;
 }
 
@@ -7472,6 +7708,43 @@ function wireEvents() {
       const want = !(s && (s.active || s.enabled));
       try { await api('/api/skills/' + encodeURIComponent(name), { method: 'POST', body: { active: want } }); toast(name + (want ? ' enabled' : ' disabled')); loadSkills(); }
       catch { toast('toggle failed', 'err'); }
+    };
+  });
+  // Tools & skills tab: search + section/category collapse handlers
+  document.querySelectorAll('[data-tools-search]').forEach(inp => {
+    // Wire `input` so the filter updates live as the user types. We
+    // mutate state directly and re-render — no debounce needed; the
+    // dataset is small. Preserve cursor by reading from event.target.
+    inp.oninput = (e) => {
+      state.toolsTabSearch = e.target.value || '';
+      render();
+      // After re-render, restore focus + cursor at end
+      const fresh = document.querySelector('[data-tools-search]');
+      if (fresh) {
+        fresh.focus();
+        const pos = (state.toolsTabSearch || '').length;
+        try { fresh.setSelectionRange(pos, pos); } catch {}
+      }
+    };
+  });
+  document.querySelectorAll('[data-act="tools-search-clear"]').forEach(b => {
+    b.onclick = () => { state.toolsTabSearch = ''; render(); };
+  });
+  document.querySelectorAll('[data-toggle-tools]').forEach(b => {
+    b.onclick = () => {
+      const which = b.dataset.toggleTools;
+      if (which === 'core') state.toolsCoreOpen = !state.toolsCoreOpen;
+      else if (which === 'skills') state.toolsSkillsOpen = !state.toolsSkillsOpen;
+      render();
+    };
+  });
+  document.querySelectorAll('[data-toggle-toolcat]').forEach(b => {
+    b.onclick = () => {
+      const cat = b.dataset.toggleToolcat;
+      if (!cat) return;
+      state.toolsExpandedCats = state.toolsExpandedCats || {};
+      state.toolsExpandedCats[cat] = !state.toolsExpandedCats[cat];
+      render();
     };
   });
 
