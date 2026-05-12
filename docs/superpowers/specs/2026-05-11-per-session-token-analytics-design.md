@@ -234,14 +234,17 @@ def start_background_refresher() -> None:
 
 ### 5.2 Lookup chain (in `get_price`)
 
+`get_price()` **never performs network I/O** — all remote fetches are owned by the background refresher (Section 5.5) and the explicit `POST /api/pricing/refresh` endpoint. This keeps the hot path predictable and bounded.
+
 1. **KV override**: `db.kv_get(f"pricing_override_{model}")` — JSON parse, return matching field. Log warning on invalid JSON; continue chain.
 2. **Local providers**: if model starts with `lmstudio:`, `ollama:`, or `local:` — return `0.0`.
-3. **Loaded pricing dict** (memory cache, lazy-loaded via `_ensure_loaded()`):
+3. **Loaded pricing dict** (memory cache, lazy-loaded via `_ensure_loaded()` on first call):
    - Memory dict hit → return.
-4. **Disk cache** (`~/.qwe-qwe/pricing_cache.json`) — loaded once into memory, returned.
-5. **Remote fetch** — only if disk cache missing or older than `CACHE_TTL_SEC` (24h). Always non-blocking on the caller — if `refresh_pricing` is currently running, just return what we have.
-6. **Bundled fallback** dict (top-10 models hardcoded in `pricing.py`).
-7. Return `None` (caller writes `cost_usd = NULL`).
+4. **Disk cache** (`~/.qwe-qwe/pricing_cache.json`) — read once into memory on first `_ensure_loaded()`, then served from memory thereafter.
+5. **Bundled fallback** dict (top-10 models hardcoded in `pricing.py`) — last resort if disk cache missing entirely.
+6. Return `None` (caller writes `cost_usd = NULL`).
+
+If the disk cache is older than `CACHE_TTL_SEC` (24h), the background refresher will replace it on its next tick — but `get_price()` itself keeps returning whatever's in memory until that happens. Never blocks.
 
 ### 5.3 Bundled fallback
 
@@ -328,6 +331,8 @@ LiteLLM's format:
 
 ### 6.1 `agent_loop.py` — main loop (primary instrumentation)
 
+**Prerequisite:** add a `cron_id: int | None = None` field to `TurnContext` (CLAUDE.md rule: "new per-turn state → put it on TurnContext"). `scheduler._check_and_run` populates it when firing a routine; everything else leaves it as None.
+
 `run_loop()` already tracks tokens in `BudgetStats.add_tokens()` (called inside the streaming loop where `chunk.usage` arrives). Wire it to `agent_runs`:
 
 ```python
@@ -337,7 +342,7 @@ run_id = db.insert_agent_run(
     source=ctx.source if ctx else "cli",
     started_at=time.time(),
     status="running",
-    cron_id=cron_id_from_ctx,           # only set if running via scheduler
+    cron_id=ctx.cron_id if ctx else None,    # populated only when scheduler fires
     model=model,
     provider=provider_name,
 )
@@ -433,12 +438,16 @@ def insert_agent_run(
     """Insert a new row. Returns the new run_id."""
 
 def finalize_agent_run(
-    run_id: int, finished_at: float, duration_ms: int, status: str,
-    error: str | None = None, result_preview: str | None = None,
+    run_id: int, finished_at: float | None, duration_ms: int | None,
+    status: str, error: str | None = None, result_preview: str | None = None,
     input_tokens: int = 0, output_tokens: int = 0,
     cost_usd: float | None = None,
 ) -> None:
-    """Update a previously-inserted run with final metrics."""
+    """Update a previously-inserted run with final metrics.
+
+    For aborted runs without a clean finish, finished_at and duration_ms
+    can both be None; status='aborted' captures the partial-progress case.
+    """
 
 def insert_skipped_run(
     cron_id: int, thread_id: str, scheduled_at: float, reason: str = "missed"
@@ -535,7 +544,7 @@ Threads with no runs get `input_tokens=0, output_tokens=0, cost_usd=null, run_co
 Query params:
 
 - `days` (int, default 30) — window size from now backwards.
-- `source` (string, default "all") — filter; `"all"` means no filter.
+- `source` (string, optional) — filter. Absent or empty = no filter (all sources aggregated). Otherwise must match one of the documented `source` enum values. The literal string `"all"` is treated the same as absent.
 
 ### 7.4 New: `GET /api/pricing/status`
 
@@ -667,16 +676,14 @@ Per-model overrides live in the `kv` table directly (key pattern `pricing_overri
 
 ## 11. Telemetry (opt-in only)
 
-If telemetry is enabled (default: off), add ONE new event:
+If telemetry is enabled (default: off), add ONE new event using the existing `feature_first_use` event family rather than a brand-new event type. Add a new value to the `FEATURES` enum:
 
 ```python
-"cost_tracking_first_use": {
-    "ts": int,
-    "anonymous_id": str,
-}
+FEATURES = (..., "cost_tracking")  # new value
+# Fired via: telemetry.track_event("feature_first_use", {"feature": "cost_tracking"})
 ```
 
-Fired once per anonymous_id, the first time the user opens the SessionRunsModal. Helps measure adoption of the new feature without leaking any cost data.
+The `anonymous_id` is stamped automatically by `track_event` — events themselves never carry it as a property (privacy contract). The event fires once per anonymous_id, the first time the user opens the SessionRunsModal. Helps measure adoption without leaking any cost data.
 
 Bump `_CURRENT_CONSENT_VERSION` in `telemetry.py` so opted-in users get a re-consent banner.
 
