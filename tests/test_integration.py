@@ -42,6 +42,10 @@ def _integration_env():
     original = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_int_test_"))
     os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
+    # Prevent config._migrate_data() from copying the developer's real castor.db
+    # into the test sandbox before any module reload happens.
+    (tmp_root / ".migrated_v2").write_text("test skip\n")
+    (tmp_root / ".migrated_from_qwe_qwe").write_text("test skip\n")
     _reload_core()
     try:
         yield tmp_root

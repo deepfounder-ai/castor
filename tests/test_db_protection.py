@@ -78,10 +78,20 @@ def test_check_and_restore_detects_corruption(qwe_temp_data_dir):
     import db
     import config
     db._get_conn()
+    # Close the connection properly before corrupting so the WAL is flushed/closed
+    conn = db._local.conn
+    if conn is not None:
+        conn.close()
     db._local.conn = None
     db._migrated = False
     db._integrity_checked = False
-    Path(config.DB_PATH).write_bytes(b"THIS IS NOT A SQLITE DATABASE" * 100)
+    db_path = Path(config.DB_PATH)
+    db_path.write_bytes(b"THIS IS NOT A SQLITE DATABASE" * 100)
+    # Remove WAL/SHM sidecars so SQLite cannot recover from them and mask corruption
+    for ext in ("-wal", "-shm"):
+        sidecar = db_path.parent / (db_path.name + ext)
+        if sidecar.exists():
+            sidecar.unlink()
     assert db.check_and_restore() is False  # no backup → returns False
 
 
@@ -92,13 +102,23 @@ def test_check_and_restore_restores_from_backup(qwe_temp_data_dir):
     db.kv_set("canary", "alive")
     db.take_backup("before_corrupt")
 
+    # Close the connection properly before corrupting so the WAL is flushed/closed
+    conn = db._local.conn
+    if conn is not None:
+        conn.close()
     # Reset ALL module-level state so check_and_restore() fires again
     db._local.conn = None
     db._migrated = False
     db._integrity_checked = False  # critical: without this the guard skips the check
 
-    # Corrupt the database
-    Path(config.DB_PATH).write_bytes(b"CORRUPTED" * 200)
+    # Corrupt the database and remove WAL/SHM sidecars so SQLite cannot recover
+    # from them and mask the corruption before check_and_restore() probes
+    db_path = Path(config.DB_PATH)
+    db_path.write_bytes(b"CORRUPTED" * 200)
+    for ext in ("-wal", "-shm"):
+        sidecar = db_path.parent / (db_path.name + ext)
+        if sidecar.exists():
+            sidecar.unlink()
 
     result = db.check_and_restore()
     assert result is True
