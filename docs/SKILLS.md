@@ -1,6 +1,6 @@
 # Skills — the agent's extensible capability layer
 
-A **skill** is a self-contained Python module that bundles related tools + an instruction string that teaches the agent when to use them. Skills are how castor stays small (the core ships with ~30 tools, the rest live in skills) and extensible (you can add a skill without restarting, without touching core code).
+A **skill** is a self-contained Python module that bundles related tools + an instruction string that teaches the agent when to use them. Skills are how Castor stays small (the core ships with ~30 tools, the rest live in skills) and extensible (you can add a skill without restarting, without touching core code).
 
 Three things to know:
 
@@ -28,7 +28,7 @@ Three things to know:
 
 ## How tools get activated
 
-castor loads **only ~29 core tools** into the system prompt by default. To use anything else, the agent calls `tool_search("keyword")` which:
+Castor loads **only ~29 core tools** into the system prompt by default. To use anything else, the agent calls `tool_search("keyword")` which:
 
 1. Scans the keyword index across all installed skills
 2. Activates the matching skill's tools for this turn (system prompt gains them via injection)
@@ -55,8 +55,7 @@ Why this design: a 16k-token system prompt with every tool wastes 75% of your co
 The `skill_creator` skill turns a user request into a working `.py` skill in ~30-60 seconds:
 
 ```
-You:    Сделай мне навык для отслеживания привычек —
-        отметка привычки за день, история, статистика.
+You:    Create a habit tracking skill — daily check-in, history, stats.
 Agent:  [create_skill name="habit_tracker"
           description="Track daily habits — log, history, stats"]
         → 5-step pipeline kicks off in background:
@@ -66,9 +65,9 @@ Agent:  [create_skill name="habit_tracker"
           4. Table DDL
           5. Validate + smoke test
         Skill 'habit_tracker' created with 4 tools (45s).
-You:    Отметь, что сегодня ходил гулять.
-Agent:  [tool_search("habit")] [habit_tracker_log habit="прогулка"]
-        Отмечено. Это третий раз на этой неделе.
+You:    Log that I went for a walk today.
+Agent:  [tool_search("habit")] [habit_tracker_log habit="walk"]
+        Logged. That's the third time this week.
 ```
 
 The pipeline runs in a background thread; you get a "skill ready" notification when it lands. Skills get a SQLite schema (`skill_<name>_*` tables, prefixed to prevent collisions) and a `.py` file at `~/.castor/skills/<name>.py`.
@@ -89,14 +88,14 @@ The pipeline runs in a background thread; you get a "skill ready" notification w
 Different angle on the same problem: instead of writing a new skill from a prompt, **install one someone already wrote**:
 
 ```
-You:    Установи PDF-навык от Anthropic.
+You:    Install the PDF skill from Anthropic.
 Agent:  [tool_search("import")]
         [import_skill url="https://skills.sh/anthropics/skills/pdf"]
         → Imported 'pdf' (Anthropic source-available license — see staged
           LICENSE.txt). Tools: pdf_help.
 ```
 
-skills.sh hosts skills following the [Anthropic SKILL.md spec](https://agentskills.io/specification). castor imports them via a thin adapter — the SKILL.md body becomes the agent's instructions, the `scripts/` and `references/` get staged for `read_file` access.
+skills.sh hosts skills following the [Anthropic SKILL.md spec](https://agentskills.io/specification). Castor imports them via a thin adapter — the SKILL.md body becomes the agent's instructions, the `scripts/` and `references/` get staged for `read_file` access.
 
 Full doc: [SKILLS_IMPORT.md](SKILLS_IMPORT.md). Covers security (domain allowlist, SSRF guard, license surfacing), what skills work well, and the audit trail.
 

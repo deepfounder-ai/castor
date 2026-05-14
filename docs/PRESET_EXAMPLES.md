@@ -184,12 +184,12 @@ Same preset can work in any language — just change `soul.language` and write `
 
 ```yaml
 soul:
-  agent_name: Ника
+  agent_name: Nika
   language: ru
   # ...
 
 description:
-  short: "Ассистент поддержки на русском языке"
+  short: "Russian-language support assistant"
   language: ru
 ```
 

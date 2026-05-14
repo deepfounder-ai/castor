@@ -1,6 +1,6 @@
 # Memory — what the agent remembers, and how to influence it
 
-Memory is the difference between a stateless chat that re-introduces itself every turn and an agent that knows you, your context, and your history. castor has memory by default — you don't configure it, you just notice it works.
+Memory is the difference between a stateless chat that re-introduces itself every turn and an agent that knows you, your context, and your history. Castor has memory by default — you don't configure it, you just notice it works.
 
 This doc explains how it works **from the user's side**: what gets saved, when, what the agent recalls, and how to nudge it. For the architecture, see [how-memory-works.md](how-memory-works.md).
 
@@ -9,9 +9,9 @@ This doc explains how it works **from the user's side**: what gets saved, when, 
 **By the agent, automatically:** durable facts the agent thinks matter weeks later.
 
 ```
-You:    Меня зовут Кирилл, я работаю над castor.
-Agent:  [memory_save "User's name is Kirill; works on castor project"]
-        Запомнил.
+You:    My name is Kirill, I work on Castor.
+Agent:  [memory_save "User's name is Kirill; works on Castor project"]
+        Got it.
 ```
 
 **By the agent, NOT automatically:** chat noise, jokes, one-off questions, tool outputs. Soul rule 8 (MEMORY DISCIPLINE) is explicit — default is **don't save**. The agent only saves when:
@@ -24,18 +24,18 @@ Agent:  [memory_save "User's name is Kirill; works on castor project"]
 If you want something saved that the agent didn't catch:
 
 ```
-You:    Запомни: контакт службы доставки — +7 ...
+You:    Remember: delivery service contact — +7 ...
 Agent:  [memory_save "Delivery service contact: +7 ..."]
-        Запомнил.
+        Got it.
 ```
 
 If you want something forgotten:
 
 ```
-You:    Забудь номер службы доставки.
+You:    Forget the delivery service number.
 Agent:  [memory_search "delivery service"] → finds it
         [memory_delete <id>]
-        Удалил.
+        Deleted.
 ```
 
 ## What gets recalled
@@ -81,9 +81,9 @@ What DOES cross threads:
 If you say "what's my dog's name?" in a new thread and the agent doesn't know, that's because the memory was saved as thread-scoped raw. Tell it again in the new thread, or ask the agent to save it globally:
 
 ```
-You:    Запомни глобально: мою собаку зовут Рекс.
+You:    Remember globally: my dog's name is Rex.
 Agent:  [memory_save "User's dog: Rex" tag="global"]
-        Сохранил глобально.
+        Saved globally.
 ```
 
 ## Compaction — when the conversation gets long
@@ -120,7 +120,7 @@ Auto-recall runs invisibly before every turn — the agent doesn't call `memory_
 A redacted memory still records what kind of secret it was — useful audit trail without the actual value:
 
 ```
-You:    Запомни мой OpenAI ключ sk-proj-abc123...
+You:    Remember my OpenAI key sk-proj-abc123...
 Agent:  [memory_save "OpenAI key: <REDACTED:openai_key>"]
         I scrubbed the key value — secrets shouldn't go in memory. Use the
         Vault for credentials instead.
@@ -184,7 +184,7 @@ Memory operations bucket into the `tool_calls_count` / `tool_errors_count` numbe
 
 ## Troubleshooting
 
-**Agent doesn't remember a fact I told it** — was it auto-saved? Check Memory tab → search. If not there, the agent didn't think it was durable enough. Be explicit ("запомни X") or ask for global tag ("запомни глобально").
+**Agent doesn't remember a fact I told it** — was it auto-saved? Check Memory tab → search. If not there, the agent didn't think it was durable enough. Be explicit ("remember X") or ask for global tag ("remember globally").
 
 **Auto-recall pulls irrelevant memories** — your `recall_min_score` might be too low. Raise it (Settings → Memory) so weaker matches don't make it into the context.
 

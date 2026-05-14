@@ -31,11 +31,11 @@ Ask the agent to `tool_search("serial")` (or `"scale"`, `"modbus"`, `"rfid"`, `"
 | **Industrial PLCs** | Modbus RTU over RS-485 | Binary. `format="hex"`, watch CRC. |
 | **VFDs / inverters** | Anything Modbus-RTU | **Read carefully** before writes — wrong register can damage motors. |
 | **Sensors** | pH, conductivity, humidity, gas, temp | Mix of text + binary, vendor-dependent. |
-| **Energy meters** | Меркурий, Энергомера | DLMS / COSEM via RS-485. |
+| **Energy meters** | Mercury, Energomera | DLMS / COSEM via RS-485. |
 
 ### Common scenario
 
-> Tell castor: "I have Mettler Toledo scales on COM3, baud 9600. Read what's on the scales right now."
+> Tell Castor: "I have Mettler Toledo scales on COM3, baud 9600. Read what's on the scales right now."
 
 Agent flow:
 1. `tool_search("scale")` → activates the three serial tools

@@ -1,6 +1,6 @@
 # MCP — Model Context Protocol
 
-**Model Context Protocol** is the open protocol for connecting an LLM to external tool servers. castor is a full MCP client — point it at a server (filesystem, GitHub, Slack, Postgres, your own), and the server's tools join castor's tool catalog. The agent uses them like any built-in.
+**Model Context Protocol** is the open protocol for connecting an LLM to external tool servers. Castor is a full MCP client — point it at a server (filesystem, GitHub, Slack, Postgres, your own), and the server's tools join castor's tool catalog. The agent uses them like any built-in.
 
 Why this matters: instead of castor shipping every integration directly (and going stale), it speaks the same protocol the rest of the ecosystem uses. New MCP server today → new agent capability today, with zero castor code change.
 
@@ -34,14 +34,14 @@ Hit Save. castor spawns the server, reads its tool catalog, and the new tools sh
 The `mcp_manager` skill lets the agent set up MCP servers on request:
 
 ```
-You:    Подключи MCP-сервер для работы с GitHub. Токен возьми из хранилища
-        secrets под именем github_pat.
+You:    Connect the MCP server for GitHub. Use the token from the secrets vault
+        under 'github_pat'.
 Agent:  [tool_search("mcp")]
         [secret_get name="github_pat"]
         [mcp_add_server name="github" command="npx -y @modelcontextprotocol/server-github"
           env={"GITHUB_TOKEN": "<from secret>"}]
         Added 'github' (12 tools: github_create_issue, github_list_repos, ...)
-        Готово. Попробуй "перечисли мои репозитории".
+        Done. Try "list my repositories".
 ```
 
 The `mcp_manager` tools (after `tool_search("mcp")`):
@@ -73,7 +73,7 @@ mcp__github__create_issue
 mcp__slack__send_message
 ```
 
-This means an MCP server's `read_file` doesn't collide with castor's built-in `read_file` — they're separate tools, the model picks the right one based on context.
+This means an MCP server's `read_file` doesn't collide with Castor's built-in `read_file` — they're separate tools, the model picks the right one based on context.
 
 `tool_search` finds MCP tools by keyword too — `tool_search("github")` will surface all `mcp__github__*` tools alongside any built-ins. The model doesn't need to know whether a tool is built-in or MCP.
 
@@ -92,7 +92,7 @@ The MCP ecosystem is growing fast. Anthropic's [reference servers](https://githu
 | **fetch** | HTTP GET arbitrary URLs (less restrictive than browser) | `npx -y @modelcontextprotocol/server-fetch` |
 | **time** | Current time, timezone conversions | `npx -y @modelcontextprotocol/server-time` |
 | **memory** | Anthropic's reference memory server (alternative pattern) | `npx -y @modelcontextprotocol/server-memory` |
-| **puppeteer** | Browser automation, alternative to castor's built-in | `npx -y @modelcontextprotocol/server-puppeteer` |
+| **puppeteer** | Browser automation, alternative to Castor's built-in | `npx -y @modelcontextprotocol/server-puppeteer` |
 | **slack** | Slack integration | `npx -y @modelcontextprotocol/server-slack` + tokens |
 | **everart** | EverArt image generation | `npx -y @modelcontextprotocol/server-everart` + API key |
 | **google-maps** | Maps + places + directions | `npx -y @modelcontextprotocol/server-google-maps` + API key |
@@ -103,7 +103,7 @@ Python and Rust servers also exist — same JSON-RPC, castor doesn't care what t
 
 ### Home Assistant — the hardware swiss army knife
 
-For ANY non-serial smart-home device (Zigbee, Z-Wave, Wi-Fi, MQTT, BLE), point castor at your existing Home Assistant via an HA MCP server:
+For ANY non-serial smart-home device (Zigbee, Z-Wave, Wi-Fi, MQTT, BLE), point Castor at your existing Home Assistant via an HA MCP server:
 
 ```
 [mcp_add_server name="ha" command="npx -y @modelcontextprotocol/server-home-assistant"

@@ -39,8 +39,8 @@ Hit Create. The routine starts running on the next firing slot.
 The agent has `schedule_task` after `tool_search("schedule")`. So you can:
 
 ```
-You:    Каждый понедельник в 9 утра проверяй счёт за электричество
-        и пиши мне в телеграм, если выше 5000.
+You:    Every Monday at 9 AM check the electricity bill
+        and notify me on Telegram if it's above 5000.
 Agent:  [tool_search("schedule")]
         [schedule_task schedule="mon 09:00" thread_prompt="..."]
         → Routine #5 created.
@@ -58,12 +58,12 @@ Natural-language, no 5-field cron required:
 | `"every 2h"` | Repeat every 2 hours |
 | `"every 2 days 09:00"` | Repeat every other day at 09:00 |
 | `"daily 09:00"` | Every day at 09:00 |
-| `"weekdays 09:00"` | Mon-Fri at 09:00 (alias: `будни`) |
-| `"weekends 10:00"` | Sat-Sun at 10:00 (alias: `выходные`) |
-| `"mon,wed,fri 14:30"` | Those days at 14:30 (alias: `пн,ср,пт`) |
+| `"weekdays 09:00"` | Mon-Fri at 09:00 |
+| `"weekends 10:00"` | Sat-Sun at 10:00 |
+| `"mon,wed,fri 14:30"` | Those days at 14:30 |
 | `"14:30"` | Once today/tomorrow at 14:30 (whichever comes first) |
 
-Multiple weekday aliases supported (English + Russian short forms). Time is your local timezone.
+Time is your local timezone.
 
 ## What a routine looks like running
 
@@ -90,7 +90,7 @@ Each routine card has a four-state badge:
 - **🔴 last run failed** — most recent firing errored. Click into the thread to see the failure tool calls / error message.
 - **⏸ paused** — schedule skipped, will resume when you toggle
 
-Failures don't auto-disable the routine — castor assumes you want to know about transient errors but keep trying. If a routine fails 10 times in a row, the badge stays red but firings continue. Pause it manually if you want it stopped.
+Failures don't auto-disable the routine — Castor assumes you want to know about transient errors but keep trying. If a routine fails 10 times in a row, the badge stays red but firings continue. Pause it manually if you want it stopped.
 
 ## Tools available inside routines
 
@@ -112,8 +112,8 @@ Things to know:
 "daily 08:00"
 Prompt:
   Read overnight news from RBC and Bloomberg (use brave_search if needed,
-  then http_request to fetch). Summarize 3 most-important items in
-  Russian, 2 sentences each. Send to Telegram via telegram_notify_owner.
+  then http_request to fetch). Summarize 3 most-important items,
+  2 sentences each. Send to Telegram via telegram_notify_owner.
 ```
 
 ### Hardware monitoring

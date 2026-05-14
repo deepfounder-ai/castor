@@ -16,9 +16,9 @@ castor --web --ssl --port 7861
 `camera_capture(prompt?)` is a **core tool** — always loaded, no `tool_search` needed.
 
 ```
-You:    Что я держу в руке?
+You:    What am I holding in my hand?
 Agent:  [camera_capture]
-        → блок ниже становится "📷 frame captured"
+        → block below becomes "📷 frame captured"
         I see you're holding what looks like a USB-C cable —
         black, with a small power-delivery indicator near the plug.
 ```
@@ -64,7 +64,7 @@ Same WS pipeline as `camera_capture`, just initiated by the message rather than 
 
 ## Direct OpenCV (CLI / server-side)
 
-If no browser camera is connected (`camera_capture` from the terminal CLI, or via Telegram which has no live camera), castor falls back to direct OpenCV:
+If no browser camera is connected (`camera_capture` from the terminal CLI, or via Telegram which has no live camera), Castor falls back to direct OpenCV:
 
 ```python
 # Roughly what runs server-side
@@ -96,10 +96,10 @@ If your active model **isn't** multimodal, `camera_capture` falls back to "save 
 ### Inventory count
 
 ```
-You:    Сколько коробок на верхней полке?
+You:    How many boxes are on the top shelf?
 Agent:  [camera_capture prompt="Count boxes on the top shelf only"]
         → 8 boxes visible on the top shelf — 5 brown corrugated, 3 white.
-You:    Запомни цифру и проверь через 2 часа.
+You:    Remember the count and check again in 2 hours.
 Agent:  [memory_save "Top-shelf inventory snapshot: 8 boxes at 2026-05-11 14:32"]
         [schedule_task "in 2h" ...] → Routine #7 scheduled.
 ```
@@ -107,7 +107,7 @@ Agent:  [memory_save "Top-shelf inventory snapshot: 8 boxes at 2026-05-11 14:32"
 ### Live troubleshooting
 
 ```
-You:    Что светится красным на роутере?
+You:    What's blinking red on the router?
 Agent:  [camera_capture]
         → The LED labeled "INTERNET" is solid red. On most TP-Link routers
           that indicates WAN authentication failure — usually wrong PPPoE
@@ -135,7 +135,7 @@ Frame upload happens over the same WebSocket as text, so a slow mobile network =
 
 **Browser asks for permission every time** — depends on browser; Chrome/Edge remember per-origin, Firefox per-session. Add the localhost cert to your trusted store to make it stickier.
 
-**Frames are pitch-black on Windows** — common DirectShow + dual-camera gotcha. castor retries up to 30 times with sensor warmup, but if every retry is still black: pick the right `camera_device_index` manually in Settings (try 1 if 0 returns black).
+**Frames are pitch-black on Windows** — common DirectShow + dual-camera gotcha. Castor retries up to 30 times with sensor warmup, but if every retry is still black: pick the right `camera_device_index` manually in Settings (try 1 if 0 returns black).
 
 **No camera in OpenCV path** — `pip install opencv-python`. Doctor catches this. Headless servers without a physical camera can install it but `camera_capture` will fail with a clear error.
 

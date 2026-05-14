@@ -1,6 +1,6 @@
 # Soul — personality
 
-castor's **soul** is a structured personality config that shapes the system prompt every turn: name, language, 8 trait sliders, optional custom traits. The agent reads this verbatim and uses it as a behaviour anchor. Twist a slider, hit save, and the next turn the agent shifts noticeably.
+Castor's **soul** is a structured personality config that shapes the system prompt every turn: name, language, 8 trait sliders, optional custom traits. The agent reads this verbatim and uses it as a behaviour anchor. Twist a slider, hit save, and the next turn the agent shifts noticeably.
 
 This isn't a chat-bot avatar — it's a serious knob for making the agent fit your workflow. Examples:
 
@@ -44,9 +44,9 @@ Settings → **Soul** tab → drag the slider for each trait. Save. Active immed
 The `soul_editor` skill is auto-active. You can ask:
 
 ```
-You:    Делай меня смешнее. Меньше формальностей, больше шуток.
+You:    Make me funnier. Less formality, more jokes.
 Agent:  [soul_set_traits humor="high" formality="low"]
-        Готово. Стало смешнее? :)
+        Done. More funny now? :)
 ```
 
 The skill is conservative — it changes only the traits you ask about, doesn't auto-tune everything else.

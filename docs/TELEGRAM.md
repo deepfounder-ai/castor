@@ -1,6 +1,6 @@
 # Telegram bot
 
-castor can run as a Telegram bot — same agent, same memory, accessible from your phone with no UI of its own to maintain. Streaming responses, slash commands, voice messages, images, formatted text. Routines deliver their output here.
+Castor can run as a Telegram bot — same agent, same memory, accessible from your phone with no UI of its own to maintain. Streaming responses, slash commands, voice messages, images, formatted text. Routines deliver their output here.
 
 ## Setup (one-time)
 
@@ -24,7 +24,7 @@ In Telegram: open [@BotFather](https://t.me/BotFather), send `/newbot`, follow t
 # or Settings → Telegram → Start (Web)
 ```
 
-castor begins polling Telegram. The bot is now listening, but it doesn't know who's allowed to talk to it.
+Castor begins polling Telegram. The bot is now listening, but it doesn't know who's allowed to talk to it.
 
 ### 4. Generate an activation code
 
@@ -35,7 +35,7 @@ castor begins polling Telegram. The bot is now listening, but it doesn't know wh
 
 ### 5. Send the code to the bot in Telegram
 
-Open your bot in Telegram, send `482917`. castor verifies the code, records your Telegram user ID as **the owner**, and the bot is now exclusively yours.
+Open your bot in Telegram, send `482917`. Castor verifies the code, records your Telegram user ID as **the owner**, and the bot is now exclusively yours.
 
 You're done. Send any message to the bot and it'll route through the agent.
 
@@ -54,11 +54,11 @@ You're done. Send any message to the bot and it'll route through the agent.
 Once activated, the bot acts as your phone-side castor:
 
 ```
-You (Telegram): Сколько у меня встреч завтра?
+You (Telegram): How many meetings do I have tomorrow?
 Bot: [tool_search("calendar")] [...] You have 3 meetings tomorrow: ...
 
-You (Telegram): Запомни — Anna просит счёт-фактуру до пятницы.
-Bot: [memory_save "Anna needs invoice by Friday"] Запомнил.
+You (Telegram): Remember — Anna needs an invoice by Friday.
+Bot: [memory_save "Anna needs invoice by Friday"] Got it.
 
 You (Telegram): /memory
 Bot: 47 memories total. Recent:
@@ -99,9 +99,9 @@ For long replies (above Telegram's 4096-char message cap), castor splits into mu
 
 Send a photo to the bot — it gets attached as a vision input to the next turn, the same way the Web UI camera does. Works for:
 
-- "Что на фото?" — read text, describe scene, identify products
-- "Считай товары на полке" — count items
-- "Прочитай этот документ" — OCR + structured response
+- "What's in the photo?" — read text, describe scene, identify products
+- "Count items on the shelf" — count items
+- "Read this document" — OCR + structured response
 
 Needs a vision-capable LLM (see [PROVIDERS.md](PROVIDERS.md)). Without one, the photo gets saved to `uploads/` and the agent falls back to OCR-via-shell.
 
@@ -110,8 +110,8 @@ Needs a vision-capable LLM (see [PROVIDERS.md](PROVIDERS.md)). Without one, the 
 Send a Telegram voice message — castor transcribes it through your configured STT (see [VOICE.md](VOICE.md)) and treats the transcript as your text input.
 
 ```
-You (voice, 4s): "Сколько у меня встреч завтра?"
-Bot: [STT] "Сколько у меня встреч завтра?"
+You (voice, 4s): "How many meetings do I have tomorrow?"
+Bot: [STT] "How many meetings do I have tomorrow?"
      [tool_search("calendar")] [...]
      You have 3 meetings ...
 ```

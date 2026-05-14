@@ -1,5 +1,12 @@
 <p align="center">
-  <img src="static/logo.png" alt="castor" width="280">
+<pre>
+ ██████╗ █████╗ ███████╗████████╗ ██████╗ ██████╗ 
+██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗
+██║     ███████║███████╗   ██║   ██║   ██║██████╔╝
+██║     ██╔══██║╚════██║   ██║   ██║   ██║██╔══██╗
+╚██████╗██║  ██║███████║   ██║   ╚██████╔╝██║  ██║
+ ╚═════╝╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
+</pre>
 </p>
 
 <h3 align="center">Business-oriented AI agent</h3>
@@ -28,7 +35,7 @@
 
 ---
 
-## What is castor?
+## What is Castor?
 
 A **business-oriented AI agent** built to drop into real workflows: customer ops, internal automation, knowledge retrieval, scheduled reporting, custom integrations, **hardware on the floor**, and **rich UI in chat** (forms, dashboards, mockups). Deploys on your infrastructure — a workstation, your own server, or the cloud account you already have. Chat via web UI, terminal, or Telegram, with tools, semantic memory, browser control, MCP integrations, a cron-like scheduler, direct USB/serial access to scales, scanners, GPS, label printers, and PLCs — and a sandboxed canvas panel where the agent can render arbitrary HTML for visual artifacts.
 
@@ -36,9 +43,9 @@ A **business-oriented AI agent** built to drop into real workflows: customer ops
 
 > **Philosophy**: the system around the LLM should do the heavy lifting. Tool search keeps the prompt lean, recall keeps state out of the conversation, scheduler runs work without you, skills extend capability without redeploys. The result is an agent that's reliable on whatever model you pick — small enough to run on a laptop or large enough to handle complex multi-step tasks.
 
-## Why castor
+## Why Castor
 
-| | castor | Hosted SaaS agents |
+| | Castor | Hosted SaaS agents |
 |---|---|---|
 | **Data** | Stays on your infrastructure | Sent to the vendor |
 | **LLM choice** | Any OpenAI-compatible provider | Locked to vendor's model |
@@ -126,7 +133,7 @@ export CASTOR_LLM_URL=http://<your-ip>:1234/v1
 
 ### System requirements
 
-For **hosted-LLM** deployments, castor itself is light — any modern laptop or small VM works (the agent process is ~300MB resident, plus Qdrant on disk for memory).
+For **hosted-LLM** deployments, Castor itself is light — any modern laptop or small VM works (the agent process is ~300MB resident, plus Qdrant on disk for memory).
 
 For **local-LLM** deployments where the model runs on the same machine:
 
@@ -230,7 +237,7 @@ Full mobile access — streaming responses, slash commands, topic-to-thread mapp
 
 ## Tool Search
 
-castor uses a **meta-tool architecture** to minimize token usage. Only 8 core tools are loaded by default:
+Castor uses a **meta-tool architecture** to minimize token usage. Only 8 core tools are loaded by default:
 
 | Core Tool | Purpose |
 |-----------|---------|
@@ -307,7 +314,7 @@ Activated via `tool_search("browser")`. The agent can navigate pages, read conte
 
 ## Hardware
 
-castor runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your floor; castor can. The built-in **`serial_port`** skill talks USB-serial / RS-232 / RS-485 to the universe of business devices that show up on every loading dock, lab bench, retail counter, and factory line.
+Castor runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your floor; Castor can. The built-in **`serial_port`** skill talks USB-serial / RS-232 / RS-485 to the universe of business devices that show up on every loading dock, lab bench, retail counter, and factory line.
 
 Cross-platform via `pyserial`: same API on **Windows** (`COM3`), **macOS** (`/dev/tty.usbserial-…`), and **Linux** (`/dev/ttyUSB0`).
 
@@ -529,9 +536,9 @@ A routine is a chat thread with a schedule attached. Each firing appends a new u
 "every 30m"         -> repeat every 30 minutes
 "every 2 days 09:00" -> repeat every 2 days at 09:00
 "daily 09:00"       -> every day at 09:00
-"weekdays 09:00"    -> Mon-Fri at 09:00  (alias: "будни")
-"weekends 10:00"    -> Sat-Sun at 10:00  (alias: "выходные")
-"mon,wed,fri 14:30" -> those days at 14:30  (alias: "пн,ср,пт")
+"weekdays 09:00"    -> Mon-Fri at 09:00
+"weekends 10:00"    -> Sat-Sun at 10:00
+"mon,wed,fri 14:30" -> those days at 14:30
 "14:30"             -> once today/tomorrow at 14:30
 ```
 
@@ -688,7 +695,7 @@ Per-feature user guides live in [`docs/`](docs/README.md). The hub indexes every
 
 ## Contributing
 
-**Contributions welcome.** castor is a small open project — your PR won't get lost in a queue.
+**Contributions welcome.** Castor is a small open project — your PR won't get lost in a queue.
 
 - 📘 Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup + workflow
 - 🏗️ See [ARCHITECTURE.md](ARCHITECTURE.md) for the big picture
@@ -723,7 +730,7 @@ Dependencies are tracked by [Dependabot](.github/dependabot.yml) — weekly grou
 
 - 💬 [Telegram — @castor_ai](https://t.me/castor_ai) — quick chat, show-and-tell, release announcements
 - 💭 [GitHub Discussions](../../discussions) — long-form questions, workflow sharing
-- ⭐ If castor is useful — **star the repo**. It's the clearest signal we're on the right track.
+- ⭐ If Castor is useful — **star the repo**. It's the clearest signal we're on the right track.
 
 ## License
 

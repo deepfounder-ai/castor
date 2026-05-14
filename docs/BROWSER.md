@@ -13,7 +13,7 @@ The right tool depends on whether the goal is **the page's content** (headless) 
 The browser skill is built-in but **not active by default** (loading 23 tools every turn would blow the token budget). Activate when needed:
 
 ```
-You:    Открой википедию по слову "FastAPI" и резюмируй.
+You:    Open Wikipedia for "FastAPI" and summarize it.
 Agent:  [tool_search("browser")] → 7 quickstart tools activated
         [browser_open url="https://en.wikipedia.org/wiki/FastAPI"]
         [browser_snapshot] → reads main content
@@ -46,11 +46,11 @@ tool_search("browser advanced")
 
 ## Visible browser — for logged-in flows
 
-Hosted cloud agents can't sign in to your bank, your CRM, or your invoice system — your credentials don't live in their cloud, and you wouldn't paste them there even if they could. castor sidesteps this: **the agent drives YOUR browser, on YOUR machine, with YOUR existing session.**
+Hosted cloud agents can't sign in to your bank, your CRM, or your invoice system — your credentials don't live in their cloud, and you wouldn't paste them there even if they could. Castor sidesteps this: **the agent drives YOUR browser, on YOUR machine, with YOUR existing session.**
 
 ```
-You:    Покажи мне свежие счета из админки billing.example.com.
-        Зайди под моим логином и сделай скриншот.
+You:    Show me recent invoices from the billing.example.com admin panel.
+        Log in with my credentials and take a screenshot.
 Agent:  [browser_set_visible(true)] — Chrome window pops up
         [browser_open url="https://billing.example.com/admin"]
         → page shows the login form
@@ -78,7 +78,7 @@ Visibility state is per-server, not per-thread. If you want a separate persisten
 When the agent has nothing to do with the page itself ("show me the docs", "open this OAuth flow"):
 
 ```
-You:    Открой документацию castor.
+You:    Open the Castor documentation.
 Agent:  [open_url url="https://github.com/deepfounder-ai/castor"]
         → opens in your default browser
 ```
@@ -107,7 +107,7 @@ You can override by being explicit ("open the page visibly", "scrape this in the
 ### Scrape a public site (no login)
 
 ```
-You:    Цены на S&P 500 за последний месяц с investing.com.
+You:    S&P 500 prices for the last month from investing.com.
 Agent:  [tool_search("browser")] [browser_open] [browser_snapshot]
         → S&P closed at 5,847 on 2026-05-10, up 1.2% MoM ...
 ```
@@ -117,13 +117,13 @@ Pure headless — no window appears, no interruption.
 ### Workflow inside your CRM
 
 ```
-You:    В админке CRM добавь лида: Анна Иванова, +7 ..., источник "Реклама ВК".
+You:    In the CRM admin add a lead: Anna Ivanova, +7 ..., source "VK Ads".
 Agent:  [browser_set_visible(true)]
         [browser_open url="https://crm.example.com/leads/new"]
         → window pops up
-        [browser_fill selector="#name"  value="Анна Иванова"]
+        [browser_fill selector="#name"  value="Anna Ivanova"]
         [browser_fill selector="#phone" value="+7 ..."]
-        [browser_click text="Реклама ВК"]
+        [browser_click text="VK Ads"]
         [browser_click text="Save"]
         → "Lead created" toast visible
         Done.
@@ -134,7 +134,7 @@ You watch the agent fill the form. You can interrupt if it goes wrong.
 ### OAuth handoff
 
 ```
-You:    Подключи мой Google Calendar.
+You:    Connect my Google Calendar.
 Agent:  [open_url url="https://accounts.google.com/o/oauth2/auth?..."]
         → opens in your default browser
         Sign in there, grant calendar:read scope, and tell me when you're back.
