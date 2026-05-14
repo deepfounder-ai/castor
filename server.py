@@ -11,6 +11,12 @@ def _signal_handler(signum, frame):
     _l = _lg.get("server")
     _l.error(f"SIGNAL {signum} received!")
     _l.error("".join(traceback.format_stack(frame)))
+    # Flush WAL so the DB is not left with an open write transaction
+    try:
+        import db as _db
+        _db.graceful_shutdown()
+    except Exception:
+        pass
 
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
@@ -390,7 +396,12 @@ def _sweep_uploads(max_age_days: int = 14, max_files: int = 10000) -> tuple[int,
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — load timezone before anything else
+    # Startup — kick off DB backup scheduler + integrity check
+    try:
+        db.start_backup_scheduler()
+    except Exception as e:
+        _log.warning(f"db backup scheduler startup: {e}")
+    # Load timezone before anything else
     tz_val = db.kv_get("tz_offset") or db.kv_get("timezone")
     if tz_val:
         try:
@@ -452,6 +463,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         mcp_client.stop_all()
+    except Exception:
+        pass
+    try:
+        db.graceful_shutdown()
     except Exception:
         pass
     _log.info("web server stopped")

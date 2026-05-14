@@ -994,6 +994,11 @@ def main():
     scheduler.on_complete(_on_cron_complete)
     scheduler.start()
     console.print(f"  [dim]⏰ Scheduler running (UTC{config.TZ_OFFSET:+d})[/]")
+    # Start DB backup scheduler
+    try:
+        db.start_backup_scheduler()
+    except Exception as e:
+        _log.warning(f"db backup scheduler startup: {e}")
 
     show_banner()
     _log.info("session started | model=%s | user=%s", config.LLM_MODEL, db.kv_get("user_name") or "User")
@@ -1172,6 +1177,12 @@ def main():
         if stats_parts:
             console.print(f"  [dim]· {' · '.join(stats_parts)}[/]")
         console.print()
+
+    # Flush WAL and close DB cleanly on exit
+    try:
+        db.graceful_shutdown()
+    except Exception:
+        pass
 
 
 def show_help():
