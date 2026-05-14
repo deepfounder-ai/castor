@@ -242,7 +242,7 @@ def _pre_dispatch_safety_check(tool_name: str, args: dict, self_check_fn=None) -
     2. For ``shell``: route through ``tools._check_shell_safety`` on the
        ``command`` argument.
     3. For ``write_file``: route through ``tools._resolve_path(raw, for_write=True)``
-       so the workspace whitelist catches writes outside ~/.qwe-qwe/ / cwd.
+       so the workspace whitelist catches writes outside ~/.castor/ / cwd.
 
     Returns None on allow, str on reject. Never raises.
     """
@@ -371,6 +371,7 @@ def run_loop(
     abort_event=None,
     ctx=None,
     thread_id: str | None = None,
+    system_note: str | None = None,
 ) -> dict:
     """Run the agent loop.
 
@@ -393,6 +394,11 @@ def run_loop(
         ctx: optional :class:`turn_context.TurnContext`. When given, its
             ``abort_event`` is used if ``abort_event=`` wasn't passed, and the
             ctx is stashed on the tools module so tool executions can reach it.
+        system_note: optional one-shot system message injected once at the start
+            of this run, right after the soul system prompt (messages[0]). NOT
+            persisted, NOT carried into subsequent turns. Used by
+            resume_interrupted_run to nudge the model without injecting a
+            [system] user-role message (CLAUDE.md OpenCode lesson).
 
     Returns:
         dict with: reply, thinking, tool_calls, finish_reason, stats
@@ -407,19 +413,36 @@ def run_loop(
         import tools as _tools
         tool_executor = _tools.execute
 
+    # Inject system_note as a one-shot system message right after the soul
+    # system prompt (messages[0]). This must happen before any LLM call so
+    # the model sees it on the first (and only) turn it matters. NOT
+    # persisted — lives only in this local messages list copy.
+    if system_note:
+        _insert_idx = 1 if messages and messages[0].get("role") == "system" else 0
+        messages = list(messages)  # shallow copy — don't mutate caller's list
+        messages.insert(_insert_idx, {"role": "system", "content": system_note})
+
     # ── Agent-run instrumentation ──────────────────────────────────────────
     _run_started = time.time()
     _provider = providers.get_active_name()
     _thread_id = db._tid(thread_id)  # resolve: explicit > active > default
-    _run_id = db.insert_agent_run(
-        thread_id=_thread_id,
-        source=(ctx.source if ctx else "cli"),
-        started_at=_run_started,
-        status="running",
-        cron_id=(ctx.cron_id if ctx else None),
-        model=model,
-        provider=_provider,
-    )
+    # Insert the row BEFORE entering the try/finally so that if the INSERT
+    # itself raises, the finally block never calls finalize_agent_run(None, …).
+    # Use a sentinel None so the finally block can guard on it.
+    _run_id: int | None = None
+    try:
+        _run_id = db.insert_agent_run(
+            thread_id=_thread_id,
+            source=(ctx.source if ctx else "cli"),
+            started_at=_run_started,
+            status="running",
+            cron_id=(ctx.cron_id if ctx else None),
+            model=model,
+            provider=_provider,
+            resumed_from_run_id=(ctx.resumed_from_run_id if ctx else None),
+        )
+    except Exception as _ins_err:
+        _log.warning(f"agent_runs INSERT failed (analytics disabled for this run): {_ins_err}")
     _final_status = "ok"
     _final_error: str | None = None
 
@@ -843,23 +866,46 @@ def run_loop(
         _finished = time.time()
         if ctx and getattr(ctx, "abort_event", None) and ctx.abort_event.is_set() and _final_status == "ok":
             _final_status = "aborted"
+        _is_aborted = (_final_status == "aborted")
+
+        # Flush partial assistant content as a message row so resume sees it
+        # in conversation history. On clean exit, agent.py's reply-save path
+        # handles this — skip here to avoid duplicates.
+        if _is_aborted and final_content:
+            try:
+                db.save_message(
+                    role="assistant",
+                    content=final_content,
+                    thread_id=_thread_id,
+                    meta={
+                        "interrupted": True,
+                        "run_id": _run_id,
+                        "partial_tokens": {
+                            "input": int(stats.input_tokens or 0),
+                            "output": int(stats.output_tokens or 0),
+                        },
+                    },
+                )
+            except Exception as e:
+                _log.debug(f"interrupt flush failed: {e}")
+
         _cost = None
         try:
             _cost = pricing.compute_cost(model, stats.input_tokens, stats.output_tokens)
         except Exception:
             pass
-        _is_aborted = (_final_status == "aborted")
-        db.finalize_agent_run(
-            run_id=_run_id,
-            finished_at=(None if _is_aborted else _finished),
-            duration_ms=(None if _is_aborted else int((_finished - _run_started) * 1000)),
-            status=_final_status,
-            error=_final_error,
-            result_preview=final_content.strip()[:200],
-            input_tokens=stats.input_tokens,
-            output_tokens=stats.output_tokens,
-            cost_usd=_cost,
-        )
+        if _run_id is not None:
+            db.finalize_agent_run(
+                run_id=_run_id,
+                finished_at=(None if _is_aborted else _finished),
+                duration_ms=(None if _is_aborted else int((_finished - _run_started) * 1000)),
+                status=_final_status,
+                error=_final_error,
+                result_preview=final_content.strip()[:200],
+                input_tokens=stats.input_tokens,
+                output_tokens=stats.output_tokens,
+                cost_usd=_cost,
+            )
 
 
 def _parse_tool_args(raw: str, repair_fn=None) -> dict | None:

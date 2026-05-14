@@ -12,7 +12,7 @@ setup.bat             # Windows
 
 python cli.py                                # Terminal chat
 python cli.py --web --ssl --port 7861        # Web UI (HTTPS required for mic/camera)
-qwe-qwe --web --doctor                       # If installed as package; doctor runs 30+ checks
+castor --web --doctor                       # If installed as package; doctor runs 30+ checks
 
 # Tests
 pytest tests/                                # All tests (~520 currently)
@@ -78,7 +78,7 @@ When adding new per-turn state: put it on TurnContext, not as a module global.
 
 **Shell safety** (`_check_shell_safety`): speed-bump against obvious bypasses (sudo, rm -rf /, eval $(...), $(curl ...) | sh, Cyrillic lookalikes, hex-encoded rm). **NOT a trust boundary** — agent runs with full user privileges. For real isolation, run in a container. Tests live in `tests/test_shell_safety.py`.
 
-**Path resolution** (`_resolve_path`): Git Bash `/c/Users/...` → Windows `C:/Users/...`. Write whitelist: `~/.qwe-qwe/workspace/`, `~/.qwe-qwe/`, cwd.
+**Path resolution** (`_resolve_path`): Git Bash `/c/Users/...` → Windows `C:/Users/...`. Write whitelist: `~/.castor/workspace/`, `~/.castor/`, cwd.
 
 **send_file**: copies to `uploads/`, queues in `_pending_files`. Server includes in WS reply. Rule 12 in soul.py says "after write_file call send_file".
 
@@ -86,7 +86,7 @@ When adding new per-turn state: put it on TurnContext, not as a module global.
 
 ### Memory (`memory.py`)
 
-**3-way hybrid search** (dense + sparse + BM25 FTS5, fused via RRF) in a single Qdrant collection (`qwe_qwe`):
+**3-way hybrid search** (dense + sparse + BM25 FTS5, fused via RRF) in a single Qdrant collection (`castor`):
 - **Raw** (`tag=knowledge/fact/user/...`) — immediate saves, auto-chunked >1000 chars.
 - **Entity** (`tag=entity`) — graph nodes with typed relations, created by night synthesis.
 - **Wiki** (`tag=wiki`) — synthesized summaries, highest-quality recall.
@@ -126,7 +126,7 @@ OpenAI-compatible client for 10 providers (lmstudio, ollama, openai, openrouter,
 
 ### Skill Creator (`skills/skill_creator.py`)
 
-User can chat-create new skills: "build me a meal logger that takes a photo and remembers what I ate" → `tool_search("skill")` → `create_skill(name, description)` → 5-step LLM pipeline writes a `.py` to `~/.qwe-qwe/skills/<name>.py`.
+User can chat-create new skills: "build me a meal logger that takes a photo and remembers what I ate" → `tool_search("skill")` → `create_skill(name, description)` → 5-step LLM pipeline writes a `.py` to `~/.castor/skills/<name>.py`.
 
 Pipeline phases (`_run_pipeline`, runs in background thread, 3 retry attempts):
 1. **Plan** — JSON of `{docstring, instruction, tables, tools}`. Plan prompt instructs the planner to compose with the full agent runtime (memory.save, tools.execute("camera_capture"), secrets, http_request).
@@ -135,7 +135,7 @@ Pipeline phases (`_run_pipeline`, runs in background thread, 3 retry attempts):
 4. **Table DDL** — `_build_table_ddl(plan)`. **Tables MUST be prefixed `skill_<name>_*`** to avoid collisions with core agent tables (messages, kv, threads) and other skills' tables. Documented in INSTRUCTION + STEP1_PLAN, enforced by tests.
 5. **Validate + smoke** — ast.parse, then `validate_skill()`, then `_smoke_test()` calls `execute()` for each declared tool. **Param-usage check (v0.18.4)** scopes search to `execute()` body via AST, no longer false-matches param names appearing in the TOOLS dict literal.
 
-Soul rule 14 (v0.18.x): when user requests a service integration, agent calls `create_skill` and **STOPS the turn** — no parallel `write_file` to skills/, no manual scaffolding. Skills are SINGLE `.py` files at `~/.qwe-qwe/skills/<name>.py`, never directories.
+Soul rule 14 (v0.18.x): when user requests a service integration, agent calls `create_skill` and **STOPS the turn** — no parallel `write_file` to skills/, no manual scaffolding. Skills are SINGLE `.py` files at `~/.castor/skills/<name>.py`, never directories.
 
 `delete_skill(name)` parses CREATE TABLE statements, drops only `skill_<name>_*` matches via `_extract_skill_owned_tables` (regex with isidentifier guard), then unlinks the .py.
 
@@ -173,7 +173,7 @@ Full data inventory + privacy contract: `docs/PRIVACY.md`.
 - `scheduler` routine firings — same `run_loop` bracket, source = `scheduler`
 
 **Pricing** (`pricing.py`):
-- Primary: LiteLLM community JSON (`https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`), fetched and cached locally at `~/.qwe-qwe/pricing_cache.json`.
+- Primary: LiteLLM community JSON (`https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`), fetched and cached locally at `~/.castor/pricing_cache.json`.
 - Fallback: bundled top-10 model table used when cache is absent or stale.
 - Override: `db.kv_set("pricing_override_<model>", json.dumps({"input": X, "output": Y}))` pins exact per-token USD rates. Configurable via Settings UI or `pricing_url` setting for air-gapped mirrors.
 
@@ -183,16 +183,40 @@ Full data inventory + privacy contract: `docs/PRIVACY.md`.
 
 User-facing doc: `docs/COST_TRACKING.md`.
 
+### Auto-resume after interrupt
+
+Every abort (WS disconnect, Stop button, server crash) is recoverable. Migration 009 added `resumed_from_run_id` + `dismissed_at` to `agent_runs`. The existing agent_loop `finally:` block was extended to flush partial assistant content into `messages` with `meta.interrupted=true` (and `run_id` linking back to the aborted `agent_runs` row). A startup hook in `server.py` promotes any orphaned `running` rows to `aborted` so crashes don't leave zombies.
+
+`agent.resume_interrupted_run(run_id)` is the universal executor. It validates the run is resumable (not dismissed, not itself a resume, not already resumed), builds a TurnContext carrying the original source/cron_id, and fires a normal `agent.run` with a one-shot `system_note=` — a real `{role: "system"}` message that prepends the next LLM call only. **Do NOT inject `[system]` prefixes as user-role messages** (CLAUDE.md OpenCode lesson) — the `system_note` parameter is the clean alternative.
+
+Trigger paths per source:
+- **Web**: WS connect emits `interrupted_turn` event; UI banner shows Resume/Dismiss
+- **Telegram**: `/resume` command, scoped by `source='telegram'`
+- **Routine**: `scheduler.detect_missed_runs` auto-fires aborted routine runs within `resume_ttl_routine_sec` (default 5 min)
+- **CLI**: no resume (Ctrl+C is intentional)
+
+TTLs live in `EDITABLE_SETTINGS` — see `docs/AUTO_RESUME.md` for the user-facing guide.
+
+### Routine budget caps (v0.21.0)
+
+Per-routine USD spending caps over a configurable rolling window. Migration `010_routine_budget.sql` adds `budget_usd_cap` (NULL = no cap) and `budget_period_sec` (default 86400) to `scheduled_tasks`.
+
+- `db.get_routine_budget(cron_id)` — returns `{"cap": float, "period_sec": int}` or `None`.
+- `db.get_routine_period_spend(cron_id, period_sec)` — sums `agent_runs.cost_usd` over the window. NULL costs treated as 0 (local/unknown-price models never hit caps).
+- `scheduler._execute_routine` checks budget **after** acquiring the fire lock (atomic w.r.t. concurrent fires). On cap exceeded: calls `db.insert_skipped_run(..., reason="skipped")` then sets `error='budget_exceeded'` on that row, releases the lock, and returns without running `agent.run`.
+- API: `GET /api/routines/{id}/budget` returns `{cap, period_sec, spent}`; `POST /api/routines/{id}/budget` sets or clears the cap. `cap=null` disables enforcement.
+- UI: Routines page shows a color-coded budget chip per routine (green < 80%, orange 80–99%, red >= 100%). Click opens a `prompt()` dialog to set/clear cap + period. `loadRoutineBudgets()` runs alongside `loadRoutineCosts()` on every non-silent Routines view load.
+
 ### Skill import from skills.sh / GitHub (`skills/skill_import.py`)
 
 **Added v0.18.x.** Imports community skills following the agentskills.io SKILL.md spec (YAML frontmatter + markdown body + optional `scripts/` `references/` `assets/`). Two layers:
 
-1. **Adapter generation**: skills.sh skills are markdown-instructions-for-LLM, qwe-qwe skills are `TOOLS + execute()` Python modules. The importer writes a thin adapter `.py` to `~/.qwe-qwe/skills/<name>.py` with `DESCRIPTION` / short `INSTRUCTION` / one tool `<name>_help` returning the SKILL.md body verbatim. Generated via `repr()`-substituted source so Windows paths with `\U` etc. don't crash the parser.
-2. **Asset staging**: scripts / references / assets land at `~/.qwe-qwe/skills_imported/<name>/`. Agent reads them via the regular `read_file` / `shell` tools.
+1. **Adapter generation**: skills.sh skills are markdown-instructions-for-LLM, castor skills are `TOOLS + execute()` Python modules. The importer writes a thin adapter `.py` to `~/.castor/skills/<name>.py` with `DESCRIPTION` / short `INSTRUCTION` / one tool `<name>_help` returning the SKILL.md body verbatim. Generated via `repr()`-substituted source so Windows paths with `\U` etc. don't crash the parser.
+2. **Asset staging**: scripts / references / assets land at `~/.castor/skills_imported/<name>/`. Agent reads them via the regular `read_file` / `shell` tools.
 
 Safety surface:
 - Domain allowlist: `skills.sh`, `github.com`, `raw.githubusercontent.com`, `api.github.com`. Everything else → 403 `host_not_allowed`.
-- SSRF guard (private/loopback IPs blocked, `QWE_ALLOW_PRIVATE_URLS=1` opt-out — same env var as `/api/knowledge/url`).
+- SSRF guard (private/loopback IPs blocked, `CASTOR_ALLOW_PRIVATE_URLS=1` opt-out — same env var as `/api/knowledge/url`).
 - Name validation matches the agentskills.io regex `^[a-z0-9]+(-[a-z0-9]+)*$`, ≤64 chars.
 - **Built-in skills are NOT overridable** even with `overwrite=true` — typosquatting defense via `_BUILTIN_SKILL_NAMES` set.
 - License surfacing: non-OSS-marker licenses (e.g. Anthropic's "Complete terms in LICENSE.txt") return HTTP 451 `license_confirm_required` with the license text in `details`. Web UI shows confirm panel; CLI re-POSTs with `accept_license: true`.
@@ -222,7 +246,7 @@ Full data inventory + postMessage protocol + reference HTML template: `docs/CANV
 
 ### Project blog feed (`/api/feed/blog`)
 
-**Added v0.18.5.** Server-side proxy of `https://deepfounder.ai/tag/qwe-qwe/rss/`, rendered as a "From the blog" strip above the preset grid. **NOT telemetry** — empty body, no `anonymous_id`. Only signal deepfounder.ai sees is "an install asked for the feed" (IP + `qwe-qwe/<ver>` UA).
+**Added v0.18.5.** Server-side proxy of `https://deepfounder.ai/tag/castor/rss/`, rendered as a "From the blog" strip above the preset grid. **NOT telemetry** — empty body, no `anonymous_id`. Only signal deepfounder.ai sees is "an install asked for the feed" (IP + `castor/<ver>` UA).
 
 - 30-min in-process cache (`_feed_cache` + lock), 15s urlopen timeout, 10 items max.
 - Parser bounded everywhere: title ≤300, desc ≤500, ≤8 categories, etc. — a malicious upstream can't blow up the response.
@@ -236,7 +260,7 @@ Full data inventory + postMessage protocol + reference HTML template: `docs/CANV
 - **TTS** (`tts.py`): auto-detects API style (OpenAI `/v1/audio/speech`, custom `/tts` w/ voice cloning, Fish Speech, s2.cpp).
 - **Camera**: `camera_capture(prompt?)` grabs frame via WebSocket (browser) or OpenCV (direct). Persistent `_camera_cap` for fast repeat captures. WS event names unified `get_frame` / `frame_request` (v0.18.2). Client falls back to one-shot `getUserMedia` when PiP isn't active. OpenCV path has black-frame guard (mean<25 → up to 30 retries, sensor warmup) for Windows DirectShow gotchas. Auto-detect picks BRIGHTEST of indexes 0-3, not first non-pitch-black. Resolution + JPEG quality user-tunable via `camera_resolution` (auto/480p/720p/1080p) + `camera_quality` (1-100) settings.
 - **URL/file indexing** (`rag.py`): MarkItDown handles PDF/DOCX/PPTX/XLSX/HTML/etc. YouTube-specific path uses `yt-dlp` with `player_client=["android","ios","web"]` to dodge DRM blocks, native-language preferred over auto-translated English.
-- **SSRF** (v0.17.18): `/api/knowledge/url` blocks private/loopback/link-local IPs unless `QWE_ALLOW_PRIVATE_URLS=1`. Uses `socket.getaddrinfo` + `ipaddress.ip_address.is_private`.
+- **SSRF** (v0.17.18): `/api/knowledge/url` blocks private/loopback/link-local IPs unless `CASTOR_ALLOW_PRIVATE_URLS=1`. Uses `socket.getaddrinfo` + `ipaddress.ip_address.is_private`.
 
 ### Web UI (`static/index.html`)
 
@@ -307,31 +331,31 @@ Coverage baseline 25.93%; floor 24% (`pyproject.toml::tool.coverage.report.fail_
 
 CI flake to know about: `tests/test_telemetry_wireup.py::test_tool_error_classifies_keyboard_interrupt_as_aborted` sometimes fails in full-suite collection (KeyboardInterrupt is special-cased by pytest); always passes in isolation.
 
-## Data layout (`~/.qwe-qwe/` — override via `QWE_DATA_DIR`)
+## Data layout (`~/.castor/` — override via `CASTOR_DATA_DIR`)
 
-- `qwe_qwe.db` — SQLite (messages, threads, kv, settings, cron, secrets)
+- `castor.db` — SQLite (messages, threads, kv, settings, cron, secrets)
 - `memory/` — Qdrant vectors (disk mode)
 - `wiki/` — synthesized markdown pages
 - `skills/` — user-dropped `.py` skills
 - `uploads/` — images, docs, camera captures, TTS mp3s (startup sweep deletes files >14 days old; `uploads/kb/` kept — indexed knowledge sources)
 - `workspace/` — default CWD for relative paths (swapped when preset active)
 - `presets/<id>/` — installed presets (each with own `workspace/`, `knowledge/`, `skills/`)
-- `logs/` — qwe-qwe.log (INFO+), errors.log (WARNING+)
+- `logs/` — castor.log (INFO+), errors.log (WARNING+)
 
 ## Environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `QWE_LLM_URL` | `http://localhost:1234/v1` | Provider base URL |
-| `QWE_LLM_MODEL` | `qwen/qwen3.5-9b` | Active model id |
-| `QWE_LLM_KEY` | `lm-studio` | API key |
-| `QWE_DATA_DIR` | `~/.qwe-qwe` | Where state lives |
-| `QWE_DB_PATH` | `$DATA_DIR/qwe_qwe.db` | SQLite path |
-| `QWE_QDRANT_MODE` | `disk` | `memory` / `disk` / `server` |
-| `QWE_PASSWORD` | — | Web UI auth (when exposing on LAN) |
-| `QWE_STT_DEVICE` | `cpu` | faster-whisper device |
-| `QWE_EMBED_DEVICE` | `cpu` | FastEmbed provider — CPU by design (v0.17.21). Set `cuda` only if you've installed `onnxruntime-gpu` + matching CUDA Toolkit manually. |
-| `QWE_ALLOW_PRIVATE_URLS` | unset | Set to `1` to bypass SSRF block on `/api/knowledge/url` (dev only). |
+| `CASTOR_LLM_URL` | `http://localhost:1234/v1` | Provider base URL |
+| `CASTOR_LLM_MODEL` | `qwen/qwen3.5-9b` | Active model id |
+| `CASTOR_LLM_KEY` | `lm-studio` | API key |
+| `CASTOR_DATA_DIR` | `~/.castor` | Where state lives |
+| `CASTOR_DB_PATH` | `$DATA_DIR/castor.db` | SQLite path |
+| `CASTOR_QDRANT_MODE` | `disk` | `memory` / `disk` / `server` |
+| `CASTOR_PASSWORD` | — | Web UI auth (when exposing on LAN) |
+| `CASTOR_STT_DEVICE` | `cpu` | faster-whisper device |
+| `CASTOR_EMBED_DEVICE` | `cpu` | FastEmbed provider — CPU by design (v0.17.21). Set `cuda` only if you've installed `onnxruntime-gpu` + matching CUDA Toolkit manually. |
+| `CASTOR_ALLOW_PRIVATE_URLS` | unset | Set to `1` to bypass SSRF block on `/api/knowledge/url` (dev only). |
 
 Telemetry-related settings live in `EDITABLE_SETTINGS` (not env vars): `telemetry_enabled` (default 0), `telemetry_endpoint` (default `https://qwelytics.deepfounder.ai/i`), `telemetry_format` (`raw` / `countly`, default `countly`), `telemetry_countly_app_key`, `telemetry_anonymous_id`, `telemetry_consent_version`. Operators / forks edit defaults in `config.py`; end-users only see Enable/Disable.
 

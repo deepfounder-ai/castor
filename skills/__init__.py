@@ -2,14 +2,17 @@
 
 Skills are loaded from two directories:
   1. Built-in skills: shipped with the project (skills/ in repo)
-  2. User skills: ~/.qwe-qwe/skills/ (safe from git updates)
+  2. User skills: ~/.castor/skills/ (safe from git updates)
 """
 
-import importlib, importlib.util, sys
+import importlib, importlib.util, re, sys
 from pathlib import Path
 from types import ModuleType
 import db
 import config
+
+# Skill names: lowercase alphanumeric + underscores only, no path separators
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
 USER_SKILLS_DIR = config.USER_SKILLS_DIR
@@ -37,8 +40,8 @@ def _all_skill_paths() -> dict[str, Path]:
     """Return {name: path} for all skills. Later dirs override earlier ones.
 
     Priority (highest wins):
-        1. Active preset skills (~/.qwe-qwe/presets/<id>/skills/)
-        2. User skills (~/.qwe-qwe/skills/)
+        1. Active preset skills (~/.castor/presets/<id>/skills/)
+        2. User skills (~/.castor/skills/)
         3. Built-in skills (skills/)
 
     Hidden skills only appear when their activation key is set.
@@ -72,6 +75,9 @@ def _find_skill(name: str) -> Path | None:
         2. User skills
         3. Built-in skills
     """
+    # Reject names that contain path separators or other unsafe characters
+    if not _SKILL_NAME_RE.match(name):
+        return None
     preset_dir = _active_preset_skills_dir()
     if preset_dir is not None:
         p = preset_dir / f"{name}.py"

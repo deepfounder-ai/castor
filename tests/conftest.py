@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the qwe-qwe test suite.
+"""Shared pytest fixtures for the castor test suite.
 
 Historical note: several legacy test files used to inject mock modules into
 ``sys.modules`` at import time (``sys.modules["memory"] = FakeModule()``).
@@ -28,15 +28,15 @@ if str(_REPO_ROOT) not in sys.path:
 
 @pytest.fixture
 def qwe_temp_data_dir(monkeypatch):
-    """Point QWE_DATA_DIR at a fresh tempdir and reload config/db.
+    """Point CASTOR_DATA_DIR at a fresh tempdir and reload config/db.
 
     Yields the Path of the tempdir. Original env + module state are restored
     automatically by ``monkeypatch``; the tempdir itself is removed on exit.
     """
     import importlib
 
-    tmp_root = Path(tempfile.mkdtemp(prefix="qwe_pytest_"))
-    monkeypatch.setenv("QWE_DATA_DIR", str(tmp_root))
+    tmp_root = Path(tempfile.mkdtemp(prefix="castor_pytest_"))
+    monkeypatch.setenv("CASTOR_DATA_DIR", str(tmp_root))
 
     # Close any stale DB connection before reload
     if "db" in sys.modules:
@@ -48,6 +48,8 @@ def qwe_temp_data_dir(monkeypatch):
             if _local is not None:
                 _local.conn = None
             sys.modules["db"]._migrated = False
+            sys.modules["db"]._integrity_checked = False
+            sys.modules["db"]._backup_thread_started = False
         except Exception:
             pass
 
@@ -72,10 +74,12 @@ def qwe_temp_data_dir(monkeypatch):
                 if _local is not None:
                     _local.conn = None
                 db_mod._migrated = False
+                db_mod._integrity_checked = False
+                db_mod._backup_thread_started = False
         except Exception:
             pass
         shutil.rmtree(tmp_root, ignore_errors=True)
-        # Reload core modules against whatever QWE_DATA_DIR is now in effect
+        # Reload core modules against whatever CASTOR_DATA_DIR is now in effect
         # (monkeypatch will have restored the original value before this runs
         #  in the normal finalizer order — but we also reload here so later
         #  tests don't see state tied to the now-removed tempdir).
@@ -92,47 +96,52 @@ def mock_llm(monkeypatch):
     """Patch providers.get_client() to return a deterministic fake client.
 
     The fake client exposes ``chat.completions.create(**kw)`` which returns a
-    single non-streaming response with text ``"ok"`` and no tool calls. Tests
+    streaming-compatible response with text ``"ok"`` and no tool calls.  Tests
     that need a specific reply can override via ``mock_llm.reply = "..."``.
     """
-
-    class _FakeMessage:
-        def __init__(self, content: str):
-            self.content = content
-            self.tool_calls = None
-            self.role = "assistant"
-
-    class _FakeChoice:
-        def __init__(self, content: str):
-            self.message = _FakeMessage(content)
-            self.finish_reason = "stop"
-            self.delta = _FakeMessage(content)
-
-    class _FakeResp:
-        def __init__(self, content: str):
-            self.choices = [_FakeChoice(content)]
-            self.id = "fake"
-            self.model = "fake"
-
-    class _FakeCompletions:
-        def __init__(self, holder):
-            self._holder = holder
-
-        def create(self, **_):
-            return _FakeResp(self._holder.reply)
-
-    class _FakeChat:
-        def __init__(self, holder):
-            self.completions = _FakeCompletions(holder)
-
-    class _FakeClient:
-        def __init__(self, holder):
-            self.chat = _FakeChat(holder)
 
     class _Holder:
         reply = "ok"
 
     holder = _Holder()
+
+    class _FakeDelta:
+        def __init__(self, content="", finish=None):
+            self.content = content
+            self.tool_calls = None
+            self.role = "assistant"
+            self.reasoning_content = None
+            self.reasoning = None
+
+    class _FakeChunk:
+        def __init__(self, content="", finish=None):
+            self.choices = [
+                types.SimpleNamespace(
+                    delta=_FakeDelta(content),
+                    finish_reason=finish,
+                    message=_FakeDelta(content),
+                )
+            ]
+            self.usage = None
+            self.id = "fake"
+            self.model = "fake-model"
+
+    class _FakeCompletions:
+        def __init__(self, holder):
+            self._holder = holder
+
+        def create(self, **kw):
+            # Always return a streaming generator (run_loop always passes stream=True)
+            def _gen():
+                yield _FakeChunk(content=self._holder.reply, finish=None)
+                yield _FakeChunk(content="", finish="stop")
+
+            return _gen()
+
+    class _FakeClient:
+        def __init__(self, holder):
+            self.chat = types.SimpleNamespace(completions=_FakeCompletions(holder))
+
     client = _FakeClient(holder)
 
     import providers

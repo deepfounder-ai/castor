@@ -1,6 +1,6 @@
 # SQLite Migrations
 
-Versioned schema migrations for `qwe_qwe.db`. Runner lives in `db.py`
+Versioned schema migrations for `castor.db`. Runner lives in `db.py`
 (`_apply_migrations`). No external tool (alembic, yoyo, ...) required.
 
 ## Convention

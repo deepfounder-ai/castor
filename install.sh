@@ -1,6 +1,6 @@
 #!/bin/bash
-# qwe-qwe one-line installer
-# curl -fsSL https://raw.githubusercontent.com/anthropic-lab/qwe-qwe/main/install.sh | bash
+# castor one-line installer
+# curl -fsSL https://raw.githubusercontent.com/anthropic-lab/castor/main/install.sh | bash
 set -e
 
 # ── branding ──────────────────────────────────────────────
@@ -19,7 +19,7 @@ echo -e "  ${YELLOW} | |__| |\\ V  V /  __/ | |__| |\\ V  V /  __/ ${NC}"
 echo -e "  ${YELLOW}  \\___\\_\\ \\_/\\_/ \\___|  \\___\\_\\ \\_/\\_/ \\___| ${NC}"
 echo ""
 echo -e "  ${DIM}Lightweight offline AI agent for local models${NC}"
-echo -e "  ${DIM}https://github.com/deepfounder-ai/qwe-qwe${NC}"
+echo -e "  ${DIM}https://github.com/deepfounder-ai/castor${NC}"
 echo ""
 
 step()  { echo -e "  ${GREEN}✓${NC} $1"; }
@@ -28,8 +28,8 @@ warn()  { echo -e "  ${YELLOW}⚠${NC} $1"; }
 fail()  { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 
 # ── config ────────────────────────────────────────────────
-REPO="https://github.com/deepfounder-ai/qwe-qwe.git"
-INSTALL_DIR="${QWE_INSTALL_DIR:-$HOME/qwe-qwe}"
+REPO="https://github.com/deepfounder-ai/castor.git"
+INSTALL_DIR="${CASTOR_INSTALL_DIR:-$HOME/castor}"
 BRANCH="main"
 
 # ── preflight ─────────────────────────────────────────────
@@ -76,7 +76,7 @@ fi
 source .venv/bin/activate
 pip install -q --upgrade pip 2>/dev/null
 pip install -q -e "." 2>&1 | tail -1 || pip install -q -r requirements.txt 2>/dev/null
-step "Installed qwe-qwe + dependencies"
+step "Installed castor + dependencies"
 
 # ── verify deps ──────────────────────────────────────────
 MISSING=""
@@ -114,7 +114,7 @@ BIN_DIR="$INSTALL_DIR/.venv/bin"
 
 add_to_path() {
     local rc_file="$1"
-    local marker="# qwe-qwe PATH"
+    local marker="# castor PATH"
     if [ -f "$rc_file" ] && grep -q "$marker" "$rc_file" 2>/dev/null; then
         return 0
     fi
@@ -129,9 +129,9 @@ case "$SHELL_NAME" in
     zsh)  add_to_path "$HOME/.zshrc"   && true || ADDED_PATH=true ;;
     fish) mkdir -p "$HOME/.config/fish"
           FISH_CONF="$HOME/.config/fish/config.fish"
-          if ! grep -q "qwe-qwe" "$FISH_CONF" 2>/dev/null; then
+          if ! grep -q "castor" "$FISH_CONF" 2>/dev/null; then
               echo "" >> "$FISH_CONF"
-              echo "# qwe-qwe PATH" >> "$FISH_CONF"
+              echo "# castor PATH" >> "$FISH_CONF"
               echo "set -gx PATH $BIN_DIR \$PATH" >> "$FISH_CONF"
               ADDED_PATH=true
           fi ;;
@@ -139,12 +139,12 @@ case "$SHELL_NAME" in
 esac
 
 if $ADDED_PATH; then
-    step "Added qwe-qwe to PATH"
+    step "Added castor to PATH"
 else
     step "PATH already configured"
 fi
 
-# Make qwe-qwe available immediately in this session
+# Make castor available immediately in this session
 export PATH="$BIN_DIR:$PATH"
 
 # ── LM Studio / Ollama auto-discovery ─────────────────────
@@ -169,14 +169,14 @@ if ! $LM_FOUND; then
 fi
 if ! $LM_FOUND; then
     warn "No LLM server found"
-    info "Start LM Studio or Ollama, load a model, then run qwe-qwe"
-    info "Or set QWE_LLM_URL=http://<ip>:<port>/v1"
+    info "Start LM Studio or Ollama, load a model, then run castor"
+    info "Or set CASTOR_LLM_URL=http://<ip>:<port>/v1"
 fi
 
 # ── done ──────────────────────────────────────────────────
 echo ""
 echo -e "  ──────────────────────────────────────"
-echo -e "  ${GREEN}${BOLD}⚡ qwe-qwe installed!${NC}"
+echo -e "  ${GREEN}${BOLD}⚡ castor installed!${NC}"
 echo ""
 if $ADDED_PATH; then
     echo -e "  Restart your shell or run:"
@@ -184,12 +184,12 @@ if $ADDED_PATH; then
     echo ""
 fi
 echo -e "  Quick start:"
-echo -e "    ${BOLD}qwe-qwe${NC}              # terminal chat"
-echo -e "    ${BOLD}qwe-qwe --web${NC}        # web UI"
-echo -e "    ${BOLD}qwe-qwe --doctor${NC}     # verify setup"
+echo -e "    ${BOLD}castor${NC}              # terminal chat"
+echo -e "    ${BOLD}castor --web${NC}        # web UI"
+echo -e "    ${BOLD}castor --doctor${NC}     # verify setup"
 echo ""
-echo -e "  ${DIM}If 'qwe-qwe' is not found, run:${NC}"
-echo -e "    ${DIM}${INSTALL_DIR}/.venv/bin/qwe-qwe --web${NC}"
+echo -e "  ${DIM}If 'castor' is not found, run:${NC}"
+echo -e "    ${DIM}${INSTALL_DIR}/.venv/bin/castor --web${NC}"
 echo ""
-echo -e "  ${DIM}Docs: https://github.com/deepfounder-ai/qwe-qwe${NC}"
+echo -e "  ${DIM}Docs: https://github.com/deepfounder-ai/castor${NC}"
 echo ""

@@ -117,8 +117,8 @@ def _get_write_whitelist() -> list[str]:
     global _WRITE_WHITELIST
     if _WRITE_WHITELIST is None:
         _WRITE_WHITELIST = [
-            str(config.WORKSPACE_DIR.resolve()),   # ~/.qwe-qwe/workspace/
-            str(config.DATA_DIR.resolve()),         # ~/.qwe-qwe/
+            str(config.WORKSPACE_DIR.resolve()),   # ~/.castor/workspace/
+            str(config.DATA_DIR.resolve()),         # ~/.castor/
             str(Path.cwd().resolve()),              # project working directory
         ]
     return _WRITE_WHITELIST
@@ -136,11 +136,11 @@ def _integrity_block_reason(p: Path) -> str | None:
     can still be blocked here if it points at something whose corruption
     is irreversible:
 
-    - qwe-qwe's SQLite DB (qwe_qwe.db and its WAL sidecars)
+    - castor's SQLite DB (castor.db and its WAL sidecars)
     - Vault files (encrypted secrets)
-    - Qdrant's binary memory store under ``~/.qwe-qwe/memory/``
-    - qwe-qwe's own source tree (the package containing this file).
-      Overridable via ``QWE_ALLOW_SELF_MODIFY=1`` for users who
+    - Qdrant's binary memory store under ``~/.castor/memory/``
+    - castor's own source tree (the package containing this file).
+      Overridable via ``CASTOR_ALLOW_SELF_MODIFY=1`` for users who
       explicitly want the agent to refactor the project.
     - Anything under a ``.git/`` directory
 
@@ -151,16 +151,16 @@ def _integrity_block_reason(p: Path) -> str | None:
     parts = p.parts
 
     # SQLite DB + WAL/SHM sidecars
-    if name == "qwe_qwe.db" or name.startswith("qwe_qwe.db-"):
-        return ("Direct writes to qwe_qwe.db are blocked (use memory_save, "
+    if name == "castor.db" or name.startswith("castor.db-"):
+        return ("Direct writes to castor.db are blocked (use memory_save, "
                 "schedule_task, or other dedicated tools)")
 
     # Vault — encrypted secrets file
-    if name.startswith("vault") and ("secret" in s.lower() or "qwe-qwe" in s.lower()):
+    if name.startswith("vault") and ("secret" in s.lower() or "castor" in s.lower()):
         return "Direct writes to the secret vault are blocked — use secret_save"
 
     # Qdrant on-disk index. Corruption here wipes every synthesised memory,
-    # wiki, and entity. Users touching this intentionally would shut qwe-qwe
+    # wiki, and entity. Users touching this intentionally would shut castor
     # down first anyway.
     try:
         data_dir = str(config.DATA_DIR.resolve())
@@ -181,15 +181,15 @@ def _integrity_block_reason(p: Path) -> str | None:
         return "Writing inside a .git directory is blocked"
 
     # Agent's own source tree — overridable
-    if os.environ.get("QWE_ALLOW_SELF_MODIFY") != "1":
+    if os.environ.get("CASTOR_ALLOW_SELF_MODIFY") != "1":
         try:
             pkg_dir = Path(__file__).parent.resolve()
             pkg_str = str(pkg_dir)
             if (s == pkg_str or s.startswith(pkg_str + os.sep)) and (
                 p.suffix in (".py", ".toml", ".cfg", ".ini") or name in ("pyproject.toml",)
             ):
-                return ("Writing to qwe-qwe's own source tree is blocked. "
-                        "Set QWE_ALLOW_SELF_MODIFY=1 to allow the agent to "
+                return ("Writing to castor's own source tree is blocked. "
+                        "Set CASTOR_ALLOW_SELF_MODIFY=1 to allow the agent to "
                         "self-modify (intended for interactive dev sessions).")
         except Exception:
             pass
@@ -201,11 +201,11 @@ def _resolve_path(raw: str, for_write: bool = False) -> Path:
     """Resolve a file path for agent operations.
 
     - Git Bash paths (/c/Users/...) -> C:/Users/... on Windows
-    - Relative paths -> workspace (~/.qwe-qwe/workspace/)
+    - Relative paths -> workspace (~/.castor/workspace/)
     - ~ expands to home
     - For writes: only allow workspace, data dir, and cwd (whitelist)
     - For writes: additionally block paths that would irreversibly damage
-      qwe-qwe itself (DB, vault, memory store, source tree, .git).
+      castor itself (DB, vault, memory store, source tree, .git).
     """
     # Convert Git Bash / MSYS2 paths to Windows: /c/Users/... → C:/Users/...
     if sys.platform == "win32" and len(raw) >= 3 and raw[0] == "/" and raw[2] == "/":
@@ -222,7 +222,7 @@ def _resolve_path(raw: str, for_write: bool = False) -> Path:
         if not allowed:
             raise PermissionError(
                 f"Cannot write outside allowed directories. Path: {p}\n"
-                f"Allowed: workspace, data dir (~/.qwe-qwe/), project dir"
+                f"Allowed: workspace, data dir (~/.castor/), project dir"
             )
         reason = _integrity_block_reason(p)
         if reason is not None:
@@ -233,7 +233,7 @@ def _resolve_path(raw: str, for_write: bool = False) -> Path:
 # ── Shell safety ──
 #
 # IMPORTANT: `_check_shell_safety` is a *best-effort speed bump*, NOT a trust
-# boundary. The qwe-qwe agent runs the shell with the full privileges of the
+# boundary. The castor agent runs the shell with the full privileges of the
 # user who launched it, so a determined attacker (or a sufficiently creative
 # language model) can always find a way around pattern-based filtering — shell
 # is a full programming language with indirection through `eval`, `$(...)`,
@@ -261,34 +261,34 @@ _SHELL_BLOCKED_EXACT = [
     "rm -rf /", "rm -rf /*", "rm -rf ~", "rm -rf $HOME",
     ":(){:|:&};:",   # fork bomb
     ":(){ :|:& };:", # fork bomb variant
-    # Agent-integrity wipes — destroying ~/.qwe-qwe erases every memory,
+    # Agent-integrity wipes — destroying ~/.castor erases every memory,
     # scheduled task, preset, and vault secret. No recovery.
-    "rm -rf ~/.qwe-qwe", "rm -rf $HOME/.qwe-qwe",
+    "rm -rf ~/.castor", "rm -rf $HOME/.castor",
 ]
 
 
 # Agent-integrity destruction patterns. Target: paths whose loss is
 # irreversible — SQLite DB, Qdrant memory store, vault, source tree, .git.
 #
-# ``(?![a-zA-Z0-9_-])`` after ``.qwe-qwe`` is load-bearing — without it
-# ``~/.qwe-qwe-backup`` (legitimate user dir, not ours) would get caught
-# by the ``.qwe-qwe`` prefix match.
-_QWE_DIR = r"\.qwe-qwe(?![a-zA-Z0-9_-])"
+# ``(?![a-zA-Z0-9_-])`` after ``.castor`` is load-bearing — without it
+# ``~/.castor-backup`` (legitimate user dir, not ours) would get caught
+# by the ``.castor`` prefix match.
+_CASTOR_DIR = r"\.castor(?![a-zA-Z0-9_-])"
 
 _AGENT_INTEGRITY_PATTERNS = re.compile(
     r"(?:"
     # rm (with or without flags) targeting the SQLite DB or vault file.
     # Deleting those files alone is enough to wipe the agent's state; the
     # recursive flag isn't required to do irreversible damage.
-    r"\brm\s+(?:-[a-zA-Z]+\s+)*[^\n;&|]*(?:qwe_qwe\.db|" + _QWE_DIR + r"/vault)"
-    # rm -r targeting the qwe-qwe data dir or its known subdirs
-    r"|\brm\s+-[rRf]*[rRf][rRf]*\s+[^\n;&|]*(?:~/" + _QWE_DIR + r"|\$HOME/" + _QWE_DIR + r"|" + _QWE_DIR + r"/memory|" + _QWE_DIR + r"/vault|\.git(?:/|\s|$))"
+    r"\brm\s+(?:-[a-zA-Z]+\s+)*[^\n;&|]*(?:castor\.db|" + _CASTOR_DIR + r"/vault)"
+    # rm -r targeting the castor data dir or its known subdirs
+    r"|\brm\s+-[rRf]*[rRf][rRf]*\s+[^\n;&|]*(?:~/" + _CASTOR_DIR + r"|\$HOME/" + _CASTOR_DIR + r"|" + _CASTOR_DIR + r"/memory|" + _CASTOR_DIR + r"/vault|\.git(?:/|\s|$))"
     # Redirect-truncate onto the DB or vault
-    r"|>\s*[^\n;&|<>]*(?:qwe_qwe\.db|" + _QWE_DIR + r"/vault)"
+    r"|>\s*[^\n;&|<>]*(?:castor\.db|" + _CASTOR_DIR + r"/vault)"
     # dd of=<agent file>
-    r"|\bdd\s+[^\n;&|]*of=[^\n;&|]*(?:qwe_qwe\.db|" + _QWE_DIR + r"/)"
+    r"|\bdd\s+[^\n;&|]*of=[^\n;&|]*(?:castor\.db|" + _CASTOR_DIR + r"/)"
     # sqlite3 DROP / DELETE on the agent DB
-    r"|\bsqlite3\s+[^\n;&|]*qwe_qwe\.db[^\n;&|]*(?:DROP|DELETE\s+FROM\s+messages)"
+    r"|\bsqlite3\s+[^\n;&|]*castor\.db[^\n;&|]*(?:DROP|DELETE\s+FROM\s+messages)"
     r")",
     re.IGNORECASE,
 )
@@ -422,11 +422,11 @@ def _check_shell_safety(cmd: str) -> str | None:
     # python/perl/ruby/node indirection, base64-decode-pipe.
     if _SHELL_HARDENED_PATTERNS.search(norm):
         return "Blocked: obfuscated or indirect dangerous command."
-    # Agent-integrity checks — refuse operations that wipe qwe-qwe's own
+    # Agent-integrity checks — refuse operations that wipe castor's own
     # data dir / DB / memory / vault / source tree / .git. Checked against
     # both raw and normalised so obfuscation variants fail too.
     if _AGENT_INTEGRITY_PATTERNS.search(cmd) or _AGENT_INTEGRITY_PATTERNS.search(norm):
-        return ("Blocked: operation would irreversibly damage qwe-qwe "
+        return ("Blocked: operation would irreversibly damage castor "
                 "(data dir, DB, memory store, vault, or .git). If you "
                 "really need to do this, do it manually outside the agent.")
     return None
@@ -1126,7 +1126,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "self_config",
-            "description": "Read or change qwe-qwe's own settings. action='list' shows all, action='get' reads one, action='set' changes one. Keys: telegram:bot_token, telegram:chat_id, telegram:group_id, streaming:telegram, or any setting name.",
+            "description": "Read or change castor's own settings. action='list' shows all, action='get' reads one, action='set' changes one. Keys: telegram:bot_token, telegram:chat_id, telegram:group_id, streaming:telegram, or any setting name.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1251,7 +1251,7 @@ _TOOL_SEARCH_INDEX = {
 
 
 def _do_self_config(args: dict) -> str:
-    """Read or change qwe-qwe's own settings."""
+    """Read or change castor's own settings."""
     action = args.get("action", "list")
     key = args.get("key", "")
     value = args.get("value", "")
@@ -1727,13 +1727,13 @@ def execute(name: str, args: dict) -> str:
             url = args["url"]
             # Encode non-ASCII characters in URL (e.g. Cyrillic)
             url = quote(url, safe=':/?#[]@!$&\'()*+,;=-._~%')
-            # Basic URL validation (no SSRF blocking — qwe-qwe is a local agent)
+            # Basic URL validation (no SSRF blocking — castor is a local agent)
             parsed = urlparse(url)
             if parsed.scheme not in ("http", "https"):
                 return f"Error: only http/https URLs allowed, got '{parsed.scheme}'"
             method = args.get("method", "GET").upper()
             body = args.get("body")
-            hdrs = {"User-Agent": "qwe-qwe/0.5"}
+            hdrs = {"User-Agent": "castor/0.5"}
             if body:
                 hdrs["Content-Type"] = "application/json"
             if args.get("headers"):

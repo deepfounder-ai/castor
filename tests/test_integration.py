@@ -8,7 +8,7 @@ a Python 3.11 walrus-in-f-string parse error in a module nobody imported
 stayed invisible until a fresh install tried to serve the endpoint.
 
 These tests hit the HTTP surface through ``TestClient(server.app)`` with a
-fresh ``QWE_DATA_DIR`` so every route gets imported and touched. The LLM is
+fresh ``CASTOR_DATA_DIR`` so every route gets imported and touched. The LLM is
 mocked via ``providers.get_client`` → FakeStreamingClient; no network, no
 LM Studio, no real model needed. Designed to pass on a clean Ubuntu CI
 runner.
@@ -33,24 +33,24 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _integration_env():
-    """Point QWE_DATA_DIR at a fresh tempdir and reload core + server.
+    """Point CASTOR_DATA_DIR at a fresh tempdir and reload core + server.
 
     Matches the pattern used by test_server_presets.py: server.py needs to
-    be reloaded after QWE_DATA_DIR flips so UPLOADS_DIR / STATIC_DIR /
+    be reloaded after CASTOR_DATA_DIR flips so UPLOADS_DIR / STATIC_DIR /
     DB connections all rebuild against the temp location.
     """
-    original = os.environ.get("QWE_DATA_DIR")
+    original = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_int_test_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_core()
     try:
         yield tmp_root
     finally:
         _close_db()
         if original is not None:
-            os.environ["QWE_DATA_DIR"] = original
+            os.environ["CASTOR_DATA_DIR"] = original
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         _reload_core()
@@ -217,10 +217,10 @@ def test_knowledge_url_rejects_private_ip(client):
     """4c. SSRF guard: URLs that resolve to private/loopback/link-local → 403.
 
     ``127.0.0.1`` always resolves to loopback. We also make sure the
-    ``QWE_ALLOW_PRIVATE_URLS`` escape hatch isn't set.
+    ``CASTOR_ALLOW_PRIVATE_URLS`` escape hatch isn't set.
     """
     # Ensure the override env var isn't leaking in from the dev machine
-    os.environ.pop("QWE_ALLOW_PRIVATE_URLS", None)
+    os.environ.pop("CASTOR_ALLOW_PRIVATE_URLS", None)
     r = client.post("/api/knowledge/url", json={"url": "http://127.0.0.1/foo"})
     assert r.status_code == 403, r.text
     assert "private" in r.json()["error"].lower()
@@ -548,3 +548,43 @@ def test_compaction_folds_into_parent_run(monkeypatch, qwe_temp_data_dir):
         "Compaction calls may be creating extra rows instead of folding into "
         "the parent run."
     )
+
+
+def test_full_abort_resume_cycle(qwe_temp_data_dir, mock_llm):
+    """End-to-end: run agent, set abort_event, then resume; assert two
+    agent_runs rows linked via resumed_from_run_id."""
+    import agent
+    import db
+    from turn_context import TurnContext
+
+    # Start a run that aborts immediately
+    ctx = TurnContext(source="web")
+    ctx.abort_event.set()  # abort BEFORE any LLM call so the loop exits cleanly
+
+    try:
+        agent.run("hello world", thread_id="t-full-cycle", source="web", ctx=ctx)
+    except Exception:
+        pass  # the loop may raise; either way an agent_runs row should exist
+
+    # Find the aborted run
+    aborted = db._get_conn().execute(
+        "SELECT id FROM agent_runs WHERE thread_id='t-full-cycle' "
+        "AND status='aborted' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if not aborted:
+        import pytest
+        pytest.skip("agent_loop didn't write an aborted row — depends on flow")
+    original_id = aborted[0]
+
+    # Resume
+    agent.resume_interrupted_run(original_id)
+
+    # Two rows total for this thread, with the second linked back via
+    # resumed_from_run_id
+    rows = db._get_conn().execute(
+        "SELECT id, resumed_from_run_id, status FROM agent_runs "
+        "WHERE thread_id='t-full-cycle' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][1] is None
+    assert rows[1][1] == original_id

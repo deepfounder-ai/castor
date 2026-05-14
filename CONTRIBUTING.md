@@ -1,6 +1,6 @@
-# Contributing to qwe-qwe
+# Contributing to castor
 
-Thanks for your interest. qwe-qwe is **small-model-first, single-process,
+Thanks for your interest. castor is **small-model-first, single-process,
 local-first**: patches that preserve those properties (no extra daemons, no
 cloud dependencies, still runs on a 3B model) are the most welcome. If a
 change moves in the opposite direction, please open an issue first so we can
@@ -9,8 +9,8 @@ discuss.
 ## Setup
 
 ```bash
-git clone https://github.com/deepfounder-ai/qwe-qwe
-cd qwe-qwe
+git clone https://github.com/deepfounder-ai/castor
+cd castor
 python -m venv .venv
 # Linux/macOS:
 source .venv/bin/activate
@@ -91,7 +91,7 @@ bloat the default schema.
 ## Adding a skill
 
 Drop a `.py` file into either the `skills/` package (shipped with the
-release) or `~/.qwe-qwe/skills/` (user-local). It must export
+release) or `~/.castor/skills/` (user-local). It must export
 `DESCRIPTION`, `INSTRUCTION`, `TOOLS` (OpenAI function schemas), and
 `execute(name, args) -> str`. See `skills/notes.py` or `skills/timer.py`
 for a minimal template.

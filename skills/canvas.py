@@ -41,7 +41,7 @@ srcdoc="...">``. The iframe origin is ``"null"``, so it CANNOT:
   * read parent window DOM, cookies, or localStorage
   * navigate the top window
   * open popups
-  * make same-origin XHR/fetch back to the qwe-qwe server with session cookies
+  * make same-origin XHR/fetch back to the castor server with session cookies
 
 It CAN:
 
@@ -316,7 +316,7 @@ def _server_module():
 # Names of every server-side helper this skill depends on. Used by
 # `_check_server_compat` below to produce a precise "your server is
 # stale" diagnostic when the user has pulled the canvas skill files
-# but is still running an older `qwe-qwe --web` process.
+# but is still running an older `castor --web` process.
 _REQUIRED_SERVER_ATTRS = (
     "broadcast_canvas_render_sync",
     "broadcast_canvas_close_sync",
@@ -328,7 +328,7 @@ _REQUIRED_SERVER_ATTRS = (
 def _check_server_compat(server) -> str | None:
     """Return an error message if the loaded server module is missing
     canvas helpers, else None. Catches the "pulled new code but didn't
-    restart qwe-qwe" footgun — without this the failure surfaces as
+    restart castor" footgun — without this the failure surfaces as
     a raw AttributeError up the agent loop.
     """
     if server is None:
@@ -340,10 +340,10 @@ def _check_server_compat(server) -> str | None:
     missing = [a for a in _REQUIRED_SERVER_ATTRS if not hasattr(server, a)]
     if missing:
         return (
-            "Canvas unavailable — your qwe-qwe server is older than the "
+            "Canvas unavailable — your castor server is older than the "
             "canvas skill files on disk.\n"
             f"  Missing helpers: {', '.join(missing)}\n"
-            "Restart the qwe-qwe process (Ctrl+C the `qwe-qwe --web` or "
+            "Restart the castor process (Ctrl+C the `castor --web` or "
             "`python cli.py --web` process and start it again). Pulling "
             "code from git does NOT reload a running Python process; the "
             "module stays in memory until the process restarts."

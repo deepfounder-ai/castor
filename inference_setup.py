@@ -144,7 +144,7 @@ def start_ollama() -> bool:
 
 
 def configure_provider(model: str):
-    """Auto-configure qwe-qwe to use Ollama (LLM only, embeddings handled by FastEmbed)."""
+    """Auto-configure castor to use Ollama (LLM only, embeddings handled by FastEmbed)."""
     import providers
     providers.add("ollama", url="http://localhost:11434/v1", key="ollama", models=[model])
     providers.switch("ollama")
@@ -253,8 +253,8 @@ def run_wizard():
     else:
         console.print(f"  [dim]Skipped download. Run manually: ollama pull {model}[/]")
 
-    # Step 6: Configure qwe-qwe
-    console.print(f"\n  [cyan]Configuring qwe-qwe...[/]")
+    # Step 6: Configure castor
+    console.print(f"\n  [cyan]Configuring castor...[/]")
     configure_provider(model)
     console.print(f"  [green]✓ Provider: ollama (http://localhost:11434/v1)[/]")
     console.print(f"  [green]✓ Model: {model}[/]")
@@ -263,4 +263,4 @@ def run_wizard():
 
     # Done
     console.print(f"\n  [bold green]⚡ Setup complete![/]")
-    console.print(f"  [dim]Run: qwe-qwe[/]\n")
+    console.print(f"  [dim]Run: castor[/]\n")

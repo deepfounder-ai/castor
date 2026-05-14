@@ -1,4 +1,4 @@
-# Pre-commit hooks for qwe-qwe.
+# Pre-commit hooks for castor.
 #
 # Install locally with:
 #   pip install pre-commit && pre-commit install

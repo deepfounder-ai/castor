@@ -20,7 +20,7 @@ def _restore_config():
 
 
 def test_default_llm_url(monkeypatch):
-    monkeypatch.delenv("QWE_LLM_URL", raising=False)
+    monkeypatch.delenv("CASTOR_LLM_URL", raising=False)
     monkeypatch.delitem(sys.modules, "config", raising=False)
     import config
     importlib.reload(config)
@@ -28,7 +28,7 @@ def test_default_llm_url(monkeypatch):
 
 
 def test_env_override_llm_url(monkeypatch):
-    monkeypatch.setenv("QWE_LLM_URL", "http://myserver:5555/v1")
+    monkeypatch.setenv("CASTOR_LLM_URL", "http://myserver:5555/v1")
     monkeypatch.delitem(sys.modules, "config", raising=False)
     import config
     importlib.reload(config)
@@ -45,7 +45,7 @@ def test_embed_handled_by_fastembed(monkeypatch):
 
 
 def test_default_model(monkeypatch):
-    monkeypatch.delenv("QWE_LLM_MODEL", raising=False)
+    monkeypatch.delenv("CASTOR_LLM_MODEL", raising=False)
     monkeypatch.delitem(sys.modules, "config", raising=False)
     import config
     importlib.reload(config)

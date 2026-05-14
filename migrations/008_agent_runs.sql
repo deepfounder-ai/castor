@@ -47,8 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_source     ON agent_runs(source);
 INSERT INTO agent_runs
     (cron_id, thread_id, scheduled_at, started_at, finished_at,
      duration_ms, status, error, result_preview, source)
-SELECT cron_id, COALESCE(thread_id, ''), scheduled_at, started_at, finished_at,
-       duration_ms, status, error, result_preview, 'routine'
+SELECT cron_id, COALESCE(thread_id, ''), scheduled_at,
+       COALESCE(started_at, scheduled_at, 0.0),  -- missed runs have NULL started_at
+       finished_at, duration_ms, status, error, result_preview, 'routine'
 FROM routine_runs;
 
 DROP TABLE IF EXISTS routine_runs;

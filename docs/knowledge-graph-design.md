@@ -36,7 +36,7 @@ SEARCH (three-layer):
 
 ## Three Layers, One Collection
 
-All data lives in a single Qdrant collection (`qwe_qwe`), differentiated by `tag`:
+All data lives in a single Qdrant collection (`castor`), differentiated by `tag`:
 
 | Layer | tag | Created | Purpose |
 |-------|-----|---------|---------|
@@ -82,7 +82,7 @@ All data lives in a single Qdrant collection (`qwe_qwe`), differentiated by `tag
     {"to": "Starlette", "rel": "built_on", "weight": 0.9},
     {"to": "Pydantic", "rel": "uses", "weight": 0.8},
     {"to": "Python", "rel": "language", "weight": 1.0},
-    {"to": "qwe-qwe", "rel": "used_in", "weight": 0.7}
+    {"to": "castor", "rel": "used_in", "weight": 0.7}
   ],
   "observation_count": 15,
   "wiki_ref": "wiki/fastapi.md",
@@ -95,7 +95,7 @@ All data lives in a single Qdrant collection (`qwe_qwe`), differentiated by `tag
 ```json
 {
   "tag": "wiki",
-  "text": "FastAPI is a modern Python web framework built on Starlette and Pydantic. It provides automatic request validation, OpenAPI documentation, and async support. Used in the qwe-qwe project for the web server.",
+  "text": "FastAPI is a modern Python web framework built on Starlette and Pydantic. It provides automatic request validation, OpenAPI documentation, and async support. Used in the castor project for the web server.",
   "wiki_page": "fastapi",
   "wiki_section": "summary|key_facts|relations",
   "synthesis_sources": ["article_fastapi_20260405", "conv_20260403"],
@@ -146,7 +146,7 @@ The wiki layer acts as a **pre-computed summary** — it answers the question di
 
 ## Wiki on Disk (Human-Readable Backup)
 
-Wiki pages also written to `~/.qwe-qwe/wiki/` as markdown:
+Wiki pages also written to `~/.castor/wiki/` as markdown:
 
 ```
 wiki/
@@ -154,7 +154,7 @@ wiki/
   fastapi.md      — synthesized knowledge about FastAPI
   python.md       — synthesized knowledge about Python
   kir.md          — enriched user profile
-  qwe-qwe.md     — project knowledge
+  castor.md     — project knowledge
   log.md          — chronological synthesis log
 ```
 
@@ -243,14 +243,14 @@ Standard relation vocabulary:
 |----------|---------|---------|
 | `uses` | A uses B | FastAPI uses Pydantic |
 | `built_on` | A is built on B | FastAPI built_on Starlette |
-| `language` | A is written in B | qwe-qwe language Python |
-| `part_of` | A belongs to B | server.py part_of qwe-qwe |
-| `works_on` | person works on project | Kir works_on qwe-qwe |
+| `language` | A is written in B | castor language Python |
+| `part_of` | A belongs to B | server.py part_of castor |
+| `works_on` | person works on project | Kir works_on castor |
 | `prefers` | person prefers X | Kir prefers FastAPI |
 | `related` | generic relation | async related concurrency |
 | `depends_on` | A depends on B | memory.py depends_on Qdrant |
 | `alternative` | A is alternative to B | Flask alternative FastAPI |
-| `instance_of` | A is instance of B | qwe-qwe instance_of AI_agent |
+| `instance_of` | A is instance of B | castor instance_of AI_agent |
 
 ## Config Settings
 
@@ -276,4 +276,4 @@ EDITABLE_SETTINGS += {
 | agent.py | Enhanced auto_context with wiki chunks |
 | server.py | API endpoint for graph data (Phase 4) |
 | static/index.html | Graph visualization (Phase 4) |
-| ~/.qwe-qwe/wiki/ | Generated markdown pages |
+| ~/.castor/wiki/ | Generated markdown pages |

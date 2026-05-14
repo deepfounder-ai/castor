@@ -21,7 +21,7 @@ so buyers can cryptographically verify presets before installing them.
 - **Fingerprint prefix removal** requires ≥ 8 hex chars and refuses to
   delete when the prefix matches multiple keys
 - **Signature policy** (`get_signature_policy` / `set_signature_policy`)
-  — controlled by `QWE_PRESET_SIGNATURE_POLICY` env var OR DB KV:
+  — controlled by `CASTOR_PRESET_SIGNATURE_POLICY` env var OR DB KV:
   - `off` — skip all signature checks
   - `warn` (default) — allow unsigned and signed-but-untrusted, reject
     `corrupt` / `error` statuses as strong tamper signals
@@ -31,15 +31,15 @@ so buyers can cryptographically verify presets before installing them.
 - `ImportError` (missing `cryptography`) now propagates out of
   `verify_bytes` instead of being mistaken for "signature invalid"
 
-**Market repo (`qwe-qwe market`)**:
+**Market repo (`castor market`)**:
 - `tools/keygen.py` — generate ed25519 keypair with Windows permissions warning
 - `tools/sign.py` — detached-sign a packed archive
 - `tools/pack.py --sign KEY` — pack + sign in one step
 
 **CLI**:
-- `qwe-qwe preset trust list|add <pub.pem>|rm <fingerprint>`
+- `castor preset trust list|add <pub.pem>|rm <fingerprint>`
   (uses `shlex` so Windows paths with spaces parse correctly)
-- `qwe-qwe preset policy [off|warn|require]` — read or set the policy
+- `castor preset policy [off|warn|require]` — read or set the policy
 - Slash command `/preset trust`, `/preset policy` do the same inside
   interactive mode
 
@@ -124,7 +124,7 @@ No new features; focuses on security, failure handling, and test coverage.
 - **Skill validation on install** — every `.py` listed in
   `skills.custom` is now run through `skills.validate_skill()` during
   `install()`. A preset shipping a syntactically broken or API-violating
-  skill now fails validation before its files ever land under `~/.qwe-qwe/`.
+  skill now fails validation before its files ever land under `~/.castor/`.
 
 ### Reliability fixes
 - **`install()` cleanup** — wrapped in `try/finally`. The archive tempdir is
@@ -164,7 +164,7 @@ No new features; focuses on security, failure handling, and test coverage.
   full 17-step lifecycle end-to-end (archive → install → activate →
   hooks → deactivate → dev-link → single-active → cleanup).
 
-### Market repo (`qwe-qwe market`)
+### Market repo (`castor market`)
 - Fixed cosmetic math bug in `tools/validate.py` summary line.
 
 ---
@@ -181,13 +181,13 @@ No new features; focuses on security, failure handling, and test coverage.
 - **Knowledge auto-indexing**: preset knowledge files go through `rag.index_file` with a `preset:<id>` tag, cleaned up on uninstall
 - **Single-active constraint**: activating preset B while A is active deactivates A first (keeps soul/prompt semantics clean)
 - **Path safety**: sanitized filenames, blocked zip traversal, validated via JSON schema shipped in `schemas/preset.schema.yaml`
-- New config path: `PRESETS_DIR = ~/.qwe-qwe/presets/`
+- New config path: `PRESETS_DIR = ~/.castor/presets/`
 - New DB table: `presets` (id, version, name, category, author, license, manifest, installed_at)
 
-### CLI — `qwe-qwe preset`
-- Argparse subcommand: `qwe-qwe preset list|install|activate|deactivate|info|rm`
+### CLI — `castor preset`
+- Argparse subcommand: `castor preset list|install|activate|deactivate|info|rm`
 - Slash command `/preset` in interactive mode follows the same layout
-- Supports three install sources: `.qwp` archive, unpacked directory, or bare id (via `QWE_MARKET_PATH`)
+- Supports three install sources: `.qwp` archive, unpacked directory, or bare id (via `CASTOR_MARKET_PATH`)
 
 ### Web UI — Market tab
 - **New "Market" page** between Knowledge and Cron — storefront icon in the header
@@ -206,9 +206,9 @@ No new features; focuses on security, failure handling, and test coverage.
 - `POST   /api/presets/deactivate`
 - `DELETE /api/presets/{id}`
 
-### Dev-link workflow (`QWE_MARKET_PATH`)
+### Dev-link workflow (`CASTOR_MARKET_PATH`)
 - Set env var to the local market repo root
-- `qwe-qwe preset install <bare-id>` resolves `$QWE_MARKET_PATH/presets/*/<id>/` and installs directly from the dir
+- `castor preset install <bare-id>` resolves `$CASTOR_MARKET_PATH/presets/*/<id>/` and installs directly from the dir
 - No packing needed during development — edit, overwrite, test
 
 ### Dependencies
@@ -216,15 +216,15 @@ No new features; focuses on security, failure handling, and test coverage.
 
 ### Tests
 - `tests/test_presets.py` — 13 tests covering load (dir + zip), validation (ok + bad schema + missing file), install / uninstall / list, activate / deactivate / soul backup-restore, single-active constraint, system prompt suffix hook, skills dir hook
-- Isolated via `QWE_DATA_DIR` env + module reload
+- Isolated via `CASTOR_DATA_DIR` env + module reload
 
-### Companion release: `qwe-qwe market`
+### Companion release: `castor market`
 - **`tools/validate.py`** — schema + file-existence + id uniqueness checks for every preset under `presets/`
 - **`tools/pack.py`** — validate + zip → `dist/<id>-<version>.qwp`
 - **`.github/workflows/validate.yml`** — CI on every PR
 - `.gitignore` for `dist/`, `__pycache__/`, local tool output
 - `CONTRIBUTING.md` expanded with sections 10–11: validation/packing workflow + dev-link testing
-- `README.md` describes the `.qwp` format and `QWE_MARKET_PATH`
+- `README.md` describes the `.qwp` format and `CASTOR_MARKET_PATH`
 
 ---
 
@@ -247,7 +247,7 @@ No new features; focuses on security, failure handling, and test coverage.
 
 ### Chat File Upload — Context Fix
 - **Critical fix**: attached files no longer inline into the user message (broke 32k context on long chats)
-- Files are saved to `~/.qwe-qwe/uploads/<uuid>_<name>.ext` and referenced by absolute path
+- Files are saved to `~/.castor/uploads/<uuid>_<name>.ext` and referenced by absolute path
 - User message contains only `[File attached: name.ext (1.2 KB) — saved at <path>]` + tool hints
 - Agent calls `read_file(path)` or `tool_search('rag') → rag_index(path)` on demand
 - File body loads into context only when the agent actually needs it

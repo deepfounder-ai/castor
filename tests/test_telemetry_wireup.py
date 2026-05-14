@@ -24,7 +24,7 @@ import pytest
 
 @pytest.fixture
 def fresh_tel(qwe_temp_data_dir):
-    """Reload telemetry against a clean QWE_DATA_DIR + opt the user in.
+    """Reload telemetry against a clean CASTOR_DATA_DIR + opt the user in.
 
     Mirrors the pattern in tests/test_telemetry.py — every test starts
     with telemetry ENABLED so wire-up sites actually emit events. Without

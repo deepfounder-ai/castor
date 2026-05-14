@@ -29,18 +29,18 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _routines_env():
-    original = os.environ.get("QWE_DATA_DIR")
+    original = os.environ.get("CASTOR_DATA_DIR")
     tmp = Path(tempfile.mkdtemp(prefix="qwe_routines_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp)
     _reload_core()
     try:
         yield tmp
     finally:
         _close_db()
         if original is not None:
-            os.environ["QWE_DATA_DIR"] = original
+            os.environ["CASTOR_DATA_DIR"] = original
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)
         _reload_core()

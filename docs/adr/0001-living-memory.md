@@ -1,4 +1,4 @@
-# ADR-0001: Living Memory — mutating memory architecture for qwe-qwe
+# ADR-0001: Living Memory — mutating memory architecture for castor
 
 **Status:** Proposed
 **Date:** 2026-04-24
@@ -6,7 +6,7 @@
 
 ## Context
 
-qwe-qwe's current memory layer is read-only after save. We have 3-way hybrid search (dense + sparse + BM25 → RRF fusion) on a Qdrant disk collection with three tag families: `knowledge/fact/user/...` (raw), `entity` (graph nodes), `wiki` (synthesized summaries). A nightly `synthesis.py` job promotes raw into wiki. No recall mutates anything. No salience decay. No typed relations. Entity tag has `relations` field but traversal is ad-hoc.
+castor's current memory layer is read-only after save. We have 3-way hybrid search (dense + sparse + BM25 → RRF fusion) on a Qdrant disk collection with three tag families: `knowledge/fact/user/...` (raw), `entity` (graph nodes), `wiki` (synthesized summaries). A nightly `synthesis.py` job promotes raw into wiki. No recall mutates anything. No salience decay. No typed relations. Entity tag has `relations` field but traversal is ad-hoc.
 
 The `living-memory-architecture.md` proposal wants memory to behave more biologically: mutating at recall, typed connections, hierarchical abstractions, salience decay, crystallization of cold paths, archive-not-delete. User has refined 5 key decisions after design debate:
 
@@ -30,7 +30,7 @@ The unresolved decision: **should we extend Qdrant in-place OR build markdown-fi
 
 **Option C — Hybrid: markdown as source of truth, Qdrant as derived search index.**
 
-Memories live as `.md` files with YAML frontmatter under `~/.qwe-qwe/memories/{atoms,chains,meta}/`. Qdrant is rebuilt from the markdown and treated as a cache; editing markdown directly (or by the night job) triggers re-embed and payload update for that file's vector. All Living Memory semantics — mutation, salience, connections, crystallization — live in the markdown's frontmatter. Qdrant just stores the vector + a subset of fields for fast filtered search.
+Memories live as `.md` files with YAML frontmatter under `~/.castor/memories/{atoms,chains,meta}/`. Qdrant is rebuilt from the markdown and treated as a cache; editing markdown directly (or by the night job) triggers re-embed and payload update for that file's vector. All Living Memory semantics — mutation, salience, connections, crystallization — live in the markdown's frontmatter. Qdrant just stores the vector + a subset of fields for fast filtered search.
 
 Existing tools (`memory_save`, `memory_search`, `memory_delete`) stay on their current contract — they now write/read through the markdown layer with auto-reindex. The 333 existing tests continue to pass because the public API is unchanged.
 
@@ -57,7 +57,7 @@ Add Living Memory fields to Qdrant payload (`salience`, `anchor`, `access_count`
 - No migration — existing user data just grows new fields
 
 **Cons:**
-- **Loses the UX win Living Memory promises** — you can't open `~/.qwe-qwe/memory/fact_foo.md` in an editor, because it doesn't exist
+- **Loses the UX win Living Memory promises** — you can't open `~/.castor/memory/fact_foo.md` in an editor, because it doesn't exist
 - Graph traversal (chain BFS) is awkward — N queries per hop
 - No "git diff of memory drift over a week" because there are no files to diff
 - Schema-less JSON in payload will calcify; no enforcement
@@ -90,7 +90,7 @@ Greenfield rewrite: markdown files are canonical, recall uses a new search engin
 
 ### Option C: Hybrid — markdown canonical, Qdrant derived (RECOMMENDED)
 
-Memories physically live as `.md` under `~/.qwe-qwe/memories/`. Qdrant collection rebuilt from markdown; each file's frontmatter `id` is the Qdrant point id. Content hash in frontmatter lets the indexer skip unchanged files on rebuild.
+Memories physically live as `.md` under `~/.castor/memories/`. Qdrant collection rebuilt from markdown; each file's frontmatter `id` is the Qdrant point id. Content hash in frontmatter lets the indexer skip unchanged files on rebuild.
 
 Mutation path (nightly):
 ```
@@ -119,7 +119,7 @@ Public tool contracts unchanged — `memory_save(text)` now writes a `.md` file 
 - Session-isolation remains Qdrant filter-based
 - 333 existing tests stay passing because API contracts unchanged
 - Incremental delivery: add living features one at a time on top of existing storage
-- Qdrant becomes rebuildable from source of truth → deleting `~/.qwe-qwe/memory/` (Qdrant dir) is no longer a disaster
+- Qdrant becomes rebuildable from source of truth → deleting `~/.castor/memory/` (Qdrant dir) is no longer a disaster
 - Native git integration (we already integrity-block `.git` writes; memory dir stays outside)
 
 **Cons:**
@@ -139,7 +139,7 @@ Option B throws out the 3-way hybrid search we already have working, including t
 User's key refinement #1 (mutation at night, not on recall) is the crucial cost-safeguard. With Option C, nightly reflection loops through N `.md` files, calls the LLM per memory batch (grouped), writes back. Cost: O(memories × reflect_tokens_per_memory × nightly_freq). If a user has 500 active memories and we reflect on 50 per night (the ones accessed that day), that's 50 × ~500 tokens = 25k tokens per night. On Claude Sonnet: ~$0.15/night. On local Llama/GLM: free. Acceptable either way.
 
 **Drift risk (refinement #2).**
-Drift is only dangerous in aggregate. Option C makes drift observable: git-diff `~/.qwe-qwe/memories/fact_foo.md` over a week shows the mutation trajectory. Options A and B obscure this in different ways (A: no files; B: files but no Qdrant sanity-check layer). Markdown + git + drift semantic-distance alarm = the right combination.
+Drift is only dangerous in aggregate. Option C makes drift observable: git-diff `~/.castor/memories/fact_foo.md` over a week shows the mutation trajectory. Options A and B obscure this in different ways (A: no files; B: files but no Qdrant sanity-check layer). Markdown + git + drift semantic-distance alarm = the right combination.
 
 **Conflict preservation (refinement #3).**
 Natural fit for Option C: a conflict is just TWO `.md` files, one with `connections: [{id: other-mem, relation: contradicts}]`. Recall returns both; injection layer adds a *"⚠ two conflicting memories on this topic, reconcile in your answer"* prefix. No auto-merge ever.
@@ -158,7 +158,7 @@ Add `domain: work | personal | project-X` to frontmatter. Qdrant filter on the d
 ## Consequences
 
 **What becomes easier:**
-- User inspection — `ls ~/.qwe-qwe/memories/atoms/` is "what I remember"
+- User inspection — `ls ~/.castor/memories/atoms/` is "what I remember"
 - Debugging drift — git log on any memory file
 - Manual override — user edits a `.md` directly, gets respected on next embed
 - Testing — drop-in sample `.md` files in test fixtures
@@ -183,7 +183,7 @@ Phased delivery, each phase independently shippable and testable. Suggested orde
 2. [ ] Create `memory_store.py` — thin wrapper over Qdrant that also reads/writes markdown canonically. `save(text, meta) → id, file_path`
 3. [ ] Migrate existing `memory.save/search/delete` to go through `memory_store`. Existing tests must pass unchanged
 4. [ ] Scripted one-time migration: export every Qdrant point to `.md` under `atoms/` with frontmatter; skip if already migrated (idempotent)
-5. [ ] Integrity block extension: `~/.qwe-qwe/memories/` joins the protected-write list (only memory tools can write there, not `write_file`)
+5. [ ] Integrity block extension: `~/.castor/memories/` joins the protected-write list (only memory tools can write there, not `write_file`)
 
 **Phase 2 — Living Memory frontmatter (3-4 days)**
 6. [ ] Frontmatter schema: `id, type, level, created, last_accessed, access_count, salience, tags, domain, connections, trigger_pattern, crystallization, anchor`. Pydantic model for validation
@@ -195,7 +195,7 @@ Phased delivery, each phase independently shippable and testable. Suggested orde
 10. [ ] Extend `synthesis.py` → now `consolidation.py` with distinct phases: co-occurrence detection, reflect-mutation, chain formation, meta promotion, merge (for cosine > 0.9), decay-and-archive, index rebuild
 11. [ ] Drift monitor: track `cosine(original_embedding, current_embedding)`. Warn at 0.3, alarm at 0.5
 12. [ ] Git auto-commit on every nightly write (one commit per phase: `memory: nightly mutation 2026-04-25`)
-13. [ ] `~/.qwe-qwe/memories/.git/` initialized on first run
+13. [ ] `~/.castor/memories/.git/` initialized on first run
 
 **Phase 4 — Conflict preservation + hierarchy pruning (1 week)**
 14. [ ] When new memory contradicts existing (detected during save via cosine + LLM judgment), write both; add `contradicts` relation
@@ -218,7 +218,7 @@ Phased delivery, each phase independently shippable and testable. Suggested orde
 ## Rollback plan
 
 If Living Memory misbehaves (runaway drift, chain explosion, cost spike):
-- Anchor everything on: `find ~/.qwe-qwe/memories -name '*.md' -exec sed -i '/^salience:/d' {} \;` followed by `anchor: true` auto-add. Freezes the corpus.
+- Anchor everything on: `find ~/.castor/memories -name '*.md' -exec sed -i '/^salience:/d' {} \;` followed by `anchor: true` auto-add. Freezes the corpus.
 - Disable nightly consolidation: `config.set("consolidation_enabled", False)`. No more mutations; recall falls back to today's behavior.
 - Full revert: delete the `memories/` directory, `memory_store.py` returns to a thin Qdrant wrapper, system is back at v0.17.33 behavior.
 

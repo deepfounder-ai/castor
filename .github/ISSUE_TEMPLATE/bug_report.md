@@ -20,17 +20,17 @@ assignees: ""
 
 ## Environment
 
-Paste the top of `qwe-qwe --doctor` output (**first 30 lines, up to "System"**).
+Paste the top of `castor --doctor` output (**first 30 lines, up to "System"**).
 It includes version, OS, Python, provider, model, and which subsystems are loaded — the exact context needed to diagnose most bugs.
 
 ```
-$ qwe-qwe --doctor
+$ castor --doctor
 <paste here>
 ```
 
 ## Logs (optional but helpful)
 
-If the bug is a crash / hang / wrong output, please attach the last ~50 lines of `~/.qwe-qwe/logs/qwe-qwe.log` — redact any sensitive content first.
+If the bug is a crash / hang / wrong output, please attach the last ~50 lines of `~/.castor/logs/castor.log` — redact any sensitive content first.
 
 ```
 <paste here>

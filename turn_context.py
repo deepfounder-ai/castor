@@ -1,6 +1,6 @@
 """Per-turn request context — carries state that used to live in agent module globals.
 
-qwe-qwe runs concurrent turns from multiple sources (web WebSocket, Telegram
+castor runs concurrent turns from multiple sources (web WebSocket, Telegram
 bot, CLI). Before TurnContext, per-request state was stashed in module-level
 globals on ``agent.py`` / ``tools.py`` — which meant turn A's image path /
 callbacks could stomp turn B's when both fired in the same process.
@@ -73,6 +73,11 @@ class TurnContext:
     # ── Scheduler binding (set by scheduler._check_and_run; None otherwise) ──
     cron_id: Optional[int] = None
 
+    # Set when this turn resumes a previously aborted run. agent_loop reads
+    # it and stores it on the new agent_runs row so analytics can chain
+    # the resume back to its original.
+    resumed_from_run_id: Optional[int] = None
+
     # Convenience emitters. Callers inside agent.py use these instead of
     # guarding "if cb is None" everywhere.
     def emit_content(self, text: str) -> None:
@@ -127,7 +132,7 @@ class TurnContext:
 _NULL_CTX = TurnContext()
 
 _current_turn_ctx: contextvars.ContextVar[Optional[TurnContext]] = contextvars.ContextVar(
-    "qwe_turn_ctx", default=None
+    "castor_turn_ctx", default=None
 )
 
 

@@ -2,8 +2,8 @@
 
 ## Goal
 
-Refactor qwe-qwe agent loop inspired by claw-code-agent architecture.
-Keep qwe-qwe's unique features (soul, knowledge graph, skills, memory), upgrade the core loop.
+Refactor castor agent loop inspired by claw-code-agent architecture.
+Keep castor's unique features (soul, knowledge graph, skills, memory), upgrade the core loop.
 
 ## Current Problems
 
@@ -76,7 +76,7 @@ class ToolRegistry:
     def get_schemas(self) -> list[dict]: ...
 ```
 
-## What We Keep from qwe-qwe
+## What We Keep from castor
 
 - JSON repair (small models need it)
 - Self-check for dangerous tools (shell, write_file)

@@ -1,13 +1,13 @@
-# Agent Instructions: qwe-qwe
+# Agent Instructions: castor
 
 ## Quick Commands
 
 ```bash
 ./setup.sh         # Linux/Mac: create venv, install deps, preload embeddings
 setup.bat          # Windows: same
-qwe-qwe            # Terminal chat
-qwe-qwe --web      # Web UI at http://localhost:7860
-qwe-qwe --doctor   # Diagnostics (20+ checks)
+castor            # Terminal chat
+castor --web      # Web UI at http://localhost:7860
+castor --doctor   # Diagnostics (20+ checks)
 pytest tests/ -v   # Run all tests
 ruff check .       # Lint
 ```
@@ -28,11 +28,11 @@ Single-process Python agent with FastAPI web server. All state in SQLite + Qdran
 - `scheduler.py` — SQLite-backed cron with daemon thread
 - `providers.py` — 7 LLM providers (LM Studio, Ollama, OpenAI, OpenRouter, Groq, Together, DeepSeek)
 
-**Data layout** (`~/.qwe-qwe/`):
-- `qwe_qwe.db` — SQLite (messages, threads, settings, tasks)
+**Data layout** (`~/.castor/`):
+- `castor.db` — SQLite (messages, threads, settings, tasks)
 - `memory/` — Qdrant vectors (disk mode)
 - `wiki/` — synthesized markdown pages
-- `logs/` — qwe-qwe.log, errors.log
+- `logs/` — castor.log, errors.log
 
 ## Critical Patterns
 
@@ -66,13 +66,13 @@ Single-process Python agent with FastAPI web server. All state in SQLite + Qdran
 - Night synthesis at 03:00 (configurable) processes `synthesis_status=pending` chunks
 
 ### Write Safety
-- `write_file` only allows paths in whitelist: workspace, `~/.qwe-qwe/`, project cwd
+- `write_file` only allows paths in whitelist: workspace, `~/.castor/`, project cwd
 - Path validation via `_resolve_path()` with `for_write=True` check
 
 ### Signed Presets
 - ed25519 signature verification via `presets.py`
 - Policy modes: `off`, `warn` (default), `require`
-- Controlled by `QWE_PRESET_SIGNATURE_POLICY` env var
+- Controlled by `CASTOR_PRESET_SIGNATURE_POLICY` env var
 
 ### MCP Integration
 - MCP servers launched via `mcp_manager.py`
@@ -81,16 +81,16 @@ Single-process Python agent with FastAPI web server. All state in SQLite + Qdran
 ## Environment Variables
 
 ```bash
-QWE_LLM_URL=http://localhost:1234/v1    # LLM server URL (default)
-QWE_LLM_MODEL=qwen/qwen3.5-9b          # Model name
-QWE_LLM_KEY=lm-studio                   # API key
-QWE_DB_PATH=~/.qwe-qwe/qwe_qwe.db      # Database path
-QWE_DATA_DIR=~/.qwe-qwe                # All user data dir
-QWE_QDRANT_MODE=disk                   # memory | disk | server
-QWE_QDRANT_PATH=~/.qwe-qwe/memory      # For disk mode
-QWE_PASSWORD=                          # Web UI auth (optional)
-QWE_PRESET_SIGNATURE_POLICY=warn       # off | warn | require
-QWE_MARKET_PATH=/path/to/market        # Optional preset marketplace
+CASTOR_LLM_URL=http://localhost:1234/v1    # LLM server URL (default)
+CASTOR_LLM_MODEL=qwen/qwen3.5-9b          # Model name
+CASTOR_LLM_KEY=lm-studio                   # API key
+CASTOR_DB_PATH=~/.castor/castor.db      # Database path
+CASTOR_DATA_DIR=~/.castor                # All user data dir
+CASTOR_QDRANT_MODE=disk                   # memory | disk | server
+CASTOR_QDRANT_PATH=~/.castor/memory      # For disk mode
+CASTOR_PASSWORD=                          # Web UI auth (optional)
+CASTOR_PRESET_SIGNATURE_POLICY=warn       # off | warn | require
+CASTOR_MARKET_PATH=/path/to/market        # Optional preset marketplace
 ```
 
 ## Setup Requirements
@@ -98,7 +98,7 @@ QWE_MARKET_PATH=/path/to/market        # Optional preset marketplace
 **Prerequisites:**
 - Python 3.11+
 - Git Bash (Windows only, for UNIX commands)
-- LM Studio or Ollama running with model loaded before starting qwe-qwe
+- LM Studio or Ollama running with model loaded before starting castor
 
 **Critical dependencies:**
 - `cryptography` — for signed presets
@@ -121,7 +121,7 @@ pytest tests/ -v                       # All tests
 
 ## Known Gotchas
 
-1. **LM Studio/Ollama must be running** before starting qwe-qwe
+1. **LM Studio/Ollama must be running** before starting castor
 2. **Session tokens reset** after structured output 400 errors
 3. **Shell safety patterns** block dangerous commands (rm -rf /, fork bombs, etc.)
 4. **First-run setup** is interactive (asks for name, timezone, personality)

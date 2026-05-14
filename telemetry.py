@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
@@ -61,7 +62,8 @@ _log = logging.getLogger("qwe.telemetry")
 #        (qwelytics.deepfounder.ai Countly)
 #   v2 = added `thread_created` event + extended SOURCES with "preset"
 #   v3 = added `cost_tracking` to FEATURES enum (feature_first_use)
-_CURRENT_CONSENT_VERSION = 3
+#   v4 = added `auto_resume` to FEATURES enum (feature_first_use)
+_CURRENT_CONSENT_VERSION = 4
 
 # ── HTTP send tunables ───────────────────────────────────────────────
 # Single timeout cap for the whole urlopen call. urllib doesn't separate
@@ -91,7 +93,7 @@ _BACKOFF_SCHEDULE_S = (1.0, 2.0, 4.0)
 
 ALLOWED_EVENTS: dict[str, dict[str, type]] = {
     "session_start": {
-        "qwe_version": str,        # e.g. "0.18.4" — already public on GitHub
+        "castor_version": str,        # e.g. "0.18.4" — already public on GitHub
         "python_version": str,     # e.g. "3.12.10"
         "os": str,                 # "linux" / "macos" / "windows"
         # Provider KIND only — never the URL (could be internal corp endpoint)
@@ -207,7 +209,7 @@ FEATURES = frozenset({
     "camera_capture", "live_voice", "telegram_send",
     "scheduler_create", "skill_create", "browser_visible",
     "mcp_add", "preset_activate", "knowledge_index_url",
-    "knowledge_index_file", "cost_tracking",
+    "knowledge_index_file", "cost_tracking", "auto_resume",
 })
 
 # Per-property enum constraints — additional check beyond type
@@ -260,7 +262,7 @@ def anonymous_id() -> str:
 
 
 def session_id() -> str:
-    """Per-process session id. Resets on every qwe-qwe start."""
+    """Per-process session id. Resets on every castor start."""
     return _SESSION_ID
 
 
@@ -559,7 +561,7 @@ def _send_raw(events: list[dict]) -> bool:
         body = json.dumps({"events": events}).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": f"qwe-qwe/{config.VERSION}",
+            "User-Agent": f"castor/{config.VERSION}",
         }
         # Echo anonymous_id as a header so receivers can bucket without
         # parsing JSON. All events in a batch share the same id (track_event
@@ -701,7 +703,7 @@ def _send_countly(events: list[dict]) -> bool:
       internally, no salt rotation, so cross-day per-user tracking
       works out of the box)
     - events array with `key` (event name) and optional segmentation
-    - User-Agent header (we send `qwe-qwe/{version}`)
+    - User-Agent header (we send `castor/{version}`)
 
     Privacy note: Countly receives our anonymous_id as device_id.
     That's stable across days, by design — the user OPTED IN, and a
@@ -761,7 +763,7 @@ def _send_countly_batch(endpoint: str, app_key: str, device_id: str,
         body = json.dumps(body_obj).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": f"qwe-qwe/{config.VERSION}",
+            "User-Agent": f"castor/{config.VERSION}",
         }
         req = urllib.request.Request(
             endpoint, data=body, headers=headers, method="POST"
@@ -884,30 +886,40 @@ def track_feature_first_use(feature: str) -> bool:
 def provider_kind_from_url(url: str | None) -> str:
     """URL-based heuristic to classify a provider when only the URL is known.
 
-    Substring match on host. Falls through to "unknown" when nothing matches —
-    we never want to send a URL fragment off-machine, even if classification
-    fails. This is a defense-in-depth mapping for callers that don't have
-    access to the provider name.
+    Uses hostname matching via urlparse so that a URL like
+    ``https://evil.com/openai.com`` doesn't get misclassified as "openai".
+    Falls through to "unknown" when nothing matches — we never want to send
+    a URL fragment off-machine, even if classification fails.
     """
     if not url:
         return "unknown"
-    u = url.lower()
-    if "openai.com" in u:
+    try:
+        parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        return "unknown"
+    # Hostname suffix checks: prevent "evil.openai.com.attacker.com" false-matches
+    def _host_matches(*domains: str) -> bool:
+        return any(host == d or host.endswith(f".{d}") for d in domains)
+
+    if _host_matches("openai.com", "api.openai.com"):
         return "openai"
-    if "openrouter.ai" in u:
+    if _host_matches("openrouter.ai"):
         return "openrouter"
-    if "groq.com" in u:
+    if _host_matches("groq.com", "api.groq.com"):
         return "groq"
-    if "together.xyz" in u or "together.ai" in u:
+    if _host_matches("together.xyz", "together.ai", "api.together.ai"):
         return "together"
-    if "deepseek.com" in u:
+    if _host_matches("deepseek.com", "api.deepseek.com"):
         return "deepseek"
-    if "azure.com" in u or "azure-api.net" in u or ".azureml." in u:
+    if _host_matches("azure.com", "azure-api.net") or ".azureml." in host:
         return "azure"
-    if "amazonaws.com" in u or "bedrock" in u:
+    if _host_matches("amazonaws.com") or "bedrock" in host:
         return "bedrock"
-    if "11434" in u:
+    # Port-based heuristics for local providers
+    port = parsed.port
+    if port == 11434 or host in ("localhost", "127.0.0.1") and port == 11434:
         return "ollama"
-    if "1234" in u or "localhost:1234" in u:
+    if port == 1234 or host in ("localhost", "127.0.0.1") and port == 1234:
         return "lmstudio"
     return "unknown"

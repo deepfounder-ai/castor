@@ -1,7 +1,7 @@
 """Tests for presets.py — load, validate, install, activate, uninstall.
 
-Each test uses a fresh tempdir as QWE_DATA_DIR so we never touch the user's
-real ~/.qwe-qwe. The module-scoped ``_preset_env`` fixture points the data
+Each test uses a fresh tempdir as CASTOR_DATA_DIR so we never touch the user's
+real ~/.castor. The module-scoped ``_preset_env`` fixture points the data
 dir at a tempdir and reloads the core modules; it's autouse so every test
 in this file picks it up automatically. All env and module-state changes
 are reverted via ``monkeypatch`` at end of module, so sibling test files
@@ -25,19 +25,19 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _preset_env():
-    """Point QWE_DATA_DIR at a fresh tempdir, reload core modules, clean up."""
-    original_data_dir = os.environ.get("QWE_DATA_DIR")
-    tmp_root = Path(tempfile.mkdtemp(prefix="qwe_preset_test_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    """Point CASTOR_DATA_DIR at a fresh tempdir, reload core modules, clean up."""
+    original_data_dir = os.environ.get("CASTOR_DATA_DIR")
+    tmp_root = Path(tempfile.mkdtemp(prefix="castor_preset_test_"))
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_modules()
     try:
         yield tmp_root
     finally:
         _close_db()
         if original_data_dir is not None:
-            os.environ["QWE_DATA_DIR"] = original_data_dir
+            os.environ["CASTOR_DATA_DIR"] = original_data_dir
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         _reload_modules()
@@ -100,7 +100,7 @@ MINIMAL_MANIFEST = {
         },
     },
     "system_prompt": {"path": "system_prompt.md"},
-    "compatibility": {"qwe_qwe_version": ">=0.1.0"},
+    "compatibility": {"qwe_castor_version": ">=0.1.0"},
 }
 
 
@@ -715,7 +715,7 @@ def test_install_cleans_tempdir_on_validation_failure():
     """A .qwp with a broken manifest must not leak its extract tempdir."""
     import presets
     _reset_db()
-    before = set(Path(tempfile.gettempdir()).glob("qwe_preset_*"))
+    before = set(Path(tempfile.gettempdir()).glob("castor_preset_*"))
 
     # Build a zip whose manifest is missing a required field
     bad = dict(MINIMAL_MANIFEST)
@@ -734,8 +734,8 @@ def test_install_cleans_tempdir_on_validation_failure():
         except ValueError:
             pass
 
-    # No new qwe_preset_ tempdir should be left behind
-    after = set(Path(tempfile.gettempdir()).glob("qwe_preset_*"))
+    # No new castor_preset_ tempdir should be left behind
+    after = set(Path(tempfile.gettempdir()).glob("castor_preset_*"))
     new = after - before
     assert not new, f"tempdir leaked after failed install: {new}"
 
@@ -987,26 +987,26 @@ def _run_manually():
     The fixture-based version runs under pytest; when invoked standalone we
     replicate the old setup/teardown inline.
     """
-    original = os.environ.get("QWE_DATA_DIR")
-    tmp_root = Path(tempfile.mkdtemp(prefix="qwe_preset_test_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    original = os.environ.get("CASTOR_DATA_DIR")
+    tmp_root = Path(tempfile.mkdtemp(prefix="castor_preset_test_"))
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_modules()
 
 
 def _cleanup_manually(tmp_root, original):
     if original is not None:
-        os.environ["QWE_DATA_DIR"] = original
+        os.environ["CASTOR_DATA_DIR"] = original
     else:
-        os.environ.pop("QWE_DATA_DIR", None)
+        os.environ.pop("CASTOR_DATA_DIR", None)
     if tmp_root.exists():
         shutil.rmtree(tmp_root, ignore_errors=True)
     _reload_modules()
 
 
 if __name__ == "__main__":
-    _original = os.environ.get("QWE_DATA_DIR")
-    _tmp_root = Path(tempfile.mkdtemp(prefix="qwe_preset_test_"))
-    os.environ["QWE_DATA_DIR"] = str(_tmp_root)
+    _original = os.environ.get("CASTOR_DATA_DIR")
+    _tmp_root = Path(tempfile.mkdtemp(prefix="castor_preset_test_"))
+    os.environ["CASTOR_DATA_DIR"] = str(_tmp_root)
     _reload_modules()
     tests = [
         test_load_directory,

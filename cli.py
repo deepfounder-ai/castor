@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""qwe-qwe CLI — lightweight AI agent for local models."""
+"""castor CLI — lightweight AI agent for local models."""
 
 import os
 import sys
@@ -90,7 +90,7 @@ def show_banner():
     active = skills.get_active()
 
     console.print(f"""
-  [dim]🦆 qwe-qwe — your fully offline AI agent[/]
+  [dim]🦆 castor — your fully offline AI agent[/]
   [dim]No cloud. No API keys. No subscriptions. Just your GPU.[/]
 
   [dim]🧠 Model:[/]  {providers.get_model()} @ {providers.get_active_name()}
@@ -428,8 +428,8 @@ def handle_preset_command(args: str):
         items = result["items"]
         if not items:
             console.print("  [dim]No presets installed.[/]")
-            if os.environ.get("QWE_MARKET_PATH"):
-                console.print(f"  [dim]QWE_MARKET_PATH = {os.environ['QWE_MARKET_PATH']}[/]")
+            if os.environ.get("CASTOR_MARKET_PATH"):
+                console.print(f"  [dim]CASTOR_MARKET_PATH = {os.environ['CASTOR_MARKET_PATH']}[/]")
                 console.print("  [dim]Install via: /preset install <id>[/]")
             else:
                 console.print("  [dim]Install via: /preset install <path-to-.qwp>[/]")
@@ -758,7 +758,7 @@ def handle_provider(args: str):
 def show_logs(args: str):
     """Show recent logs. Usage: /logs [errors] [N]"""
     parts = args.split()
-    log_file = "errors.log" if "errors" in parts else "qwe-qwe.log"
+    log_file = "errors.log" if "errors" in parts else "castor.log"
     n = 20
     for p in parts:
         if p.isdigit():
@@ -824,7 +824,7 @@ _CITY_TZ = {
 
 def _first_run_setup():
     """Interactive setup on first launch — city, name, language, soul."""
-    console.print("\n  [bold yellow]⚡ Welcome to qwe-qwe! Let's set up.[/]\n")
+    console.print("\n  [bold yellow]⚡ Welcome to castor! Let's set up.[/]\n")
 
     # 1. Auto-detect timezone
     try:
@@ -899,7 +899,7 @@ def _telemetry_first_run_prompt() -> None:
     console.print("  [bold]🔍 Send anonymous metrics to the project?[/]")
     console.print("     [dim]Helps us see what's used and what to fix. Off by default.[/]")
     console.print("     [dim]No chat content / no soul / no PII. Full policy:[/]")
-    console.print("     [dim]https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md[/]")
+    console.print("     [dim]https://github.com/deepfounder-ai/castor/blob/main/docs/PRIVACY.md[/]")
     console.print(f"     [dim]Sends to: {endpoint} (deepfounder.ai)[/]")
     try:
         ans = input("     Enable? [y/N]: ").strip().lower()
@@ -963,7 +963,7 @@ def _emit_cli_session_start() -> None:
         has_mcp = False
     provider_kind = telemetry.provider_kind_from_name(providers.get_active_name())
     telemetry.track_event("session_start", {
-        "qwe_version": str(config.VERSION),
+        "castor_version": str(config.VERSION),
         "python_version": telemetry.python_version(),
         "os": telemetry.os_kind(),
         "provider_kind": provider_kind,
@@ -981,6 +981,11 @@ def _emit_cli_session_start() -> None:
 
 
 def main():
+    # Integrity check before any other DB access
+    try:
+        db.check_and_restore()
+    except Exception as e:
+        _log.warning(f"db integrity check startup: {e}")
     # Check first run
     if not db.kv_get("setup_complete"):
         _first_run_setup()
@@ -994,6 +999,11 @@ def main():
     scheduler.on_complete(_on_cron_complete)
     scheduler.start()
     console.print(f"  [dim]⏰ Scheduler running (UTC{config.TZ_OFFSET:+d})[/]")
+    # Start DB backup scheduler
+    try:
+        db.start_backup_scheduler()
+    except Exception as e:
+        _log.warning(f"db backup scheduler startup: {e}")
 
     show_banner()
     _log.info("session started | model=%s | user=%s", config.LLM_MODEL, db.kv_get("user_name") or "User")
@@ -1173,10 +1183,16 @@ def main():
             console.print(f"  [dim]· {' · '.join(stats_parts)}[/]")
         console.print()
 
+    # Flush WAL and close DB cleanly on exit
+    try:
+        db.graceful_shutdown()
+    except Exception:
+        pass
+
 
 def show_help():
     """Show all available slash commands."""
-    console.print("\n  [bold yellow]qwe-qwe commands[/]\n")
+    console.print("\n  [bold yellow]castor commands[/]\n")
     cmds = [
         ("/help", "show this help"),
         ("/clear", "clear history"),
@@ -1471,7 +1487,7 @@ def handle_telegram(args: str):
 
 
 def doctor():
-    """Run diagnostics on all qwe-qwe components."""
+    """Run diagnostics on all castor components."""
     import time as _time
 
     # Use a safe console that strips unicode on cp1251 terminals
@@ -1486,7 +1502,7 @@ def doctor():
             print(text.encode("ascii", "replace").decode("ascii"))
     console.print = _safe_print
 
-    console.print("\n  [bold yellow]qwe-qwe doctor[/]\n")
+    console.print("\n  [bold yellow]castor doctor[/]\n")
     passed = 0
     failed = 0
     warnings = 0
@@ -1611,11 +1627,11 @@ def doctor():
             msg = str(e).lower()
             hint = ""
             if "cuda" in msg or "loadlibrary" in msg or "onnxruntime_providers_cuda" in msg:
-                hint = " — set QWE_EMBED_DEVICE=cpu or run: pip uninstall onnxruntime-gpu"
+                hint = " — set CASTOR_EMBED_DEVICE=cpu or run: pip uninstall onnxruntime-gpu"
             return (str(e)[:100] + hint) if hint else str(e)[:120]
     check("Embeddings", _check_embeddings)
 
-    # ── 5b. onnxruntime-gpu detection — qwe-qwe is CPU-only by design ──
+    # ── 5b. onnxruntime-gpu detection — castor is CPU-only by design ──
     def _check_onnxruntime_variant():
         try:
             import importlib.metadata as _md
@@ -1623,13 +1639,13 @@ def doctor():
                 _md.version("onnxruntime-gpu")
                 # onnxruntime-gpu is installed → warn. It's 3GB of CUDA DLLs
                 # and causes LoadLibrary errors when CUDA Toolkit isn't in sync.
-                return ("⚠ onnxruntime-gpu detected — qwe-qwe is CPU-only by design. "
+                return ("⚠ onnxruntime-gpu detected — castor is CPU-only by design. "
                         "Run: pip uninstall onnxruntime-gpu && pip install onnxruntime")
             except _md.PackageNotFoundError:
                 pass
             try:
                 _md.version("onnxruntime")
-                return "✓ onnxruntime (CPU) — correct for qwe-qwe"
+                return "✓ onnxruntime (CPU) — correct for castor"
             except _md.PackageNotFoundError:
                 return "⚠ neither onnxruntime nor onnxruntime-gpu found (fastembed may not work)"
         except Exception as e:
@@ -1938,7 +1954,7 @@ def doctor():
 
     # ── 12. Logs ──
     def _check_logs():
-        log_path = config.LOGS_DIR / "qwe-qwe.log"
+        log_path = config.LOGS_DIR / "castor.log"
         if not log_path.exists():
             return "⚠ no log file"
         size_kb = log_path.stat().st_size / 1024
@@ -1962,7 +1978,7 @@ def _run_update_cli():
     """Run update from CLI with Rich progress output."""
     import updater
 
-    console.print("\n  [bold yellow]⚡ qwe-qwe update[/]\n")
+    console.print("\n  [bold yellow]⚡ castor update[/]\n")
 
     status_icons = {
         "checking": "🔍", "running": "⏳", "stashing": "📦",
@@ -1989,7 +2005,7 @@ def _run_update_cli():
     if result["success"]:
         if result["restart_needed"]:
             console.print(f"  [bold green]⚡ Updated: v{result['old_version']} → v{result['new_version']}[/]")
-            console.print(f"  [dim]Restart qwe-qwe to use the new version.[/]\n")
+            console.print(f"  [dim]Restart castor to use the new version.[/]\n")
         else:
             console.print(f"  [green]Already up to date (v{result['new_version']})[/]\n")
     else:
@@ -1999,7 +2015,7 @@ def _run_update_cli():
 
 
 def _preset_cli(argv: list[str]) -> int:
-    """Non-interactive `qwe-qwe preset <action> [args]` command.
+    """Non-interactive `castor preset <action> [args]` command.
 
     Thin plain-text formatter over `_preset_exec`. Used by the argparse
     subcommand — prints to stdout/stderr so output is pipe-friendly.
@@ -2068,7 +2084,7 @@ def _preset_cli(argv: list[str]) -> int:
         return 0
 
     if kind == "usage":
-        print(f"usage: qwe-qwe preset {result['usage']}", file=sys.stderr)
+        print(f"usage: castor preset {result['usage']}", file=sys.stderr)
         return 2
 
     if kind == "error":
@@ -2112,14 +2128,14 @@ def _preset_cli(argv: list[str]) -> int:
 
 
 def main_entry():
-    """Unified entry point: `qwe-qwe` for CLI, `qwe-qwe --web` for web server."""
+    """Unified entry point: `castor` for CLI, `castor --web` for web server."""
     import argparse
 
     # Peel off the "preset" subcommand before argparse — simpler than nested parsers
     if len(sys.argv) >= 2 and sys.argv[1] == "preset":
         sys.exit(_preset_cli(sys.argv[2:]))
 
-    parser = argparse.ArgumentParser(description="qwe-qwe — offline AI agent")
+    parser = argparse.ArgumentParser(description="castor — offline AI agent")
     parser.add_argument("--web", action="store_true", help="Start web server instead of CLI")
     parser.add_argument("--doctor", action="store_true", help="Run diagnostics")
     parser.add_argument("--update", action="store_true", help="Update to latest version")

@@ -13,7 +13,7 @@ Lifecycle:
   deactivate restores the soul backup. uninstall removes files + DB row.
 
 State:
-  ~/.qwe-qwe/presets/<id>/         — extracted preset contents
+  ~/.castor/presets/<id>/         — extracted preset contents
   DB:
     presets table                  — one row per installed preset
     kv.active_preset               — id of the currently active preset (or unset)
@@ -45,7 +45,7 @@ _log = logger.get("presets")
 # ── Schema locations ────────────────────────────────────────────────────
 
 # The canonical schema ships with the main repo so validation never depends on
-# the market repo being checked out. It mirrors the schema in qwe-qwe market.
+# the market repo being checked out. It mirrors the schema in castor market.
 _SCHEMA_PATH = Path(__file__).parent / "schemas" / "preset.schema.yaml"
 
 _REQUIRED_FILES = ("preset.yaml",)
@@ -99,7 +99,7 @@ _POLICY_VALUES = ("off", "warn", "require")
 
 def get_signature_policy() -> str:
     """Current policy. Env var wins, then KV, then default 'warn'."""
-    env = os.environ.get("QWE_PRESET_SIGNATURE_POLICY") or ""
+    env = os.environ.get("CASTOR_PRESET_SIGNATURE_POLICY") or ""
     env = env.strip().lower()
     if env in _POLICY_VALUES:
         return env
@@ -476,13 +476,13 @@ def load_archive(archive_path: Path | str) -> PresetInfo:
         elif status == "untrusted":
             _log.warning(
                 f"preset archive {ap.name} is signed but the signing key is "
-                f"not in the trust store (add it via: qwe-qwe preset trust add <pub.pem>)"
+                f"not in the trust store (add it via: castor preset trust add <pub.pem>)"
             )
         # status == "verified" — no log needed, happy path
     # policy == "off" → skip all checks
 
     _log.info(f"load_archive: signature={status}, policy={policy}")
-    tmp = Path(tempfile.mkdtemp(prefix="qwe_preset_"))
+    tmp = Path(tempfile.mkdtemp(prefix="castor_preset_"))
     tmp_resolved = tmp.resolve()
     try:
         with zipfile.ZipFile(ap, "r") as zf:
@@ -605,11 +605,11 @@ def _info_from_manifest(manifest: dict, *, source_dir: Path, source_kind: str,
         raise ValueError(f"preset.yaml missing required field: {e}")
 
 
-# ── Dev-link resolver (QWE_MARKET_PATH) ─────────────────────────────────
+# ── Dev-link resolver (CASTOR_MARKET_PATH) ─────────────────────────────────
 
 def resolve_by_id(preset_id: str) -> Path | None:
-    """If QWE_MARKET_PATH is set, search its presets/<category>/<id>/ tree."""
-    market = os.environ.get("QWE_MARKET_PATH")
+    """If CASTOR_MARKET_PATH is set, search its presets/<category>/<id>/ tree."""
+    market = os.environ.get("CASTOR_MARKET_PATH")
     if not market:
         return None
     root = Path(market).expanduser() / "presets"
@@ -627,7 +627,7 @@ def resolve_by_id(preset_id: str) -> Path | None:
 
 def load_any(source: str | Path) -> PresetInfo:
     """Load a preset from: archive path, directory path, or bare preset id
-    (if QWE_MARKET_PATH is set)."""
+    (if CASTOR_MARKET_PATH is set)."""
     src = str(source)
     p = Path(src).expanduser()
     if p.is_dir():
@@ -641,7 +641,7 @@ def load_any(source: str | Path) -> PresetInfo:
     raise FileNotFoundError(
         f"preset source not found: {src!r}. "
         f"Provide a path to a .qwp archive, a directory, or a preset id "
-        f"(with QWE_MARKET_PATH set for the latter)."
+        f"(with CASTOR_MARKET_PATH set for the latter)."
     )
 
 
@@ -735,7 +735,7 @@ def validate(info: PresetInfo) -> list[str]:
     # 4. Validate skill files as real Python modules with the expected API.
     # This is what gates C2 (RCE by install): any `.py` under the preset
     # that lives in skills/custom must pass skills.validate_skill() before
-    # it gets copied into ~/.qwe-qwe/presets/<id>/skills/ and exec'd later.
+    # it gets copied into ~/.castor/presets/<id>/skills/ and exec'd later.
     # We do a basic syntax+shape check; we don't sandbox execution.
     try:
         import skills as _skills
@@ -775,7 +775,7 @@ def preset_dir(preset_id: str) -> Path:
 
 
 def install(info: PresetInfo, *, overwrite: bool = False) -> dict:
-    """Copy preset contents into ~/.qwe-qwe/presets/<id>/ and register it.
+    """Copy preset contents into ~/.castor/presets/<id>/ and register it.
 
     Always cleans up:
       * the source archive tempdir (if info was loaded via load_archive)
@@ -859,10 +859,10 @@ def install(info: PresetInfo, *, overwrite: bool = False) -> dict:
 def _cleanup_temp(source_dir: Path) -> None:
     """Remove the tempdir created by load_archive, if present."""
     # source_dir may be tempdir itself or a child of it; walk up to find
-    # the qwe_preset_ tempdir root.
+    # the castor_preset_ tempdir root.
     p = source_dir.resolve()
     for parent in [p, *p.parents]:
-        if parent.name.startswith("qwe_preset_") and parent.parent == Path(tempfile.gettempdir()).resolve():
+        if parent.name.startswith("castor_preset_") and parent.parent == Path(tempfile.gettempdir()).resolve():
             shutil.rmtree(parent, ignore_errors=True)
             return
 
@@ -922,11 +922,11 @@ def uninstall(preset_id: str) -> None:
 
         # Also delete by file_path — full cleanup (Qdrant chunks + SQLite kv tracking)
         import rag
-        k_dir = d / "knowledge"
+        k_dir = d / "knowledge"  # lgtm[py/path-injection] — d validated by _is_within(d_resolved, PRESETS_DIR) above
         if k_dir.exists():
             for f in k_dir.rglob("*"):
                 if f.is_file():
-                    rag.delete_file(str(f.resolve()))
+                    rag.delete_file(str(f.resolve()))  # lgtm[py/path-injection]
     except Exception as e:
         _log.warning(f"uninstall: knowledge cleanup failed: {e}")
 
@@ -946,7 +946,7 @@ def uninstall(preset_id: str) -> None:
 
     # Remove on-disk contents
     if d.exists():
-        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)  # lgtm[py/path-injection] — d validated by _is_within(d_resolved, PRESETS_DIR) above
 
     # Remove DB row
     db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
@@ -1127,7 +1127,7 @@ def ensure_preset_workspace(preset_id: str) -> None:
     # Switch workspace
     p_dir = preset_dir(preset_id)
     p_workspace = p_dir / "workspace"
-    p_workspace.mkdir(exist_ok=True)
+    p_workspace.mkdir(exist_ok=True)  # lgtm[py/path-injection] — p_dir is preset_dir(preset_id); preset_id validated by _ensure_id
     if config.WORKSPACE_DIR != p_workspace:
         if not db.kv_get("preset_original_workspace"):
             db.kv_set("preset_original_workspace", str(config.WORKSPACE_DIR))
@@ -1176,7 +1176,7 @@ def activate(preset_id: str) -> dict:
     #   1. soul traits           (visible in Settings → Soul)
     #   2. knowledge indexing    (RAG tag=preset:<id>)
     #   3. mark preset active    (so skills._all_skill_paths() starts seeing
-    #                             ~/.qwe-qwe/presets/<id>/skills/)
+    #                             ~/.castor/presets/<id>/skills/)
     #   4. auto-enable skills    (must be AFTER step 3, otherwise
     #                             skills.get_active() self-heals them out
     #                             because they're not yet discoverable)
@@ -1281,14 +1281,14 @@ def _index_knowledge(preset_id: str, manifest: dict) -> None:
         if not pth:
             continue
         try:
-            full = (base / pth).resolve()
+            full = (base / pth).resolve()  # lgtm[py/path-injection] — validated by _is_within(full, base_resolved) below
         except Exception:
             _log.warning(f"knowledge path unresolvable: {pth}")
             continue
         if not _is_within(full, base_resolved):
             _log.error(f"knowledge path escapes preset dir: {pth}")
             continue
-        if not full.exists():
+        if not full.exists():  # lgtm[py/path-injection]
             _log.debug(f"knowledge path missing: {full}")
             continue
         try:

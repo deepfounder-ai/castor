@@ -11,7 +11,7 @@ No real browser launches. No Playwright install required (even if the
 package is present, ``_ensure_browser`` is stubbed out before it'd be
 called).
 
-Issue: https://github.com/deepfounder-ai/qwe-qwe/issues/5
+Issue: https://github.com/deepfounder-ai/castor/issues/5
 """
 from __future__ import annotations
 
@@ -202,7 +202,8 @@ def test_google_search_alias_redirects_to_brave(browser):
     url = page.goto.call_args[0][0]
     # The skill rewrites google_search → brave search URL so no real
     # Google hits (Google blocks headless). Spec says rewrites to brave.
-    assert "search.brave.com" in url
+    from urllib.parse import urlparse as _urlparse
+    assert _urlparse(url).hostname == "search.brave.com"  # exact hostname, not substring
     assert "python" in url
 
 

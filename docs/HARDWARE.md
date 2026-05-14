@@ -1,6 +1,6 @@
 # Hardware integration
 
-qwe-qwe runs on a real machine, talking to real hardware. This is one of the few honest advantages of self-hosting an agent — your scales, scanners, sensors, and PLCs are reachable as plain USB devices that the agent can pick up locally.
+castor runs on a real machine, talking to real hardware. This is one of the few honest advantages of self-hosting an agent — your scales, scanners, sensors, and PLCs are reachable as plain USB devices that the agent can pick up locally.
 
 This doc is the contract for adding hardware support. The first reference implementation is the cross-platform **`serial_port`** skill — start by reading it, then follow the same pattern for new device classes.
 
@@ -31,11 +31,11 @@ Ask the agent to `tool_search("serial")` (or `"scale"`, `"modbus"`, `"rfid"`, `"
 | **Industrial PLCs** | Modbus RTU over RS-485 | Binary. `format="hex"`, watch CRC. |
 | **VFDs / inverters** | Anything Modbus-RTU | **Read carefully** before writes — wrong register can damage motors. |
 | **Sensors** | pH, conductivity, humidity, gas, temp | Mix of text + binary, vendor-dependent. |
-| **Energy meters** | Меркурий, Энергомера | DLMS / COSEM via RS-485. |
+| **Energy meters** | Mercury, Energomera | DLMS / COSEM via RS-485. |
 
 ### Common scenario
 
-> Tell qwe-qwe: "I have Mettler Toledo scales on COM3, baud 9600. Read what's on the scales right now."
+> Tell Castor: "I have Mettler Toledo scales on COM3, baud 9600. Read what's on the scales right now."
 
 Agent flow:
 1. `tool_search("scale")` → activates the three serial tools
@@ -137,6 +137,6 @@ def test_read(monkeypatch):
 
 ## Bridge to Home Assistant (for everything else)
 
-If your device speaks Zigbee, Z-Wave, Wi-Fi, MQTT, IP — you probably want a **Home Assistant bridge** rather than a native qwe-qwe skill. HA has 2000+ integrations already. A small `home_assistant` skill that calls HA's REST + MQTT gives the agent access to all of them with zero per-device code.
+If your device speaks Zigbee, Z-Wave, Wi-Fi, MQTT, IP — you probably want a **Home Assistant bridge** rather than a native castor skill. HA has 2000+ integrations already. A small `home_assistant` skill that calls HA's REST + MQTT gives the agent access to all of them with zero per-device code.
 
 A reference `home_assistant` skill is on the roadmap. Until then: use the existing `mcp_manager` to add an HA MCP server, or write a custom skill via `create_skill`.

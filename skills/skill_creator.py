@@ -2,6 +2,7 @@
 
 import ast
 import json
+import os
 import re
 import threading
 import time
@@ -49,7 +50,7 @@ CONFIG / SCHEDULER / TASKS (available but rarely needed):
 - import scheduler; scheduler.add(name, schedule, prompt) for cron-style
 - import tasks; tasks.register(name, description) for background work
 
-TABLE NAMING (CRITICAL — qwe-qwe uses ONE shared SQLite for everything):
+TABLE NAMING (CRITICAL — castor uses ONE shared SQLite for everything):
 - ALWAYS prefix your skill's tables with "skill_<skill_name>_". Example:
   skill_meal_logger_meals, skill_workout_tracker_sets, skill_slack_notify_webhooks
 - This prevents silent data collisions with other skills (two skills both
@@ -76,7 +77,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_skill",
-            "description": "Generate a new skill module that adds tools to qwe-qwe. Use this WHENEVER the user asks to connect/integrate/use a service or build a capability that doesn't already exist as a tool — Gmail, Slack, Notion, GitHub, weather APIs, fitness trackers, custom workflows. Do NOT shell-install CLI tools or write loose scripts for these requests; use this tool instead. Runs in background, returns immediately, notifies when ready.",
+            "description": "Generate a new skill module that adds tools to castor. Use this WHENEVER the user asks to connect/integrate/use a service or build a capability that doesn't already exist as a tool — Gmail, Slack, Notion, GitHub, weather APIs, fitness trackers, custom workflows. Do NOT shell-install CLI tools or write loose scripts for these requests; use this tool instead. Runs in background, returns immediately, notifies when ready.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -122,11 +123,10 @@ TOOLS = [
 
 # ── Template ──
 
-SKILL_TEMPLATE = '''"""{docstring}"""
+SKILL_TEMPLATE = '''{docstring_block}
+DESCRIPTION = {short_description_repr}
 
-DESCRIPTION = "{short_description}"
-
-INSTRUCTION = """{instruction}"""
+INSTRUCTION = {instruction_repr}
 
 TOOLS = {tools_json}
 
@@ -152,7 +152,7 @@ def execute(name: str, args: dict) -> str:
 
 STEP1_PLAN = """You are a skill architect. Given a skill description, output a JSON plan.
 
-Skills you create run inside the qwe-qwe agent and can use ALL of its
+Skills you create run inside the castor agent and can use ALL of its
 capabilities — they are not sandboxed mini-apps. You may compose tools
 that combine:
 
@@ -447,7 +447,7 @@ def _t_http_request(name: str, spec: dict, first: bool) -> str:
         lines.append(f'            req.add_header("Content-Type", "application/json")')
     else:
         lines.append(f'            req = urllib.request.Request(target_url)')
-    lines.append(f'            req.add_header("User-Agent", "qwe-qwe/skill")')
+    lines.append(f'            req.add_header("User-Agent", "castor/skill")')
     lines.append(f'            with urllib.request.urlopen(req, timeout=15) as resp:')
     lines.append(f'                result = resp.read().decode("utf-8")[:2000]')
     lines.append(f'            return f"OK ({{len(result)}} chars): {{result[:200]}}"')
@@ -527,7 +527,7 @@ def _t_telegram(name: str, spec: dict, first: bool) -> str:
     lines.append(f'        try:')
     lines.append(f'            req = urllib.request.Request(url, data=payload, method="POST")')
     lines.append(f'            req.add_header("Content-Type", "application/json")')
-    lines.append(f'            req.add_header("User-Agent", "qwe-qwe/skill")')
+    lines.append(f'            req.add_header("User-Agent", "castor/skill")')
     lines.append(f'            with urllib.request.urlopen(req, timeout=15) as resp:')
     lines.append(f'                result = _json.loads(resp.read().decode("utf-8"))')
     lines.append(f'            if result.get("ok"):')
@@ -931,7 +931,7 @@ def _create_skill_async(skill_name: str, description: str) -> str:
         _active_skills.add(skill_name)
 
     import config
-    skills_dir = config.USER_SKILLS_DIR  # user skills go to ~/.qwe-qwe/skills/
+    skills_dir = config.USER_SKILLS_DIR  # user skills go to ~/.castor/skills/
     target = skills_dir / f"{skill_name}.py"
     if target.exists():
         with _active_lock:
@@ -958,9 +958,12 @@ def _create_skill_async(skill_name: str, description: str) -> str:
     )
 
 
-def _llm_call(system: str, user: str, max_tokens: int = 2048,
-              _tok_accum: list | None = None) -> str:
-    """Make a single LLM call with generous context.
+def _llm_call(system: str, user: str, _tok_accum: list | None = None) -> str:
+    """Make a single LLM call. No client-side token cap — let the model
+    use whatever the provider's context allows. Earlier flat caps
+    (2048) silently truncated step-3 mid-string on skills with 3+
+    custom tools, leaving unterminated literals the syntax-validator
+    couldn't repair. The provider's own model max is the only ceiling.
 
     If *_tok_accum* is a list, appends a (in_tok, out_tok) tuple so callers
     can aggregate token counts across multiple calls without changing the
@@ -977,7 +980,6 @@ def _llm_call(system: str, user: str, max_tokens: int = 2048,
             {"role": "user", "content": user},
         ],
         temperature=0.2,
-        max_tokens=max_tokens,
     )
     if _tok_accum is not None and getattr(resp, "usage", None):
         _tok_accum.append((
@@ -988,6 +990,39 @@ def _llm_call(system: str, user: str, max_tokens: int = 2048,
     # Strip thinking tags
     raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
     return raw
+
+
+def _docstring_block(text: str) -> str:
+    '''Render `text` as a safe triple-quoted module docstring.
+
+    User-controlled strings landing inside a triple-quoted block can
+    break the rendered .py if they contain three consecutive double-
+    quotes (premature termination) or end with a backslash (escapes
+    the closing quote). Escape both, then wrap.
+    '''
+    text = text.replace('"""', r'\"\"\"')
+    # Trailing backslash escapes the closing quote. Pad to an even
+    # backslash count so the final `"""` terminates cleanly. Using a
+    # space pad triggers SyntaxWarning "invalid escape sequence" —
+    # doubling backslashes is the clean fix.
+    trailing = len(text) - len(text.rstrip("\\"))
+    if trailing % 2 == 1:
+        text = text + "\\"
+    return f'"""{text}"""\n'
+
+
+def _tools_to_python_literal(tools_list: list) -> str:
+    """Render a JSON-shaped tools list as a Python literal.
+
+    `json.dumps` produces `true`/`false`/`null` — embedding that verbatim
+    in a `.py` template gives bare identifier names that Python's AST
+    parses but `import` rejects with NameError. `pprint.pformat` with
+    `sort_dicts=False` preserves insertion order and emits `True`/
+    `False`/`None`, so the rendered module is both syntactically valid
+    AND runtime-importable.
+    """
+    import pprint
+    return pprint.pformat(tools_list, indent=4, width=100, sort_dicts=False)
 
 
 def _extract_json(raw: str):
@@ -1047,16 +1082,20 @@ def _extract_code(raw: str) -> str:
     # Strip thinking tags and thinking blocks
     raw = re.sub(r"<think>.*?</think>\s*", "", raw, flags=re.DOTALL).strip()
 
-    # Strip everything before first 'if name' or 'if ' line
+    # Strip everything before the first line that opens a `name == "..."`
+    # branch. Earlier check accepted only `if name ==` / `if name==` —
+    # Gemma 4B occasionally wraps in parens (`if (name == "x"):`); small
+    # models also sometimes drop the leading `if`. Regex catches the
+    # common variants without false-matching prose that mentions `name`.
     lines = raw.split("\n")
     code_start = None
+    _name_branch_re = re.compile(r'^\s*(?:if\s*\(?\s*name\s*==|match\s+name\s*:)')
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("if name ==") or stripped.startswith("if name=="):
+        if _name_branch_re.match(line):
             code_start = i
             break
         # Also catch markdown-fenced code
-        if stripped.startswith("```"):
+        if line.strip().startswith("```"):
             continue
 
     if code_start is not None:
@@ -1359,6 +1398,10 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
     # Track per-attempt failure mode so the FINAL outcome reflects what
     # actually killed the last try (validate vs smoke vs syntax).
     last_failure: str = "max_attempts_exhausted"
+    # Carry the previous attempt's error into the next planning prompt
+    # so retries aren't identical re-runs (temperature=0.2 + the same
+    # input would otherwise produce the same broken output 3 times).
+    last_error_hint: str = ""
 
     # ── Cost-tracking bracket ──────────────────────────────────────────
     _sc_thread_id = f"skill:{skill_name}"
@@ -1403,15 +1446,17 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             # ── Step 1: Plan ──
             _progress(f"Step 1/5: planning (attempt {attempt})")
             _log.info(f"[{skill_name}] step 1: planning")
-            plan_raw = _llm_call(
-                STEP1_PLAN,
-                f"Create a skill called '{skill_name}'.\nDescription: {description}",
-                max_tokens=1024,
-                _tok_accum=_tok_accum,
-            )
+            user_prompt = f"Create a skill called '{skill_name}'.\nDescription: {description}"
+            if last_error_hint:
+                user_prompt += (
+                    f"\n\nThe previous attempt failed with: {last_error_hint}\n"
+                    f"Adjust the plan to avoid this error."
+                )
+            plan_raw = _llm_call(STEP1_PLAN, user_prompt, _tok_accum=_tok_accum)
             plan = _extract_json(plan_raw)
             if not plan or not isinstance(plan, dict):
                 _log.warning(f"[{skill_name}] step 1 failed: bad JSON")
+                last_error_hint = "step1 produced unparseable JSON for the plan"
                 continue
 
             _log.info(f"[{skill_name}] step 1 done: {len(plan.get('tools', []))} tools planned")
@@ -1422,12 +1467,12 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             tools_raw = _llm_call(
                 STEP2_TOOLS,
                 f"Skill: {skill_name}\nPlan:\n{json.dumps(plan, indent=2, ensure_ascii=False)}",
-                max_tokens=2048,
                 _tok_accum=_tok_accum,
             )
             tools_list = _extract_json(tools_raw)
             if not tools_list or not isinstance(tools_list, list):
                 _log.warning(f"[{skill_name}] step 2 failed: bad tools JSON")
+                last_error_hint = "step2 produced unparseable JSON for tool definitions"
                 continue
 
             # Validate tool structure
@@ -1439,6 +1484,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                     valid_tools.append(t)
             if not valid_tools:
                 _log.warning(f"[{skill_name}] step 2: no valid tools")
+                last_error_hint = "step2 produced no tools with a valid function.name"
                 continue
             tools_list = valid_tools
 
@@ -1479,8 +1525,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                     f"returns a string. All code for a tool MUST be indented "
                     f"under its branch — no top-level statements between branches."
                 )
-                custom_raw = _llm_call(STEP3_CODE, custom_prompt, max_tokens=2048,
-                                       _tok_accum=_tok_accum)
+                custom_raw = _llm_call(STEP3_CODE, custom_prompt, _tok_accum=_tok_accum)
                 custom_code = _extract_code(custom_raw)
                 custom_code = _fix_indentation(custom_code)
                 custom_code = _fix_empty_blocks(custom_code)
@@ -1505,12 +1550,30 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
             # ── Step 5: Assemble & validate ──
             _progress(f"Step 5/5: validating (attempt {attempt})")
             _log.info(f"[{skill_name}] step 5: assembling and validating")
-            tools_json = json.dumps(tools_list, indent=4, ensure_ascii=False)
+            # Render TOOLS as a Python literal, not raw JSON. The OpenAI
+            # function-schema spec uses `true`/`false`/`null` (e.g. the
+            # newer `"additionalProperties": false`); embedding the JSON
+            # text verbatim leaves bare `false` / `true` / `null` names
+            # in the module body, which `ast.parse` accepts but `import`
+            # fails with NameError. Use pprint to emit valid Python.
+            tools_json = _tools_to_python_literal(tools_list)
+
+            # User-controlled strings flow through repr() / _docstring_block
+            # so embedded quotes or trailing backslashes can't break the
+            # rendered .py. Bug repro: plan returns
+            # `"docstring": 'Logs "important" events'` — the embedded `"`
+            # was breaking the DESCRIPTION literal.
+            docstring_block = _docstring_block(
+                plan.get("docstring") or f"{skill_name} skill")
+            short_desc_repr = repr(
+                plan.get("short_description") or description[:80])
+            instruction_repr = repr(
+                plan.get("instruction") or f"Use {skill_name} tools as needed.")
 
             code = SKILL_TEMPLATE.format(
-                docstring=plan.get("docstring", f"{skill_name} skill"),
-                short_description=plan.get("short_description", description[:80]),
-                instruction=plan.get("instruction", f"Use {skill_name} tools as needed."),
+                docstring_block=docstring_block,
+                short_description_repr=short_desc_repr,
+                instruction_repr=instruction_repr,
                 tools_json=tools_json,
                 table_ddl=table_ddl,
                 execute_body=execute_body,
@@ -1531,9 +1594,9 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 # Try one more fix: ensure all blocks have content
                 execute_body = _fix_empty_blocks(execute_body)
                 code = SKILL_TEMPLATE.format(
-                    docstring=plan.get("docstring", f"{skill_name} skill"),
-                    short_description=plan.get("short_description", description[:80]),
-                    instruction=plan.get("instruction", f"Use {skill_name} tools as needed."),
+                    docstring_block=docstring_block,
+                    short_description_repr=short_desc_repr,
+                    instruction_repr=instruction_repr,
                     tools_json=tools_json,
                     table_ddl=table_ddl,
                     execute_body=execute_body,
@@ -1543,23 +1606,47 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 except SyntaxError as e2:
                     _log.warning(f"[{skill_name}] still syntax error after fix: {e2}")
                     last_failure = "syntax_error"
+                    last_error_hint = f"step5_syntax: {e2}"
                     continue
 
-            # Save
-            target.write_text(code, encoding="utf-8")
-
-            # Validate with skill loader
+            # Atomic write: tempfile in the same dir → skills.validate_skill
+            # → os.replace. Two reasons over the old write-then-validate
+            # pattern: (1) closes the window where a half-broken `.py` is
+            # visible to any concurrent skill loader between write and
+            # unlink, and (2) failed validation no longer leaves the
+            # target path empty/broken if another process glob'd it
+            # during the write.
+            import tempfile
             from skills import validate_skill, enable
-            valid, errors = validate_skill(str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path_str = tempfile.mkstemp(
+                suffix=".py",
+                prefix=f"__qwepartial__{skill_name}__",
+                dir=str(target.parent),
+            )
+            tmp_path = Path(tmp_path_str)
+            os.close(fd)
+            try:
+                tmp_path.write_text(code, encoding="utf-8")
+                valid, errors = validate_skill(str(tmp_path))
+                if valid:
+                    os.replace(str(tmp_path), str(target))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
 
             if not valid:
                 _log.warning(f"[{skill_name}] validation errors: {errors}")
-                # Keep file for manual fix, but don't enable
                 if attempt < max_attempts:
-                    target.unlink(missing_ok=True)  # retry will overwrite anyway
                     last_failure = "validate_fail"
+                    last_error_hint = f"validate_fail: {'; '.join(errors)[:200]}"
                     continue
-                # Last attempt — keep file, notify with errors
+                # Last attempt — atomic write skipped the broken file;
+                # write it to target now so user can inspect / fix.
+                target.write_text(code, encoding="utf-8")
                 msg = f"⚠️ Created with errors: {'; '.join(errors)}. Fix with write_file."
                 if task_id:
                     tasks.update(task_id, "error", msg)
@@ -1576,6 +1663,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 if attempt < max_attempts:
                     target.unlink(missing_ok=True)
                     last_failure = "smoke_fail"
+                    last_error_hint = f"smoke_fail: {'; '.join(smoke_errors)[:200]}"
                     continue
                 msg = f"⚠️ Created but smoke test failed: {'; '.join(smoke_errors)}"
                 if task_id:
@@ -1606,6 +1694,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
         except Exception as e:
             _log.error(f"[{skill_name}] attempt {attempt} error: {e}", exc_info=True)
             last_failure = "max_attempts_exhausted"
+            last_error_hint = f"unexpected exception: {type(e).__name__}: {e}"[:300]
             _run_state["status"] = "err"; _run_state["error"] = str(e)[:500]
             continue
 

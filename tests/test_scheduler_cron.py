@@ -182,7 +182,7 @@ def test_send_task_accepts_russian_confirmation(fresh_scheduler):
     sched = fresh_scheduler
     result = sched._validate_dry_run(
         "Отправил сводку в Telegram.",
-        "send me qwe-qwe error logs summary to telegram",
+        "send me castor error logs summary to telegram",
     )
     assert result["ok"] is True
 

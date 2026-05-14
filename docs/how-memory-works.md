@@ -1,8 +1,8 @@
-# How Memory Works in qwe-qwe
+# How Memory Works in castor
 
 ## Overview
 
-qwe-qwe uses a three-layer knowledge system that combines fast vector search with a knowledge graph. All data lives in a single Qdrant vector database collection, differentiated by tags.
+castor uses a three-layer knowledge system that combines fast vector search with a knowledge graph. All data lives in a single Qdrant vector database collection, differentiated by tags.
 
 The core insight: **raw data is cheap to store but expensive to search well**. By synthesizing raw facts into structured entities and wiki summaries, we get dramatically better search quality with minimal runtime cost.
 
@@ -88,7 +88,7 @@ A cron task runs at 03:00 (configurable) and processes all pending chunks:
 During the same synthesis run, wiki summaries are created:
 
 - Stored in Qdrant as `tag = "wiki"` (searchable via vector search)
-- Also written to disk as markdown (`~/.qwe-qwe/wiki/fastapi.md`)
+- Also written to disk as markdown (`~/.castor/wiki/fastapi.md`)
 
 Wiki chunks have **better embeddings** than raw chunks because the LLM has already distilled the key information into clean, focused text.
 
@@ -115,7 +115,7 @@ The auto-context injection prioritizes in this order:
 
 ## Vector Architecture
 
-All vectors use the same schema in one Qdrant collection (`qwe_qwe`):
+All vectors use the same schema in one Qdrant collection (`castor`):
 
 | Component | Model | Dimensions | Purpose |
 |-----------|-------|------------|---------|
@@ -151,14 +151,14 @@ Change via Web UI Settings or `self_config(action="set", key="synthesis_time", v
 ## File Locations
 
 ```
-~/.qwe-qwe/
+~/.castor/
   memory/           Qdrant data (vectors, payloads)
   wiki/             Synthesized markdown pages
     index.md        Master index of all entities
     log.md          Chronological synthesis log
     fastapi.md      Wiki page for FastAPI entity
     python.md       Wiki page for Python entity
-  qwe_qwe.db       SQLite (FTS5 for BM25, settings, history)
+  castor.db       SQLite (FTS5 for BM25, settings, history)
 ```
 
 ## Token Budget
@@ -175,7 +175,7 @@ The knowledge graph is designed for small models with limited context:
 
 ## Comparison with Traditional RAG
 
-| | Traditional RAG | qwe-qwe Knowledge Graph |
+| | Traditional RAG | castor Knowledge Graph |
 |---|---|---|
 | **Storage** | Chunks only | Chunks + entities + wiki |
 | **Search** | Vector similarity | Hybrid (dense + sparse + BM25 + graph) |

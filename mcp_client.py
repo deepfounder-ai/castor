@@ -171,7 +171,7 @@ class MCPServerConnection:
             resp = self._rpc("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "qwe-qwe", "version": getattr(_config, "VERSION", "0.17.1")},
+                "clientInfo": {"name": "castor", "version": getattr(_config, "VERSION", "0.17.1")},
             })
             if resp.get("result"):
                 # Send initialized notification

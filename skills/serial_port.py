@@ -458,7 +458,7 @@ def _open_error_msg(port: str, exc: Exception) -> str:
 def _pyserial_missing_msg() -> str:
     return (
         "pyserial is not installed. It ships as a hard dependency in "
-        "qwe-qwe ≥ 0.18.6. To install manually:\n"
+        "castor ≥ 0.18.6. To install manually:\n"
         "    pip install pyserial"
     )
 

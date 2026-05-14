@@ -1,6 +1,6 @@
 """End-to-end tests for /api/presets/* endpoints via FastAPI TestClient.
 
-Uses a fresh QWE_DATA_DIR temp dir so it never touches real user data.
+Uses a fresh CASTOR_DATA_DIR temp dir so it never touches real user data.
 Covers the happy path and every error branch (404 / 400 / 409 / 413).
 """
 
@@ -21,18 +21,18 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _server_preset_env():
-    original_data_dir = os.environ.get("QWE_DATA_DIR")
+    original_data_dir = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_server_test_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_core()
     try:
         yield tmp_root
     finally:
         _close_db()
         if original_data_dir is not None:
-            os.environ["QWE_DATA_DIR"] = original_data_dir
+            os.environ["CASTOR_DATA_DIR"] = original_data_dir
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         _reload_core()
@@ -56,7 +56,7 @@ def _close_db():
 
 def _reload_core():
     """Drop stale db connection + reload core modules so they pick up the
-    new QWE_DATA_DIR. server.py is re-imported last."""
+    new CASTOR_DATA_DIR. server.py is re-imported last."""
     _close_db()
     for mod in ("config", "db", "soul", "presets", "server"):
         if mod in sys.modules:
@@ -117,7 +117,7 @@ _MANIFEST = {
         },
     },
     "system_prompt": {"path": "system_prompt.md"},
-    "compatibility": {"qwe_qwe_version": ">=0.1.0"},
+    "compatibility": {"qwe_castor_version": ">=0.1.0"},
 }
 
 
@@ -340,18 +340,18 @@ def test_delete_invalid_id_rejected():
 # ── Runner ────────────────────────────────────────────────────────────
 
 def _manual_setup():
-    original = os.environ.get("QWE_DATA_DIR")
+    original = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_server_test_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_core()
     return original, tmp_root
 
 
 def _manual_teardown(original, tmp_root):
     if original is not None:
-        os.environ["QWE_DATA_DIR"] = original
+        os.environ["CASTOR_DATA_DIR"] = original
     else:
-        os.environ.pop("QWE_DATA_DIR", None)
+        os.environ.pop("CASTOR_DATA_DIR", None)
     if tmp_root.exists():
         shutil.rmtree(tmp_root, ignore_errors=True)
     _reload_core()

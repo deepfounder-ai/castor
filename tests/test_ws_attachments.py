@@ -29,19 +29,19 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _ws_attach_env():
-    """Point QWE_DATA_DIR at a fresh tempdir and reload server."""
-    original = os.environ.get("QWE_DATA_DIR")
+    """Point CASTOR_DATA_DIR at a fresh tempdir and reload server."""
+    original = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_ws_attach_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_core()
     try:
         yield tmp_root
     finally:
         _close_db()
         if original is not None:
-            os.environ["QWE_DATA_DIR"] = original
+            os.environ["CASTOR_DATA_DIR"] = original
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         _reload_core()
@@ -346,4 +346,37 @@ def test_reload_path_runs_meta_files_through_splitfiles():
         "reload instead of inline images. The live WS path splits them; the "
         "reload path must mirror that. Restore the splitFiles call in "
         "static/index.html::loadActiveMessages."
+    )
+
+
+def test_soul_trait_description_uses_low_high_not_raw_object():
+    """Reported: Settings → Soul shows '[object Object]' next to every
+    built-in trait (humor, honesty, etc.).
+
+    Root cause: ``/api/soul`` returns ``traits`` as
+    ``{name: {low, high, builtin}}``, an object per trait — not a string.
+    The ``traitRow`` helper in ``renderTabSoul`` was doing
+    ``esc(descriptions[name] || 'built-in trait')``; passing an object
+    to ``esc()`` coerces it to ``[object Object]``.
+
+    Fix: built-in branch now reads ``descriptions[name].low`` and
+    ``descriptions[name].high``, matching what the custom-trait branch
+    already did.  This test pins the contract.
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+    # Anchor on the traitRow helper inside renderTabSoul
+    anchor = "const traitRow = (name, isCustom, customMeta) =>"
+    idx = src.find(anchor)
+    assert idx >= 0, "traitRow helper not found — was it renamed?"
+    window = src[idx: idx + 600]
+    # The built-in branch must NOT pass the raw descriptions[name] object to esc()
+    assert "esc(descriptions[name])" not in window, (
+        "Built-in trait description is passed raw to esc() — objects coerce to "
+        "[object Object].  Use descriptions[name].low / .high instead."
+    )
+    # The built-in branch must dereference .low and .high
+    assert "descriptions[name].low" in window and "descriptions[name].high" in window, (
+        "traitRow built-in branch must read .low and .high from the description "
+        "object returned by /api/soul, not use it as a bare string."
     )

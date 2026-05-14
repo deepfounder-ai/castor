@@ -9,7 +9,7 @@
 
 ## 1. Problem statement
 
-qwe-qwe today has no per-thread visibility into LLM token usage or cost. The only counter is a global singleton `session_completion_tokens` in the KV store, which sums everything across all sessions and reveals nothing about which thread, routine, or auxiliary worker (synthesis, compaction, skill creator) is burning tokens.
+castor today has no per-thread visibility into LLM token usage or cost. The only counter is a global singleton `session_completion_tokens` in the KV store, which sums everything across all sessions and reveals nothing about which thread, routine, or auxiliary worker (synthesis, compaction, skill creator) is burning tokens.
 
 User pain (mirrored across the agent ecosystem — see competitor issue analysis):
 
@@ -23,7 +23,7 @@ This spec covers the **foundational** layer: per-run token + cost tracking with 
 
 ## 2. Goals
 
-1. Record token usage and dollar cost for **every** LLM call qwe-qwe makes — main agent runs, routine firings, night synthesis, compaction (folded into parent), and skill creator pipelines.
+1. Record token usage and dollar cost for **every** LLM call castor makes — main agent runs, routine firings, night synthesis, compaction (folded into parent), and skill creator pipelines.
 2. Display per-thread totals (`tokens in / tokens out / cost USD / run count`) directly in the existing Sessions list — no new top-level page required for MVP.
 3. Provide drilldown into individual runs of a thread, with model, source, status, duration, tokens, and cost per run.
 4. Keep dollar cost calculations current via auto-fetched pricing JSON (LiteLLM community source) with offline cache and air-gapped fallback.
@@ -170,7 +170,7 @@ value: JSON {"input": 0.05, "output": 0.20}    # $/1M tokens (LiteLLM-compatible
 ### 4.4 Pricing cache file
 
 ```
-~/.qwe-qwe/pricing_cache.json
+~/.castor/pricing_cache.json
 ```
 
 ```json
@@ -240,7 +240,7 @@ def start_background_refresher() -> None:
 2. **Local providers**: if model starts with `lmstudio:`, `ollama:`, or `local:` — return `0.0`.
 3. **Loaded pricing dict** (memory cache, lazy-loaded via `_ensure_loaded()` on first call):
    - Memory dict hit → return.
-4. **Disk cache** (`~/.qwe-qwe/pricing_cache.json`) — read once into memory on first `_ensure_loaded()`, then served from memory thereafter.
+4. **Disk cache** (`~/.castor/pricing_cache.json`) — read once into memory on first `_ensure_loaded()`, then served from memory thereafter.
 5. **Bundled fallback** dict (top-10 models hardcoded in `pricing.py`) — last resort if disk cache missing entirely.
 6. Return `None` (caller writes `cost_usd = NULL`).
 
@@ -270,7 +270,7 @@ Top 10 by likely user popularity (OpenAI, Anthropic, DeepSeek, Groq, Mistral). U
 `refresh_pricing()` does:
 
 - `urllib.request.urlopen(url, timeout=10)` with explicit timeout.
-- Reuses SSRF guard from `/api/knowledge/url` — block private / loopback / link-local IPs unless `QWE_ALLOW_PRIVATE_URLS=1`.
+- Reuses SSRF guard from `/api/knowledge/url` — block private / loopback / link-local IPs unless `CASTOR_ALLOW_PRIVATE_URLS=1`.
 - Body size cap: 5 MB (LiteLLM JSON is ~500 KB).
 - JSON parse in try/except — on any exception, log warning and return False without mutating cache.
 - Atomic write to disk cache only on full success.
@@ -477,7 +477,7 @@ All helpers use parametrized SQL — no string interpolation.
 
 ### 7.1 Modified: `GET /api/threads`
 
-(qwe-qwe's "threads" are what the UI labels as "Sessions" in the Sessions list — same data, different name.)
+(castor's "threads" are what the UI labels as "Sessions" in the Sessions list — same data, different name.)
 
 Add four fields to each row:
 
@@ -669,7 +669,7 @@ Per-model overrides live in the `kv` table directly (key pattern `pricing_overri
 ## 10. Privacy + security
 
 - **No data leaves the machine** as a result of this feature, except the pricing JSON fetch from GitHub (public URL, no user data sent — just a GET).
-- **SSRF guard** on `pricing_url`: reuses the same allow-list as `/api/knowledge/url`. Private / loopback / link-local IPs blocked unless `QWE_ALLOW_PRIVATE_URLS=1`.
+- **SSRF guard** on `pricing_url`: reuses the same allow-list as `/api/knowledge/url`. Private / loopback / link-local IPs blocked unless `CASTOR_ALLOW_PRIVATE_URLS=1`.
 - **No tokens / cost data sent to telemetry** — this stays in local SQLite forever.
 - **`result_preview` cap** (200 chars) prevents inadvertent secret capture from agent replies. The full reply still lives in `messages` table (separate concern).
 - **Pricing cache atomic write** prevents corrupted-cache attacks (interrupted writes don't leave half-files).
@@ -708,7 +708,7 @@ Bump `_CURRENT_CONSENT_VERSION` in `telemetry.py` so opted-in users get a re-con
 - `compute_cost()` returns None if either price unknown.
 - Bundled fallback includes the documented top-10 models.
 - Atomic disk write (write-temp-then-rename) survives mid-write SIGTERM (simulated by patching `os.replace`).
-- SSRF: `pricing_url` set to `http://127.0.0.1` → refused unless `QWE_ALLOW_PRIVATE_URLS=1`.
+- SSRF: `pricing_url` set to `http://127.0.0.1` → refused unless `CASTOR_ALLOW_PRIVATE_URLS=1`.
 - Body size cap: response larger than 5 MB → rejected.
 
 ### 12.2 `tests/test_agent_runs.py` (~25 cases)
@@ -762,7 +762,7 @@ Coverage floor stays at 24% (current value in `pyproject.toml`). Adding ~70 new 
 - CI smoke test: apply on a snapshot DB containing real `routine_runs` data → verify row count matches in `agent_runs`.
 - Migration runner already handles per-file transactions (see `migrations/README.md` and existing `_apply_migrations` logic in `db.py`).
 
-If migration fails on a user's machine: their DB stays at schema_version=7 (pre-008). They get a server startup error pointing to logs. No data loss. They can downgrade qwe-qwe and continue.
+If migration fails on a user's machine: their DB stays at schema_version=7 (pre-008). They get a server startup error pointing to logs. No data loss. They can downgrade castor and continue.
 
 ### 13.2 Backward compatibility
 
@@ -789,7 +789,7 @@ If migration fails on a user's machine: their DB stays at schema_version=7 (pre-
 
 1. **Streaming usage capture timing**: Some providers send `usage` only in the final `[DONE]` chunk. If the connection drops before that chunk arrives, `input_tokens` / `output_tokens` may be zero even though the request was billable on the provider's side. Mitigation: when `status='aborted'`, surface a small "tokens may be incomplete" hint in the UI. Long-term: estimate from content length as a floor.
 
-2. **Provider-prefixed model names**: LiteLLM uses `groq/llama-3.3-70b` but qwe-qwe sometimes reports just `llama-3.3-70b`. We need to ensure model strings line up. Risk: pricing lookup misses, `cost_usd IS NULL`. Mitigation: extend `provider_kind()` lookup to map back to LiteLLM's prefixed names — a small dict in `pricing.py`.
+2. **Provider-prefixed model names**: LiteLLM uses `groq/llama-3.3-70b` but castor sometimes reports just `llama-3.3-70b`. We need to ensure model strings line up. Risk: pricing lookup misses, `cost_usd IS NULL`. Mitigation: extend `provider_kind()` lookup to map back to LiteLLM's prefixed names — a small dict in `pricing.py`.
 
 3. **Custom fine-tuned models**: `ft:gpt-4o-mini:my-org:v1` — LiteLLM has the base model price but not the fine-tuned suffix. Resolution: in `get_price`, if exact match misses, strip `ft:.*:` prefix and retry the base model. Logged as a warning so users know we're using base pricing.
 

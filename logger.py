@@ -1,7 +1,7 @@
-"""Structured logging for qwe-qwe — pure stdlib, no API, no AI.
+"""Structured logging for castor — pure stdlib, no API, no AI.
 
 Logs to:
-  logs/qwe-qwe.log       — all events (INFO+)
+  logs/castor.log       — all events (INFO+)
   logs/errors.log         — errors only (WARNING+)
   console (stderr)        — critical only (won't mess up TUI)
 
@@ -22,10 +22,10 @@ import time
 from pathlib import Path
 
 # Detect pytest at import time — file handlers point at config.LOGS_DIR
-# which is the user's real ~/.qwe-qwe/ by default. Tests that simulate
+# which is the user's real ~/.castor/ by default. Tests that simulate
 # failures (scheduler "network is on fire", preset unsafe-archive, etc.)
 # would otherwise pollute the production errors.log even when a fixture
-# repoints QWE_DATA_DIR to a tempdir (handlers bind once at import).
+# repoints CASTOR_DATA_DIR to a tempdir (handlers bind once at import).
 _IN_PYTEST = "pytest" in sys.modules
 
 # ── Log directory ──
@@ -69,7 +69,7 @@ class StructuredFormatter(logging.Formatter):
 # ── Setup ──
 
 def _setup() -> logging.Logger:
-    root = logging.getLogger("qwe")
+    root = logging.getLogger("castor")
     root.setLevel(logging.DEBUG)
 
     # Prevent duplicate handlers on reimport
@@ -84,7 +84,7 @@ def _setup() -> logging.Logger:
     if not _IN_PYTEST:
         # 1) Main log — everything INFO+
         main_handler = logging.handlers.RotatingFileHandler(
-            LOG_DIR / "qwe-qwe.log",
+            LOG_DIR / "castor.log",
             maxBytes=5 * 1024 * 1024,  # 5MB
             backupCount=3,
             encoding="utf-8",

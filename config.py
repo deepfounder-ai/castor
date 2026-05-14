@@ -1,9 +1,9 @@
-"""qwe-qwe configuration — all settings in one place.
+"""castor configuration — all settings in one place.
 
-Override any setting via environment variables with QWE_ prefix:
-  QWE_LLM_URL, QWE_LLM_MODEL, QWE_LLM_KEY,
-  QWE_QDRANT_MODE, QWE_QDRANT_PATH, QWE_QDRANT_URL,
-  QWE_DB_PATH, QWE_DATA_DIR
+Override any setting via environment variables with CASTOR_ prefix:
+  CASTOR_LLM_URL, CASTOR_LLM_MODEL, CASTOR_LLM_KEY,
+  CASTOR_QDRANT_MODE, CASTOR_QDRANT_PATH, CASTOR_QDRANT_URL,
+  CASTOR_DB_PATH, CASTOR_DATA_DIR
 
 Embeddings are handled by FastEmbed (ONNX, local, no server needed).
 """
@@ -11,26 +11,26 @@ Embeddings are handled by FastEmbed (ONNX, local, no server needed).
 import os
 from pathlib import Path
 
-VERSION = "0.19.0"
+VERSION = "0.22.1"
 _env = os.environ.get
 
 # ── Data directory (all user data lives here, safe from git) ──
-DATA_DIR = Path(_env("QWE_DATA_DIR", str(Path.home() / ".qwe-qwe")))
+DATA_DIR = Path(_env("CASTOR_DATA_DIR", str(Path.home() / ".castor")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # LLM
-LLM_BASE_URL = _env("QWE_LLM_URL", "http://localhost:1234/v1")
-LLM_MODEL = _env("QWE_LLM_MODEL", "qwen/qwen3.5-9b")
-LLM_API_KEY = _env("QWE_LLM_KEY", "lm-studio")
+LLM_BASE_URL = _env("CASTOR_LLM_URL", "http://localhost:1234/v1")
+LLM_MODEL = _env("CASTOR_LLM_MODEL", "qwen/qwen3.5-9b")
+LLM_API_KEY = _env("CASTOR_LLM_KEY", "lm-studio")
 
 # Qdrant (local disk for persistence, no server needed)
-QDRANT_MODE = _env("QWE_QDRANT_MODE", "disk")  # "memory" | "disk" | "server"
-QDRANT_PATH = _env("QWE_QDRANT_PATH", str(DATA_DIR / "memory"))  # for disk mode
-QDRANT_URL = _env("QWE_QDRANT_URL", "http://localhost:6333")  # for server mode
-QDRANT_COLLECTION = _env("QWE_QDRANT_COLLECTION", "qwe_qwe")
+QDRANT_MODE = _env("CASTOR_QDRANT_MODE", "disk")  # "memory" | "disk" | "server"
+QDRANT_PATH = _env("CASTOR_QDRANT_PATH", str(DATA_DIR / "memory"))  # for disk mode
+QDRANT_URL = _env("CASTOR_QDRANT_URL", "http://localhost:6333")  # for server mode
+QDRANT_COLLECTION = _env("CASTOR_QDRANT_COLLECTION", "castor")
 
 # SQLite
-DB_PATH = _env("QWE_DB_PATH", str(DATA_DIR / "qwe_qwe.db"))
+DB_PATH = _env("CASTOR_DB_PATH", str(DATA_DIR / "castor.db"))
 
 # Other data paths
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -50,7 +50,7 @@ PRESETS_DIR.mkdir(exist_ok=True)
 _PROJECT_ROOT = Path(__file__).parent
 
 def _migrate_data():
-    """Move user data from old locations to ~/.qwe-qwe/ (one-time migration).
+    """Move user data from old locations to ~/.castor/ (one-time migration).
 
     Old versions stored data relative to CWD (could be ~, project root, anywhere).
     We search multiple candidate dirs to find the real data.
@@ -70,7 +70,7 @@ def _migrate_data():
             _candidates.append(d)
 
     # Files to migrate — pick the LARGEST (most data) from candidates
-    for fname in ("qwe_qwe.db", "qwe_qwe.db-shm", "qwe_qwe.db-wal",
+    for fname in ("castor.db", "castor.db-shm", "castor.db-wal",
                   "soul.json", "user.md", "heartbeat.md"):
         dst = DATA_DIR / fname
         if dst.exists() and dst.stat().st_size > 0:
@@ -122,8 +122,133 @@ try:
     _migrate_data()
 except Exception as e:
     import sys
-    print(f"⚠️ Data migration failed: {e}", file=sys.stderr)
+    print(f"Warning: data migration failed: {e}", file=sys.stderr)
     # Don't block startup — user can still use the app
+
+
+def _migrate_from_qwe_qwe():
+    """One-time migration from ~/.qwe-qwe/ (old project name) to ~/.castor/.
+
+    Handles the project rename: copies the database, Qdrant vector collections,
+    and user data directories, then updates Qdrant's meta.json so the renamed
+    collections are recognised on first startup.
+    """
+    import shutil, json
+
+    marker = DATA_DIR / ".migrated_from_qwe_qwe"
+    if marker.exists():
+        return
+
+    old_dir = Path.home() / ".qwe-qwe"
+    if not (old_dir / "qwe_qwe.db").exists():
+        # Nothing to migrate — write marker so we don't check every boot
+        marker.write_text("no source\n")
+        return
+
+    moved: list[str] = []
+
+    # 1. SQLite database -------------------------------------------------
+    old_db = old_dir / "qwe_qwe.db"
+    new_db = DATA_DIR / "castor.db"
+    if not new_db.exists() or new_db.stat().st_size < old_db.stat().st_size:
+        shutil.copy2(str(old_db), str(new_db))
+        for ext in ("-shm", "-wal"):
+            src = old_dir / f"qwe_qwe.db{ext}"
+            if src.exists():
+                shutil.copy2(str(src), str(DATA_DIR / f"castor.db{ext}"))
+        moved.append("castor.db")
+
+    # 2. Qdrant vector collections ---------------------------------------
+    old_mem = old_dir / "memory"
+    new_mem = DATA_DIR / "memory"
+    new_mem.mkdir(exist_ok=True)
+    coll_dir = new_mem / "collection"
+    coll_dir.mkdir(exist_ok=True)
+
+    for old_name, new_name in [("qwe_qwe", "castor"), ("qwe_rag", "castor_rag")]:
+        old_storage = old_mem / "collection" / old_name / "storage.sqlite"
+        new_coll = coll_dir / new_name
+        new_storage = new_coll / "storage.sqlite"
+        if old_storage.exists():
+            new_coll.mkdir(exist_ok=True)
+            if not new_storage.exists() or new_storage.stat().st_size < old_storage.stat().st_size:
+                shutil.copy2(str(old_storage), str(new_storage))
+                moved.append(f"qdrant/{new_name}")
+
+    # 3. Qdrant meta.json — register both collections -------------------
+    _COLL_SCHEMA: dict = {
+        "vectors": {"dense": {"size": 384, "distance": "Cosine", "hnsw_config": None,
+                               "quantization_config": None, "on_disk": None,
+                               "datatype": "float16", "multivector_config": None}},
+        "shard_number": None, "sharding_method": None, "replication_factor": None,
+        "write_consistency_factor": None, "on_disk_payload": None,
+        "hnsw_config": None, "wal_config": None, "optimizers_config": None,
+        "quantization_config": None,
+        "sparse_vectors": {"sparse": {"index": None, "modifier": "idf"}},
+        "strict_mode_config": None, "metadata": None,
+    }
+    meta_path = new_mem / "meta.json"
+    try:
+        meta: dict = json.loads(meta_path.read_text()) if meta_path.exists() else {"collections": {}, "aliases": {}}
+        changed = False
+        for name in ("castor", "castor_rag"):
+            if name not in meta.get("collections", {}):
+                meta.setdefault("collections", {})[name] = _COLL_SCHEMA.copy()
+                changed = True
+        if changed:
+            meta_path.write_text(json.dumps(meta))
+            moved.append("memory/meta.json")
+    except Exception:
+        pass
+
+    # 4. User data directories ------------------------------------------
+    # Windows reserved device names cannot be created as files — skip them.
+    _WIN_RESERVED = {"con", "prn", "aux", "nul",
+                     *{f"com{i}" for i in range(1, 10)},
+                     *{f"lpt{i}" for i in range(1, 10)}}
+
+    def _ignore_reserved(dir_, names):
+        return {n for n in names if n.lower().rstrip(".") in _WIN_RESERVED}
+
+    for src_name, dst_path in [
+        ("uploads", DATA_DIR / "uploads"),
+        ("wiki", DATA_DIR / "wiki"),
+        ("presets", DATA_DIR / "presets"),
+        ("workspace", DATA_DIR / "workspace"),
+    ]:
+        src = old_dir / src_name
+        if src.is_dir():
+            try:
+                shutil.copytree(str(src), str(dst_path),
+                                dirs_exist_ok=True, ignore=_ignore_reserved)
+                moved.append(f"{src_name}/")
+            except Exception:
+                moved.append(f"{src_name}/ (partial)")
+
+    # 5. User-created skills (skip builtins) ----------------------------
+    _BUILTIN_SKILLS = {"__init__.py", "skill_creator.py", "canvas.py",
+                       "skill_import.py", "serial_port.py"}
+    old_skills = old_dir / "skills"
+    if old_skills.is_dir():
+        for f in old_skills.glob("*.py"):
+            if f.name not in _BUILTIN_SKILLS and not f.name.startswith("_"):
+                dst = USER_SKILLS_DIR / f.name
+                if not dst.exists():
+                    shutil.copy2(str(f), str(dst))
+                    moved.append(f"skills/{f.name}")
+
+    marker.write_text(f"migrated: {', '.join(moved) or 'nothing'}\n")
+
+
+try:
+    _migrate_from_qwe_qwe()
+except Exception as e:
+    import sys
+    # Always write marker so we don't retry on every boot
+    _marker = Path.home() / ".castor" / ".migrated_from_qwe_qwe"
+    if not _marker.exists():
+        _marker.write_text(f"error: {e}\n")
+    print(f"Warning: qwe-qwe migration failed: {e}", file=sys.stderr)
 
 
 # Timezone offset from UTC (hours). Stored in DB, set via /soul or ask user.
@@ -167,7 +292,7 @@ EDITABLE_SETTINGS = {
     "ollama_num_ctx":       ("setting:ollama_num_ctx",        int, 16384,  "Ollama context window (tokens)", 2048, 131072),
     "model_context":        ("setting:model_context",         int, 0,      "Model context window in tokens (0 = auto-detect from provider, else override)", 0, 2000000),
     "yt_cookies_from_browser": ("setting:yt_cookies_from_browser", str, "", "Use browser cookies for YouTube to bypass rate limits. Values: chrome, firefox, edge, safari, brave, chromium, opera, vivaldi. Empty = anonymous (rate-limited after a few videos).", "", ""),
-    "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. qwe-qwe is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
+    "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. castor is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
     # ── Privacy / Telemetry ──
     # All four default to "off / empty" — no telemetry leaves the machine
     # without explicit opt-in via Settings → Privacy or first-run prompt.
@@ -219,6 +344,11 @@ EDITABLE_SETTINGS = {
     # ── Cost Tracking ──
     "pricing_url":          ("setting:pricing_url",           str, "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json", "URL for online pricing JSON (LiteLLM format). Override for air-gapped mirrors.", "", ""),
     "pricing_auto_update":  ("setting:pricing_auto_update",   bool, True, "Refresh pricing every 24h in background.", None, None),
+    # ── Auto-Resume ──
+    "resume_ttl_web_sec":       ("setting:resume_ttl_web_sec",       int, 604800, "How long (sec) a Web abort stays resumable. Default 7 days.", 60, 31536000),
+    "resume_ttl_telegram_sec":  ("setting:resume_ttl_telegram_sec",  int, 86400,  "How long (sec) a Telegram abort stays resumable. Default 24h.", 60, 31536000),
+    "resume_ttl_routine_sec":   ("setting:resume_ttl_routine_sec",   int, 300,    "Window (sec) for auto-firing aborted routines on server start. Default 5 min.", 0, 86400),
+    "resume_routine_auto":      ("setting:resume_routine_auto",      bool, True,   "Enable/disable routine auto-resume entirely.", None, None),
 }
 
 

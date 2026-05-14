@@ -2,7 +2,7 @@
 
 skills.sh and the Anthropic-skills repo (and forks) publish skills as
 directories containing a SKILL.md (YAML frontmatter + Markdown body)
-plus optional scripts/, references/, and assets/. qwe-qwe skills are
+plus optional scripts/, references/, and assets/. castor skills are
 single Python `.py` files with TOOLS + execute(). This module bridges
 the two by:
 
@@ -16,7 +16,7 @@ the two by:
    `license`, `compatibility`, `metadata` (per agentskills.io spec).
 
 3. **Generating** a thin adapter `.py` at
-   `~/.qwe-qwe/skills/<name>.py` whose:
+   `~/.castor/skills/<name>.py` whose:
      - DESCRIPTION = frontmatter description
      - INSTRUCTION = a short intro pointing at the `<name>_help` tool
        (full SKILL.md body is too big to inject every turn — token
@@ -25,7 +25,7 @@ the two by:
      - execute() dispatches it
 
 4. **Staging** any additional scripts / references the upstream skill
-   ships into `~/.qwe-qwe/skills_imported/<name>/` so the agent's
+   ships into `~/.castor/skills_imported/<name>/` so the agent's
    regular read_file / shell tools can use them.
 
 5. **Recording** the import in the `skill_imports` SQLite table so
@@ -35,7 +35,7 @@ the two by:
 ## Safety
 
 - SSRF: URL must use http/https, must NOT resolve to private /
-  loopback / link-local IPs (override with QWE_ALLOW_PRIVATE_URLS=1)
+  loopback / link-local IPs (override with CASTOR_ALLOW_PRIVATE_URLS=1)
 - Domain allowlist: skills.sh and github.com/raw.githubusercontent.com
 - Name validation: matches the spec's `[a-z0-9-]{1,64}` constraint
 - Collision protection: refuses to overwrite built-in skills,
@@ -57,12 +57,20 @@ import json
 import os
 import re
 import socket
+import ssl
 import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+# Use certifi's CA bundle when available (needed on macOS python.org builds).
+try:
+    import certifi as _certifi
+    _SSL_CTX = ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 
 import yaml
 
@@ -86,7 +94,7 @@ _HTTP_TIMEOUT = 15.0
 _SKILL_MD_CAP = 100 * 1024            # 100 KB
 _TOTAL_FETCH_CAP = 1024 * 1024        # 1 MB
 _MAX_FILES_PER_SKILL = 50
-_FETCH_USER_AGENT = "qwe-qwe-skill-importer"
+_FETCH_USER_AGENT = "castor-skill-importer"
 
 
 class SkillImportError(Exception):
@@ -129,7 +137,7 @@ def _check_url_safety(url: str) -> None:
             status=403)
     # SSRF guard (skip if env var set — same opt-out as
     # /api/knowledge/url for self-hosted GitHub Enterprise etc.)
-    if os.environ.get("QWE_ALLOW_PRIVATE_URLS", "").strip() == "1":
+    if os.environ.get("CASTOR_ALLOW_PRIVATE_URLS", "").strip() == "1":
         return
     try:
         infos = socket.getaddrinfo(host, None)
@@ -148,7 +156,7 @@ def _check_url_safety(url: str) -> None:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified:
             raise SkillImportError(
                 f"URL resolves to a private address ({addr}). "
-                "Set QWE_ALLOW_PRIVATE_URLS=1 to override.",
+                "Set CASTOR_ALLOW_PRIVATE_URLS=1 to override.",
                 code="private_ip",
                 status=403)
 
@@ -177,7 +185,10 @@ class _SafetyCheckingRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_opener = urllib.request.build_opener(_SafetyCheckingRedirectHandler())
+_opener = urllib.request.build_opener(
+    _SafetyCheckingRedirectHandler(),
+    urllib.request.HTTPSHandler(context=_SSL_CTX),
+)
 
 
 def _fetch_url(url: str, max_bytes: int) -> bytes:
@@ -410,7 +421,7 @@ def _user_skills_dir() -> Path:
 def _imported_assets_dir() -> Path:
     """Where we stage the upstream skill's scripts/references/assets.
     Separate from the user skills dir because the agent's read_file
-    tool reaches into this directory, but qwe-qwe's skill loader
+    tool reaches into this directory, but castor's skill loader
     only scans for `.py` files in skills/."""
     return Path(config.DATA_DIR) / "skills_imported"
 
@@ -439,7 +450,7 @@ def _check_collision(name: str, overwrite: bool) -> None:
     overwrite=True."""
     if name in _BUILTIN_SKILL_NAMES:
         raise SkillImportError(
-            f"'{name}' collides with a built-in qwe-qwe skill. "
+            f"'{name}' collides with a built-in castor skill. "
             "Built-in skills are NOT overridable via import — "
             "rename the imported skill or fork it under a different "
             "directory name in the upstream repo.",
@@ -516,6 +527,9 @@ def import_skill(url: str, overwrite: bool = False,
     skill_md_md = parsed["body"]
 
     name = str(fm.get("name", "")).strip().lower()
+    # Normalise: any run of non-alphanumeric chars → single hyphen, trim edges.
+    # Allows importing skills whose SKILL.md uses spaces or underscores in name.
+    name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
     _check_name(name)
     _check_collision(name, overwrite=overwrite)
 
@@ -753,8 +767,17 @@ def delete_import(name: str) -> bool:
     if the user replaced it with hand-written content, their file
     survives (DB row + staged assets are still removed).
     """
+    # Validate name before building any path — prevents path traversal
+    if not _NAME_RE.match(name) or len(name) > _MAX_NAME_LEN:
+        return False
     py = _user_skills_dir() / f"{name}.py"
     asset_dir = _imported_assets_dir() / name
+    # Belt-and-suspenders: confirm resolved paths stay within expected dirs
+    try:
+        py.resolve().relative_to(_user_skills_dir().resolve())
+        asset_dir.resolve().relative_to(_imported_assets_dir().resolve())
+    except ValueError:
+        return False
     deleted_any = False
 
     try:
@@ -793,7 +816,7 @@ _IMPORTER_SENTINEL = "Auto-generated by skills/skill_import.py"
 def _render_adapter_py(name: str, description: str, skill_md_body: str,
                        asset_dir_abs: str, source_url: str,
                        license_field: str | None) -> str:
-    """Generate the thin Python adapter that qwe-qwe's skill loader
+    """Generate the thin Python adapter that castor's skill loader
     will pick up. The body of SKILL.md becomes the return value of
     a `<name>_help` tool — the agent calls this to fetch the full
     instructions on demand. INSTRUCTION is a short pointer to that
@@ -858,7 +881,7 @@ def _render_adapter_py(name: str, description: str, skill_md_body: str,
         f"\n"
         f"# Absolute path to the directory where this skill's upstream\n"
         f"# scripts/references/assets are staged. The agent reads them\n"
-        f"# via the regular read_file tool — qwe-qwe skills don't have\n"
+        f"# via the regular read_file tool — castor skills don't have\n"
         f"# a sub-runtime for executing external scripts directly.\n"
         f"ASSETS_DIR = {repr(asset_dir_abs)}\n"
         f"\n"

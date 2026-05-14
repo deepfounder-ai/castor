@@ -1,6 +1,6 @@
 # Privacy & Telemetry
 
-qwe-qwe is **self-hosted**. Your chat history, memory, soul / personality, files, secrets, and LLM credentials all live on your machine and never leave it without your explicit action.
+castor is **self-hosted**. Your chat history, memory, soul / personality, files, secrets, and LLM credentials all live on your machine and never leave it without your explicit action.
 
 This document covers the **one** optional exception: anonymous usage telemetry, which is **off by default** and only activates after you explicitly opt in.
 
@@ -8,19 +8,19 @@ This document covers the **one** optional exception: anonymous usage telemetry, 
 
 These are never sent off-machine, regardless of any setting:
 
-- **Chat content** — every message you type, every assistant reply, every thinking block. Lives in `~/.qwe-qwe/qwe_qwe.db` only.
-- **Memory** — semantic memory entries (`tag=user`, `fact`, `experience`, `wiki`, `entity`), atomic facts saved via the 📖 button, knowledge-base file content. Lives in `~/.qwe-qwe/memory/` (Qdrant) and `~/.qwe-qwe/memories/atoms/` (markdown).
+- **Chat content** — every message you type, every assistant reply, every thinking block. Lives in `~/.castor/castor.db` only.
+- **Memory** — semantic memory entries (`tag=user`, `fact`, `experience`, `wiki`, `entity`), atomic facts saved via the 📖 button, knowledge-base file content. Lives in `~/.castor/memory/` (Qdrant) and `~/.castor/memories/atoms/` (markdown).
 - **Soul / personality** — name, language, traits (built-in + custom), low/high descriptions. Lives in the `kv` table.
 - **Threads / folders / preset state** — names, organization, custom data.
 - **Files** — anything you've drag-dropped, indexed, or attached.
-- **Secrets** — API keys, tokens, anything in the encrypted vault. Lives in `~/.qwe-qwe/vault.enc`.
-- **LLM credentials** — `QWE_LLM_URL`, `QWE_LLM_KEY`, provider URLs, exact model names.
+- **Secrets** — API keys, tokens, anything in the encrypted vault. Lives in `~/.castor/vault.enc`.
+- **LLM credentials** — `CASTOR_LLM_URL`, `CASTOR_LLM_KEY`, provider URLs, exact model names.
 - **Telegram bot token, conversation history, group lists.**
 - **Identity** — IP address, hostname, username, machine id.
 
 ## Telemetry — opt-in only
 
-If you opt in (Settings → Privacy → Telemetry, OR by answering "yes" to the first-run prompt), qwe-qwe will collect a small set of operational metrics that help the project understand how the agent is being used and what to fix.
+If you opt in (Settings → Privacy → Telemetry, OR by answering "yes" to the first-run prompt), castor will collect a small set of operational metrics that help the project understand how the agent is being used and what to fix.
 
 ### What gets collected
 
@@ -28,11 +28,11 @@ Every event is declared in [`telemetry.py::ALLOWED_EVENTS`](../telemetry.py) —
 
 #### `session_start`
 
-Fires once per qwe-qwe process start.
+Fires once per castor process start.
 
 | Field | Example | Why |
 |---|---|---|
-| `qwe_version` | `"0.18.4"` | Distribute fixes across the version skew. |
+| `castor_version` | `"0.18.4"` | Distribute fixes across the version skew. |
 | `python_version` | `"3.12.10"` | Catch Python-version-specific bugs early. |
 | `os` | `"linux"` / `"macos"` / `"windows"` | Same. |
 | `provider_kind` | `"lmstudio"` / `"openai"` / `"azure"` / etc | Which providers are actually used. **Never the URL** — could be an internal corporate endpoint. |
@@ -99,7 +99,7 @@ Fires the first time per session that a major feature is exercised. Lets us see 
 Every event is wrapped with:
 
 - `anonymous_id` — random UUID generated once at opt-in, persisted in your local `kv` table. Not derived from any PII. You can rotate it any time without disabling telemetry (Settings → Privacy → Reset anonymous ID).
-- `session_id` — random UUID regenerated each time qwe-qwe starts. Lets the receiver group events from one run without remembering anything across runs.
+- `session_id` — random UUID regenerated each time castor starts. Lets the receiver group events from one run without remembering anything across runs.
 - `ts` — UNIX timestamp.
 
 ### What's deliberately NOT collected
@@ -121,19 +121,19 @@ The whitelist in `telemetry.py::ALLOWED_EVENTS` is **type-strict** — every pro
 
 These are not subject to the opt-in toggle because no user data is sent — but for full transparency:
 
-- **Blog feed** — when you open the Presets view, the qwe-qwe server fetches `https://deepfounder.ai/tag/qwe-qwe/rss/` to render the "From the blog" strip with project announcements. Cached server-side for 30 minutes, request body is empty, no `anonymous_id` or telemetry data is attached. The only signal `deepfounder.ai` receives is "an install asked for the feed" (your IP + a `qwe-qwe/<version>` User-Agent). Disable by simply not visiting Presets; we may add an explicit toggle if users ask.
+- **Blog feed** — when you open the Presets view, the castor server fetches `https://deepfounder.ai/tag/castor/rss/` to render the "From the blog" strip with project announcements. Cached server-side for 30 minutes, request body is empty, no `anonymous_id` or telemetry data is attached. The only signal `deepfounder.ai` receives is "an install asked for the feed" (your IP + a `castor/<version>` User-Agent). Disable by simply not visiting Presets; we may add an explicit toggle if users ask.
 
 ### Where the data goes
 
 Telemetry is **off by default** — you must explicitly opt in via the first-run prompt or Settings → Privacy → Telemetry.
 
-If you opt in, events go to the project-operated Countly instance at **`https://qwelytics.deepfounder.ai/i`**, run by deepfounder.ai (the qwe-qwe project maintainer). It's a self-hosted Countly Community Edition — same code you could run yourself, same privacy guarantees on the wire, same data inventory documented in this file.
+If you opt in, events go to the project-operated Countly instance at **`https://qwelytics.deepfounder.ai/i`**, run by deepfounder.ai (the Castor project maintainer). It's a self-hosted Countly Community Edition — same code you could run yourself, same privacy guarantees on the wire, same data inventory documented in this file.
 
 The end-user UI offers exactly **two choices**: enable or disable. The destination is fixed — the project decides where its own telemetry lands, you decide whether to participate. This is by design: a buffet of "alternative endpoints" surfaces in the UI would dilute the privacy signal and complicate the trust model.
 
 When the project changes either the default destination or the schema of `ALLOWED_EVENTS`, the **`telemetry_consent_version`** bumps. Users who opted in under the old policy see a "policy updated, please re-confirm" banner in Settings → Privacy before any new event is sent — you always see the new policy before it takes effect.
 
-**For operators / forks**: if you're packaging qwe-qwe for a different deployment and want telemetry to go elsewhere (your own Countly, a custom collector, or nowhere), edit the project defaults in `config.py`:
+**For operators / forks**: if you're packaging castor for a different deployment and want telemetry to go elsewhere (your own Countly, a custom collector, or nowhere), edit the project defaults in `config.py`:
 
 - `telemetry_endpoint` — POST destination URL
 - `telemetry_format` — `"countly"` or `"raw"`
@@ -141,11 +141,11 @@ When the project changes either the default destination or the schema of `ALLOWE
 
 The `format=raw` path POSTs `{"events": [...]}` to whatever URL you set — useful for custom HTTP collectors. The `format=countly` path is the default Countly transformer with `device_id` = anonymous_id (cross-day per-user tracking works).
 
-These are project-level decisions, not user-level — there's no UI surface to override them from inside qwe-qwe itself. Hidden in plain code, easy to fork.
+These are project-level decisions, not user-level — there's no UI surface to override them from inside castor itself. Hidden in plain code, easy to fork.
 
 #### What Countly receives on the wire
 
-[Countly](https://count.ly) Community Edition is open-source, self-hostable product analytics. The qwe-qwe project runs an instance at `qwelytics.deepfounder.ai` for opt-in telemetry. End-users don't configure anything — the project's defaults are baked in.
+[Countly](https://count.ly) Community Edition is open-source, self-hostable product analytics. The Castor project runs an instance at `qwelytics.deepfounder.ai` for opt-in telemetry. End-users don't configure anything — the project's defaults are baked in.
 
 Per opted-in user, Countly receives:
 - App key (the project's public Countly app key — not a secret, equivalent to a Sentry/PostHog public DSN)
@@ -156,7 +156,7 @@ Per opted-in user, Countly receives:
   - `count` = 1
   - `dur` (seconds) — for events with `duration_ms` prop, lets Countly compute event-duration averages natively
   - `segmentation` = props as flat string/number/bool (lists become CSV strings)
-- User-Agent: `qwe-qwe/<version>`
+- User-Agent: `castor/<version>`
 
 The `device_id` is stable across days **by your explicit opt-in consent** — that's what makes retention / funnel metrics work. Reset rotates it, Forget Me wipes it.
 
@@ -186,4 +186,4 @@ The `telemetry_consent_version` setting tracks which version of this policy you'
 
 ## Questions or concerns
 
-Open an issue at [github.com/deepfounder-ai/qwe-qwe/issues](https://github.com/deepfounder-ai/qwe-qwe/issues) tagged `privacy`. Privacy regressions or surprises are the highest-priority bug class in this project.
+Open an issue at [github.com/deepfounder-ai/castor/issues](https://github.com/deepfounder-ai/castor/issues) tagged `privacy`. Privacy regressions or surprises are the highest-priority bug class in this project.

@@ -3,7 +3,7 @@
 Phase 1 of the Living Memory architecture (see ``docs/adr/0001-living-memory.md``).
 
 Every memory that Qdrant holds has a parallel ``.md`` file under
-``~/.qwe-qwe/memories/atoms/<shard>/mem_<id>.md`` with YAML frontmatter.
+``~/.castor/memories/atoms/<shard>/mem_<id>.md`` with YAML frontmatter.
 On this layer, markdown is the **source of truth**; Qdrant is a derived
 search index rebuildable from the files.
 
@@ -65,8 +65,14 @@ def _shard_for(point_id: str) -> str:
 
 
 def path_for(point_id: str) -> Path:
-    """Full .md path for a memory id (does NOT check existence)."""
-    return _atoms_dir() / _shard_for(point_id) / f"mem_{point_id}.md"
+    """Full .md path for a memory id (does NOT check existence).
+
+    Sanitises ``point_id`` so it can never traverse outside the atoms
+    directory — only alphanumerics, hyphens, and underscores are kept
+    (UUID4 ids never contain anything else).
+    """
+    safe_id = re.sub(r"[^a-zA-Z0-9\-]", "_", point_id)[:128]
+    return _atoms_dir() / _shard_for(safe_id) / f"mem_{safe_id}.md"
 
 
 # ── Frontmatter format ────────────────────────────────────────────────
@@ -156,7 +162,7 @@ def write(point_id: str, text: str, tag: str = "general",
         # accidental overwrite of id/type/tag/created/updated.
         frontmatter["meta"] = {**(existing_meta.get("meta") or {}), **meta}
 
-    p.write_text(_serialize(frontmatter, text), encoding="utf-8")
+    p.write_text(_serialize(frontmatter, text), encoding="utf-8")  # lgtm[py/clear-text-storage-sensitive-data] — storing to local memory store is by design; secrets are scrubbed upstream by memory.py::_scrub_secrets
     return p
 
 

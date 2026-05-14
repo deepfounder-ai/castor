@@ -206,7 +206,7 @@ def test_migration_008_copies_legacy_routine_runs(qwe_temp_data_dir):
     import glob
     # Build a DB at schema_version=7 with routine_runs populated, then
     # let the migration runner fast-forward to 8.
-    db_path = qwe_temp_data_dir / "qwe_qwe.db"
+    db_path = qwe_temp_data_dir / "castor.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(open("migrations/001_initial.sql").read())
     for n in range(2, 8):
@@ -222,3 +222,39 @@ def test_migration_008_copies_legacy_routine_runs(qwe_temp_data_dir):
     conn = db._get_conn()
     rows = conn.execute("SELECT cron_id, thread_id, status, source FROM agent_runs").fetchall()
     assert (1, 't1', 'ok', 'routine') in rows
+
+
+# ---------------------------------------------------------------------------
+# Migration 009 — resumed_from_run_id + dismissed_at
+# ---------------------------------------------------------------------------
+
+def test_migration_009_adds_resume_columns(qwe_temp_data_dir):
+    import db
+    db._migrated = False
+    conn = db._get_conn()
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(agent_runs)").fetchall()}
+    assert "resumed_from_run_id" in cols
+    assert "dismissed_at" in cols
+
+
+def test_migration_009_adds_dismissed_at_index(qwe_temp_data_dir):
+    import db
+    db._migrated = False
+    conn = db._get_conn()
+    indexes = {r[1] for r in conn.execute(
+        "SELECT * FROM sqlite_master WHERE type='index' AND tbl_name='agent_runs'"
+    ).fetchall()}
+    assert "idx_agent_runs_dismissed_at" in indexes
+
+
+# ---------------------------------------------------------------------------
+# Migration 010 — routine budget caps
+# ---------------------------------------------------------------------------
+
+def test_migration_010_adds_budget_columns(qwe_temp_data_dir):
+    import db
+    db._migrated = False
+    conn = db._get_conn()
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()}
+    assert "budget_usd_cap" in cols
+    assert "budget_period_sec" in cols

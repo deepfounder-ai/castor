@@ -49,7 +49,7 @@ knowledge:
     title: FAQ
     tags: [faq]
 compatibility:
-  qwe_qwe_version: ">=0.12.0"
+  qwe_castor_version: ">=0.12.0"
 ```
 
 **knowledge/faq.md:**
@@ -89,7 +89,7 @@ license:
   type: free
 description:
   short: "Reviews code for bugs, security issues, and best practices"
-  long: "Turns qwe-qwe into a senior code reviewer."
+  long: "Turns castor into a senior code reviewer."
   language: en
 soul:
   agent_name: Reviewer
@@ -108,7 +108,7 @@ system_prompt:
 skills:
   required_builtin: [browser]
 compatibility:
-  qwe_qwe_version: ">=0.12.0"
+  qwe_castor_version: ">=0.12.0"
   models:
     recommended: [qwen2.5:14b]
     minimum_params_b: 7
@@ -184,12 +184,12 @@ Same preset can work in any language — just change `soul.language` and write `
 
 ```yaml
 soul:
-  agent_name: Ника
+  agent_name: Nika
   language: ru
   # ...
 
 description:
-  short: "Ассистент поддержки на русском языке"
+  short: "Russian-language support assistant"
   language: ru
 ```
 

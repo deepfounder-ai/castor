@@ -57,7 +57,7 @@ community in public spaces.
 Instances of abusive, harassing, or otherwise unacceptable behaviour may be
 reported to the project maintainers by opening a private security advisory
 on GitHub (Security tab → "Report a vulnerability" — it works for conduct
-reports too) or by direct message to [@kir_altman](https://github.com/kir_altman).
+reports too).
 
 All complaints will be reviewed and investigated promptly and fairly. All
 community members are obligated to respect the privacy and security of the

@@ -1,3 +1,38 @@
+## v0.22.1 — Migration reliability fix
+
+- **fix(db)**: SQLite migration runner now executes statements one-by-one instead of via `executescript()`. This makes `ALTER TABLE ADD COLUMN` migrations idempotent: if `scheduler._ensure_table()` or any other helper pre-creates a column before a migration runs, the "duplicate column name" error is silently skipped rather than aborting the entire migration. Eliminates a test-ordering flakiness introduced after the v0.20 / v0.21 merge.
+- Internal: `_iter_sql_statements()` strips `--` line comments *before* splitting on `;`, so in-comment semicolons (e.g. `-- doesn't rewrite rows; each …`) no longer produce spurious SQL fragments.
+- No schema changes, no API changes, no migration files modified.
+
+---
+
+## v0.22.0 — Auto-resume after interrupt
+
+- Every abort (WS disconnect, Stop button, server crash) is now recoverable.
+- Web UI shows a banner on reconnect: "Previous turn was interrupted — Resume / Dismiss". The agent picks up from where it left off, not from scratch.
+- Telegram exposes `/resume` for the same flow in chat.
+- Routines auto-resume if the abort was within 5 minutes (configurable).
+- CLI Ctrl+C remains an intentional stop — no resume.
+- New per-source TTL settings in Settings → Cost → Auto-resume: Web (7 days), Telegram (24h), Routines (5 min).
+- Migration 009 adds `resumed_from_run_id` + `dismissed_at` to `agent_runs`.
+- Analytics chain resume runs back to their originals.
+
+---
+
+## v0.21.0 — Per-routine budget caps
+
+- Set a USD spending cap per routine, rolling over a configurable window.
+- When the cap is reached, the next scheduled fire is SKIPPED with
+  `status='skipped'`, `error='budget_exceeded'` in agent_runs — history
+  shows what happened. The routine resumes once spend drops below the cap.
+- UI: Routines page shows a budget chip per routine (green / orange /
+  red based on % of cap). Click to set/clear/edit cap + period.
+- API: `GET /api/routines/{id}/budget` and `POST /api/routines/{id}/budget`.
+- Migration 010 adds `budget_usd_cap` + `budget_period_sec` to
+  `scheduled_tasks`. Pre-existing routines have no cap (default).
+
+---
+
 ## v0.19.0 — Cost tracking & per-session analytics
 
 - New `agent_runs` table replaces `routine_runs`: one row per LLM call site
@@ -97,7 +132,7 @@ Full postMessage protocol, sandbox limits, and a reference HTML template live in
 
 ## 📦 Skill import — install community skills from skills.sh / GitHub
 
-Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification) — the same format Claude Code / Claude.ai use — now works in qwe-qwe via a thin adapter layer. Browse [skills.sh](https://skills.sh) or any compatible GitHub repo, paste the URL into Settings → Tools & skills → **Import skill**, click Import.
+Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification) — the same format Claude Code / Claude.ai use — now works in castor via a thin adapter layer. Browse [skills.sh](https://skills.sh) or any compatible GitHub repo, paste the URL into Settings → Tools & skills → **Import skill**, click Import.
 
 ### Recognised URL shapes
 
@@ -107,7 +142,7 @@ Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification)
 
 ### How the bridge works
 
-skills.sh skills are **markdown instructions for an LLM** + optional executable scripts. qwe-qwe skills are **single Python modules with `TOOLS` + `execute()`**. The importer generates a thin adapter `.py` at `~/.qwe-qwe/skills/<name>.py` that exposes one tool — `<name>_help` — returning the full SKILL.md body. Scripts / references / assets land at `~/.qwe-qwe/skills_imported/<name>/`. The agent reads them via the regular `read_file` / `shell` tools.
+skills.sh skills are **markdown instructions for an LLM** + optional executable scripts. castor skills are **single Python modules with `TOOLS` + `execute()`**. The importer generates a thin adapter `.py` at `~/.castor/skills/<name>.py` that exposes one tool — `<name>_help` — returning the full SKILL.md body. Scripts / references / assets land at `~/.castor/skills_imported/<name>/`. The agent reads them via the regular `read_file` / `shell` tools.
 
 Best for **knowledge-heavy procedures** (PDF manipulation patterns, document conversion recipes, etc.). Pure-code wrappers around a specific API are still better written natively via `create_skill`.
 
@@ -121,7 +156,7 @@ Best for **knowledge-heavy procedures** (PDF manipulation patterns, document con
 | **Built-in collision** | `browser`, `canvas`, `skill_creator`, etc. **cannot be replaced** even with `overwrite: true`. Typosquatting defense. |
 | **License surfacing** | Word-anchored SPDX-ish regex + denylist of non-OSS riders (Commons Clause / BUSL / SSPL / Elastic / "Complete terms in LICENSE.txt"). Non-OSS licenses return HTTP **451 `license_confirm_required`** — the UI shows a confirmation panel with the license text before installing. |
 | **Size caps** | SKILL.md ≤100 KB, total fetch ≤1 MB, ≤50 files, binaries / images filtered out. |
-| **Atomic write** | Adapter writes to a tempfile, runs `skills.validate_skill` on it, **then** `os.replace` into final position. A broken renderer can never leave a half-written `.py` in `~/.qwe-qwe/skills/`. |
+| **Atomic write** | Adapter writes to a tempfile, runs `skills.validate_skill` on it, **then** `os.replace` into final position. A broken renderer can never leave a half-written `.py` in `~/.castor/skills/`. |
 | **Sentinel-protected delete** | `delete_import` checks for the auto-generated sentinel before unlinking. If you replaced an imported skill's `.py` with hand-written code, your file survives. |
 | **Audit trail** | Every install recorded in the `skill_imports` table — source URL, SHA-256 hash, license, timestamp. Query via `GET /api/skills/imports`. |
 
@@ -157,7 +192,7 @@ The user-created and imported skills appear in their own categories so you can t
 
 - **`fix(canvas)` — cross-thread leak + tool confusion.** The model couldn't "read forms back" because `_pending_canvas_renders` was a module global keyed by request_id only — concurrent threads would step on each other. Now bucketed by thread_id.
 
-- **`fix(canvas)` — stale server message.** If you reload qwe-qwe after upgrading the server, the JS knows about canvas tools but the server doesn't have the endpoint yet. We now show a clear "restart qwe-qwe" toast instead of a confusing 404.
+- **`fix(canvas)` — stale server message.** If you reload castor after upgrading the server, the JS knows about canvas tools but the server doesn't have the endpoint yet. We now show a clear "restart castor" toast instead of a confusing 404.
 
 ---
 
@@ -185,4 +220,4 @@ Two new migrations apply automatically on first boot. No config changes needed. 
 
 ## 🙏 Inspirations
 
-Canvas takes obvious inspiration from Claude.ai's Artifacts — but the sandboxed-iframe-only approach matters more here, since qwe-qwe runs on your own machine and Anthropic doesn't sit between the LLM and your filesystem. Skill import works because Anthropic published the [agentskills.io spec](https://agentskills.io/specification) as a portable format — you can drop the same `SKILL.md` into Claude Code, Claude.ai, and qwe-qwe and it works in all three. The [skills.sh](https://skills.sh) catalog made discovery trivial.
+Canvas takes obvious inspiration from Claude.ai's Artifacts — but the sandboxed-iframe-only approach matters more here, since castor runs on your own machine and Anthropic doesn't sit between the LLM and your filesystem. Skill import works because Anthropic published the [agentskills.io spec](https://agentskills.io/specification) as a portable format — you can drop the same `SKILL.md` into Claude Code, Claude.ai, and castor and it works in all three. The [skills.sh](https://skills.sh) catalog made discovery trivial.

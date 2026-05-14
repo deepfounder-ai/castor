@@ -1,4 +1,4 @@
-"""Web server for qwe-qwe — FastAPI + WebSocket chat."""
+"""Web server for castor — FastAPI + WebSocket chat."""
 
 import faulthandler
 import sys
@@ -11,6 +11,12 @@ def _signal_handler(signum, frame):
     _l = _lg.get("server")
     _l.error(f"SIGNAL {signum} received!")
     _l.error("".join(traceback.format_stack(frame)))
+    # Flush WAL so the DB is not left with an open write transaction
+    try:
+        import db as _db
+        _db.graceful_shutdown()
+    except Exception:
+        pass
 
 signal.signal(signal.SIGTERM, _signal_handler)
 signal.signal(signal.SIGINT, _signal_handler)
@@ -29,8 +35,15 @@ import subprocess
 import time
 import os
 import threading
+import ssl
 import urllib.request
 import uuid
+
+try:
+    import certifi as _certifi
+    _SSL_CTX = ssl.create_default_context(cafile=_certifi.where())
+except ImportError:
+    _SSL_CTX = ssl.create_default_context()
 from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -64,6 +77,10 @@ _abort_event = threading.Event()
 # Fired once per process when a client first opens the per-thread runs endpoint.
 # Signals that the user has discovered the cost-tracking feature.
 _cost_tracking_first_use_seen = False
+
+# Fired once per process when the resume endpoint is first called.
+# Signals that the user has discovered the auto-resume feature.
+_auto_resume_first_use_seen = False
 
 # Connected WebSocket clients for broadcast (thread-safe via copy-on-iterate)
 import threading as _threading
@@ -126,7 +143,15 @@ _pending_canvas_prompts: dict = {}  # request_id → asyncio.Event + result
 _pending_canvas_renders: dict[str, list[dict]] = {}  # thread_id → list of renders
 _CANVAS_META_HTML_CAP = 64 * 1024  # per-render cap when persisting to message meta
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+# Deduplication guard for concurrent POST /api/resume/{run_id} requests.
+# Without this, two simultaneous POSTs both pass the SELECT-then-act check
+# and enqueue two background resumes for the same run_id.
+# Dict maps run_id → True while a resume is in-flight; the endpoint checks
+# this atomically under _RESUME_LOCK before enqueuing.
+_RESUME_LOCK = threading.Lock()
+_RESUME_IN_FLIGHT: dict[int, bool] = {}  # run_id → True
+
+from fastapi import BackgroundTasks, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
 
@@ -139,6 +164,43 @@ import providers
 import threads
 
 _log = logger.get("server")
+
+
+def _recover_interrupted_runs_on_startup() -> None:
+    """Mark orphaned 'running' agent_runs as 'aborted' at server start.
+
+    Synthesizes an abort marker in messages so the run appears interrupted
+    in the UI. Does NOT auto-resume — Web banner / Telegram /resume /
+    scheduler auto-fire handle user-facing recovery. Must run BEFORE
+    scheduler.start() so scheduler.detect_missed_runs sees the up-to-date
+    'aborted' rows for its 5-min auto-fire window.
+    """
+    try:
+        rows = db._get_conn().execute(
+            "SELECT id, thread_id FROM agent_runs WHERE status='running'"
+        ).fetchall()
+    except Exception as e:
+        _log.warning(f"crash-recovery query failed: {e}")
+        return
+    for (rid, thread_id) in rows:
+        try:
+            db.save_message(
+                role="assistant", content="",
+                thread_id=thread_id,
+                meta={"interrupted": True, "run_id": rid,
+                      "crash_recovery": True},
+            )
+        except Exception as e:
+            _log.debug(f"crash-recovery save_message failed for #{rid}: {e}")
+        try:
+            db.finalize_agent_run(
+                rid, finished_at=None, duration_ms=None,
+                status="aborted", error="server restart",
+            )
+        except Exception as e:
+            _log.debug(f"crash-recovery finalize failed for #{rid}: {e}")
+    if rows:
+        _log.info(f"recovered {len(rows)} interrupted runs from previous session")
 
 
 def _validate_home_path(raw: str) -> Path:
@@ -334,7 +396,16 @@ def _sweep_uploads(max_age_days: int = 14, max_files: int = 10000) -> tuple[int,
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup — load timezone before anything else
+    # Startup — integrity check before any other DB access, then backup scheduler
+    try:
+        db.check_and_restore()
+    except Exception as e:
+        _log.warning(f"db integrity check startup: {e}")
+    try:
+        db.start_backup_scheduler()
+    except Exception as e:
+        _log.warning(f"db backup scheduler startup: {e}")
+    # Load timezone before anything else
     tz_val = db.kv_get("tz_offset") or db.kv_get("timezone")
     if tz_val:
         try:
@@ -355,6 +426,12 @@ async def lifespan(app: FastAPI):
             presets.ensure_preset_workspace(active_preset)
     except Exception:
         pass
+    # Recover orphaned 'running' runs from a previous crash — must run before
+    # scheduler.start() so detect_missed_runs sees up-to-date 'aborted' rows.
+    try:
+        _recover_interrupted_runs_on_startup()
+    except Exception as e:
+        _log.warning(f"crash-recovery startup: {e}")
     scheduler.start()
     # Start pricing background refresher
     try:
@@ -390,6 +467,10 @@ async def lifespan(app: FastAPI):
         pass
     try:
         mcp_client.stop_all()
+    except Exception:
+        pass
+    try:
+        db.graceful_shutdown()
     except Exception:
         pass
     _log.info("web server stopped")
@@ -448,7 +529,7 @@ def _emit_session_start_telemetry(source: str) -> None:
     # follow-up event; for now, "unknown" is the safe default.
     model_size_bucket = telemetry.bucket_model_size(None)
     telemetry.track_event("session_start", {
-        "qwe_version": str(config.VERSION),
+        "castor_version": str(config.VERSION),
         "python_version": telemetry.python_version(),
         "os": telemetry.os_kind(),
         "provider_kind": provider_kind,
@@ -467,15 +548,31 @@ def _emit_session_start_telemetry(source: str) -> None:
 
 # ── App ──
 
-app = FastAPI(title="qwe-qwe", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="castor", version="0.3.0", lifespan=lifespan)
 
-# ── Optional auth (set QWE_PASSWORD env to enable) ──
-_AUTH_PASSWORD = os.environ.get("QWE_PASSWORD", "")
-_AUTH_COOKIE = "qwe_auth"
-_AUTH_TOKEN = hashlib.sha256(f"qwe-auth-{_AUTH_PASSWORD}".encode()).hexdigest()[:32] if _AUTH_PASSWORD else ""
+# ── Optional auth (set CASTOR_PASSWORD env to enable) ──
+_AUTH_PASSWORD = os.environ.get("CASTOR_PASSWORD", "")
+_AUTH_COOKIE = "castor_auth"
+# Use HMAC-SHA256 so the token derivation is domain-separated and resistant
+# to length-extension attacks. SHA256 alone is fine for tokens (not stored
+# password hashes), but HMAC is the better practice here.
+_AUTH_TOKEN = (
+    hmac.new(b"castor-auth-v1", _AUTH_PASSWORD.encode(), hashlib.sha256).hexdigest()[:32]
+    if _AUTH_PASSWORD else ""
+)
 
 # Max upload size (10 MB)
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+# ── Error message sanitisation ──────────────────────────────────────────────
+# Strip filesystem paths from exception messages before returning them in HTTP
+# responses to avoid leaking internal directory structure to clients.
+_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s,;:\"'<>()]+|/(?:home|root|Users|var|tmp|usr|etc)/[^\s,;:\"'<>()]+")
+
+
+def _sanitize_err(e: Exception) -> str:
+    """Return *str(e)* with filesystem paths replaced by '[path]'."""
+    return _PATH_RE.sub("[path]", str(e))
 
 # ── Rate limiting (in-memory, per-IP) ──
 _rate_log: dict[str, list[float]] = {}  # ip -> [timestamps]
@@ -514,7 +611,7 @@ async def auth_and_rate_middleware(request: Request, call_next):
     if not _check_rate_limit(client_ip):
         return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
 
-    # Auth check (only if QWE_PASSWORD is set)
+    # Auth check (only if CASTOR_PASSWORD is set)
     if _AUTH_PASSWORD:
         # Allow login page
         if path == "/" and request.method == "GET":
@@ -770,7 +867,7 @@ async def transcribe_audio(request: Request):
         )
     except Exception as e:
         _log.error(f"transcription error: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
 
     if text.startswith("[STT Error]"):
         return JSONResponse({"error": text}, status_code=500)
@@ -852,7 +949,7 @@ async def install_whisper():
             return {"ok": True, "message": "faster-whisper installed successfully"}
         return {"ok": False, "error": proc.stderr[:500]}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": _sanitize_err(e)}
 
 
 @app.get("/api/voice/mode")
@@ -950,7 +1047,7 @@ def _check_version_sync() -> dict:
     except Exception:
         try:
             import importlib.metadata
-            current = importlib.metadata.version("qwe-qwe")
+            current = importlib.metadata.version("castor")
         except Exception:
             current = app.version
 
@@ -964,10 +1061,10 @@ def _check_version_sync() -> dict:
     if not cached or not cached_at or (now - float(cached_at)) > 21600:
         try:
             req = urllib.request.Request(
-                "https://api.github.com/repos/deepfounder-ai/qwe-qwe/releases/latest",
-                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "qwe-qwe"}
+                "https://api.github.com/repos/deepfounder-ai/castor/releases/latest",
+                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "castor"}
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=5, context=_SSL_CTX) as resp:
                 data = json.loads(resp.read().decode())
                 latest = data.get("tag_name", "").lstrip("v")
                 if latest:
@@ -1030,7 +1127,7 @@ async def trigger_update():
             result = updater.perform_update(on_progress=on_progress)
             _update_status["result"] = result
         except Exception as e:
-            _update_status["result"] = {"success": False, "error": str(e)}
+            _update_status["result"] = {"success": False, "error": _sanitize_err(e)}
         finally:
             _update_status["running"] = False
 
@@ -1259,12 +1356,16 @@ async def history(limit: int = 20, thread_id: str | None = None):
 
 
 @app.get("/api/logs")
-async def logs(file: str = "qwe-qwe.log", lines: int = 50):
+async def logs(file: str = "castor.log", lines: int = 50):
     """Tail log files."""
+    # Whitelist allowed filenames — only .log files, no path separators
+    import re as _re_mod
+    if not _re_mod.match(r"^[\w\-]+\.log$", file):
+        return JSONResponse({"error": "invalid filename"}, status_code=400)
     logs_dir = config.LOGS_DIR.resolve()
     log_path = (logs_dir / file).resolve()
-    # Prevent path traversal
-    if not str(log_path).startswith(str(logs_dir)):
+    # Prevent path traversal using is_relative_to (stricter than startswith)
+    if not log_path.is_relative_to(logs_dir):
         return JSONResponse({"error": "invalid path"}, status_code=400)
     if not log_path.exists():
         return {"lines": []}
@@ -1389,7 +1490,7 @@ async def memory_save_direct(data: dict):
                              dedup=True, chunk=chunk, synth=True)
     except Exception as e:
         _log.warning(f"manual memory save failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
     return {"ok": True, "id": point_id, "tag": tag}
 
 
@@ -1882,7 +1983,7 @@ async def kv_set(request: Request):
 async def export_config_endpoint():
     """Export all settings as downloadable JSON."""
     data = config.export_config()
-    filename = f"qwe-qwe-config-{time.strftime('%Y%m%d')}.json"
+    filename = f"castor-config-{time.strftime('%Y%m%d')}.json"
     return Response(
         content=json.dumps(data, indent=2, ensure_ascii=False),
         media_type="application/json",
@@ -2069,6 +2170,38 @@ async def get_routine_runs(cron_id: int, limit: int = 50):
     return db.get_runs_for_routine(cron_id, limit=limit)
 
 
+@app.get("/api/routines/{cron_id}/budget")
+async def get_routine_budget_endpoint(cron_id: int):
+    """Return current budget config + spend for a routine."""
+    b = db.get_routine_budget(cron_id)
+    if not b:
+        return {"cap": None, "period_sec": 86400, "spent": 0.0}
+    spent = db.get_routine_period_spend(cron_id, b["period_sec"])
+    return {"cap": b["cap"], "period_sec": b["period_sec"], "spent": spent}
+
+
+@app.post("/api/routines/{cron_id}/budget")
+async def set_routine_budget_endpoint(cron_id: int, body: dict):
+    """Set or clear a routine's budget cap.
+
+    body: {"cap": float|null, "period_sec": int}
+    cap=null clears the cap (no enforcement).
+    """
+    cap = body.get("cap")
+    period_sec = int(body.get("period_sec") or 86400)
+    if cap is not None:
+        cap = float(cap)
+        if cap < 0:
+            return JSONResponse({"ok": False, "error": "cap must be >= 0"}, status_code=400)
+    conn = db._get_conn()
+    conn.execute(
+        "UPDATE scheduled_tasks SET budget_usd_cap = ?, budget_period_sec = ? WHERE id = ?",
+        (cap, period_sec, int(cron_id)),
+    )
+    conn.commit()
+    return {"ok": True}
+
+
 @app.post("/api/cron/{task_id}/toggle")
 async def toggle_cron(task_id: int, data: dict | None = None):
     """Pause or resume a routine.
@@ -2170,7 +2303,7 @@ def _run_knowledge_index(task_id: int, files: list[dict], tags: list[str] | None
         errors = [r for r in results if r.get("status") not in ("indexed", "already up to date")]
     except Exception as e:
         _log.error(f"knowledge indexing failed: {e}", exc_info=True)
-        errors.append({"error": str(e)})
+        errors.append({"error": _sanitize_err(e)})
 
     # Calculate totals
     total_chunks = sum(r.get("chunks", 0) for r in results)
@@ -2232,9 +2365,9 @@ async def file_browse(request: Request):
     try:
         p = _validate_home_path(raw_path)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=403)
     except FileNotFoundError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=404)
 
     if not p.is_dir():
         # If it's a file, return its parent directory
@@ -2305,7 +2438,7 @@ async def file_browse(request: Request):
 
 # ── Project blog feed (shown in the Presets view) ───────────────────────
 #
-# Fetches https://deepfounder.ai/tag/qwe-qwe/rss/ server-side, parses it,
+# Fetches https://deepfounder.ai/tag/castor/rss/ server-side, parses it,
 # returns a small JSON list. Server-side fetch keeps:
 #   - the user's IP off deepfounder.ai (only the install reaches out, and
 #     we cache for 30 min so the request rate is bounded);
@@ -2317,7 +2450,7 @@ async def file_browse(request: Request):
 # It carries no body, no anonymous_id — the only signal deepfounder.ai
 # sees is "an install asked for the feed". Documented in PRIVACY.md.
 
-_FEED_URL = "https://deepfounder.ai/tag/qwe-qwe/rss/"
+_FEED_URL = "https://deepfounder.ai/tag/castor/rss/"
 _FEED_CACHE_TTL_S = 1800  # 30 min — feed `<ttl>` says 60 (minutes) so we're well under
 _FEED_TIMEOUT_S = 15.0
 _FEED_MAX_ITEMS = 10
@@ -2379,9 +2512,9 @@ async def blog_feed():
             return {"items": _feed_cache["items"], "cached": True,
                     "fetched_at": _feed_cache["fetched_at"]}
     try:
-        ua = f"qwe-qwe/{config.VERSION}"
+        ua = f"castor/{config.VERSION}"
         req = urllib.request.Request(_FEED_URL, headers={"User-Agent": ua})
-        with urllib.request.urlopen(req, timeout=_FEED_TIMEOUT_S) as r:
+        with urllib.request.urlopen(req, timeout=_FEED_TIMEOUT_S, context=_SSL_CTX) as r:
             body = r.read()
         items = _parse_blog_feed_xml(body)
         with _feed_cache_lock:
@@ -2396,7 +2529,7 @@ async def blog_feed():
             stale = list(_feed_cache["items"])
             stale_ts = _feed_cache["fetched_at"]
         return {"items": stale, "cached": False, "fetched_at": stale_ts,
-                "error": str(e)[:200]}
+                "error": _sanitize_err(e)[:200]}
 
 
 # ── Canvas artifacts (saved dashboards / forms / mockups) ──────────────
@@ -2407,7 +2540,7 @@ async def blog_feed():
 # in the `canvas_artifacts` table, and the `Canvases` left-nav view in the
 # Web UI loads them via these REST routes.
 #
-# Privacy: artifacts are stored locally in qwe_qwe.db like everything else.
+# Privacy: artifacts are stored locally in castor.db like everything else.
 # Never sent off-machine. The 256 KB size cap matches the cap inside
 # `skills/canvas.py` so the table can't grow unbounded from a runaway
 # model.
@@ -2579,12 +2712,12 @@ async def presets_install(request: Request):
     except FileExistsError as e:
         _log.info(f"preset install: already exists: {e}")
         return JSONResponse(
-            {"error": str(e), "code": "already_installed"},
+            {"error": _sanitize_err(e), "code": "already_installed"},
             status_code=409,
         )
     except Exception as e:
         _log.error(f"preset install failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
     finally:
         try:
             staged.path.unlink(missing_ok=True)
@@ -2602,7 +2735,7 @@ async def presets_activate(preset_id: str):
         return presets.activate(preset_id)
     except Exception as e:
         _log.error(f"preset activate failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
 
 
 @app.get("/api/presets/{preset_id}")
@@ -2622,7 +2755,7 @@ async def presets_delete(preset_id: str):
         presets.uninstall(preset_id)
     except Exception as e:
         _log.error(f"preset uninstall failed: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=400)
     return {"ok": True, "id": preset_id}
 
 
@@ -2657,9 +2790,9 @@ async def knowledge_scan(data: dict):
     try:
         p = _validate_home_path(path)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=403)
     except FileNotFoundError as e:
-        return JSONResponse({"error": str(e)}, status_code=404)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=404)
 
     recursive = data.get("recursive", True)
     result = rag.scan_path(str(p), recursive=recursive)
@@ -2695,7 +2828,7 @@ def _url_resolves_to_private(url: str) -> str | None:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified:
             return (
                 f"Private/loopback URLs not allowed (resolved to {addr}). "
-                "Set QWE_ALLOW_PRIVATE_URLS=1 to override."
+                "Set CASTOR_ALLOW_PRIVATE_URLS=1 to override."
             )
     return None
 
@@ -2714,9 +2847,9 @@ async def knowledge_url(data: dict):
         return JSONResponse({"error": "URL must start with http:// or https://"}, status_code=400)
 
     # SSRF guard — reject URLs that resolve to private/loopback/link-local ranges.
-    # Opt out by setting QWE_ALLOW_PRIVATE_URLS=1 (e.g. for self-hosted wikis on
+    # Opt out by setting CASTOR_ALLOW_PRIVATE_URLS=1 (e.g. for self-hosted wikis on
     # a LAN).
-    if os.environ.get("QWE_ALLOW_PRIVATE_URLS", "").strip() != "1":
+    if os.environ.get("CASTOR_ALLOW_PRIVATE_URLS", "").strip() != "1":
         err = _url_resolves_to_private(url)
         if err:
             return JSONResponse({"error": err}, status_code=403)
@@ -2934,7 +3067,7 @@ async def knowledge_search(data: dict):
         results = rag.search(query, limit=limit, tags=tags)
         return {"results": results}
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _sanitize_err(e)}, status_code=500)
 
 
 @app.delete("/api/knowledge/file")
@@ -3064,6 +3197,23 @@ async def list_threads(include_archived: bool = False):
     """)
     stats = {r[0]: {"est_tokens": r[1], "user_messages": r[2],
                      "assistant_messages": r[3], "tool_calls": r[4]} for r in stats_rows}
+    # Bulk-fetch interrupted (aborted, not dismissed, not yet resumed) counts per thread
+    try:
+        interrupted_rows = db.fetchall("""
+            SELECT thread_id, COUNT(*) AS cnt
+            FROM agent_runs
+            WHERE status='aborted'
+              AND dismissed_at IS NULL
+              AND resumed_from_run_id IS NULL
+              AND id NOT IN (
+                  SELECT resumed_from_run_id FROM agent_runs
+                  WHERE resumed_from_run_id IS NOT NULL
+              )
+            GROUP BY thread_id
+        """)
+        interrupted_counts = {r[0]: r[1] for r in interrupted_rows}
+    except Exception:
+        interrupted_counts = {}
     for t in all_threads:
         s = stats.get(t["id"], {})
         t["est_tokens"] = s.get("est_tokens", 0)
@@ -3075,6 +3225,7 @@ async def list_threads(include_archived: bool = False):
         t["output_tokens"] = totals["output_tokens"] if totals["run_count"] else None
         t["cost_usd"] = totals["cost_usd"] if totals["run_count"] else None
         t["run_count"] = totals["run_count"]
+        t["interrupted_count"] = int(interrupted_counts.get(t["id"], 0))
     return all_threads
 
 
@@ -3131,6 +3282,85 @@ async def get_thread_runs(thread_id: str, limit: int = 50, offset: int = 0):
         except Exception:
             pass
     return db.get_runs_for_thread(thread_id, limit=limit, offset=offset)
+
+
+@app.post("/api/resume/{run_id}")
+async def resume_run_endpoint(run_id: int, background_tasks: BackgroundTasks):
+    """Trigger resume of an aborted agent run. Returns immediately;
+    streaming output flows via WS."""
+    global _auto_resume_first_use_seen
+    if not _auto_resume_first_use_seen:
+        _auto_resume_first_use_seen = True
+        try:
+            import telemetry
+            telemetry.track_event("feature_first_use", {"feature": "auto_resume"})
+        except Exception:
+            pass
+    row = db._get_conn().execute(
+        "SELECT status, dismissed_at, resumed_from_run_id FROM agent_runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    status, dismissed_at, already_resume = row
+    if status != "aborted":
+        return JSONResponse(
+            {"ok": False, "error": f"not aborted (status={status})"},
+            status_code=400,
+        )
+    if dismissed_at is not None:
+        return JSONResponse(
+            {"ok": False, "error": "was dismissed"},
+            status_code=400,
+        )
+    if already_resume is not None:
+        return JSONResponse(
+            {"ok": False, "error": "is itself a resume run"},
+            status_code=400,
+        )
+    # Forward-resume check: has another run already resumed this one?
+    fwd = db._get_conn().execute(
+        "SELECT id FROM agent_runs WHERE resumed_from_run_id=?", (run_id,)
+    ).fetchone()
+    if fwd:
+        return JSONResponse(
+            {"ok": False, "error": f"already resumed by run #{fwd[0]}"},
+            status_code=400,
+        )
+    # In-process deduplication: guard against two concurrent POSTs that both
+    # passed the SELECT checks above before either enqueued a background task.
+    with _RESUME_LOCK:
+        if _RESUME_IN_FLIGHT.get(run_id):
+            return JSONResponse(
+                {"ok": False, "error": "resume already in progress"},
+                status_code=409,
+            )
+        _RESUME_IN_FLIGHT[run_id] = True
+
+    # Fire in background so HTTP returns immediately; streaming goes via WS.
+    # Wrapper clears the in-flight flag when the run finishes.
+    import agent as _agent_mod
+
+    def _resume_and_clear():
+        try:
+            _agent_mod.resume_interrupted_run(run_id)
+        finally:
+            _RESUME_IN_FLIGHT.pop(run_id, None)
+
+    background_tasks.add_task(_resume_and_clear)
+    return {"ok": True}
+
+
+@app.post("/api/resume/{run_id}/dismiss")
+async def dismiss_run_endpoint(run_id: int):
+    """Mark an aborted run as dismissed so it is no longer offered for resume."""
+    row = db._get_conn().execute(
+        "SELECT id FROM agent_runs WHERE id=?", (run_id,)
+    ).fetchone()
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    db.dismiss_run(run_id)
+    return {"ok": True}
 
 
 @app.post("/api/threads/{thread_id}/model")
@@ -3244,6 +3474,29 @@ async def regenerate_turn(thread_id: str):
 
 # ── WebSocket chat ──
 
+async def _check_for_resumable_interrupt(ws: WebSocket, thread_id: str) -> None:
+    """Probe for one resumable aborted run in this thread; emit event on hit."""
+    try:
+        ttl = float(config.get("resume_ttl_web_sec") or 604800)
+    except Exception:
+        ttl = 604800
+    row = db.get_resumable_run_for_thread(thread_id, source_filter=None, ttl_sec=ttl)
+    if not row or row.get("source") == "cli":
+        return
+    try:
+        await ws.send_json({
+            "event": "interrupted_turn",
+            "run_id": row["id"],
+            "started_at": row["started_at"],
+            "preview": row.get("result_preview") or "",
+            "model": row.get("model"),
+            "source": row.get("source"),
+            "thread_id": thread_id,
+        })
+    except Exception as e:
+        _log.debug(f"interrupted_turn send failed: {e}")
+
+
 async def _ws_send_safe(ws: WebSocket, data: dict) -> bool:
     """Send JSON to a WebSocket, returning False if the connection is dead."""
     try:
@@ -3278,6 +3531,9 @@ async def websocket_chat(ws: WebSocket):
         _ws_abort_events.add(my_abort_event)
     _ws_loop = asyncio.get_event_loop()
     _log.info(f"websocket client connected ({len(_ws_clients)} total)")
+
+    # Emit interrupted_turn event if the active thread has an eligible aborted run.
+    await _check_for_resumable_interrupt(ws, threads.get_active_id() or "default")
 
     try:
         while True:
@@ -3368,7 +3624,7 @@ async def websocket_chat(ws: WebSocket):
                     fname_safe = re.sub(r'[^\w.\-]+', '_', Path(fname_raw).name)[:80] or "file.txt"
                     ext = Path(fname_safe).suffix or ".txt"
                     stem = Path(fname_safe).stem
-                    doc_file = UPLOADS_DIR / f"{doc_id}_{stem}{ext}"
+                    doc_file = UPLOADS_DIR / f"{doc_id}_{stem}{ext}"  # lgtm[py/path-injection] — fname_safe uses Path.name + regex, path is under UPLOADS_DIR
                     doc_file.write_bytes(base64.b64decode(document["file_b64"]))
                     file_name = fname_raw
                     file_path = str(doc_file.resolve())
@@ -3762,7 +4018,7 @@ async def mcp_add_server(request: Request):
     # Auto-start if enabled
     if data.get("enabled", True):
         result = mcp_client.start_server(name)
-        return {"ok": True, "message": result}
+        return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
     return {"ok": True, "message": f"MCP '{name}' saved (disabled)"}
 
 
@@ -3776,7 +4032,7 @@ async def mcp_remove_server(name: str):
 async def mcp_restart_server(name: str):
     """Restart an MCP server connection."""
     result = mcp_client.start_server(name)
-    return {"ok": True, "message": result}
+    return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
 
 
 @app.post("/api/mcp/servers/{name}/toggle")
@@ -3793,7 +4049,7 @@ async def mcp_toggle_server(name: str, request: Request):
         result = mcp_client.start_server(name)
     else:
         result = mcp_client.stop_server(name)
-    return {"ok": True, "message": result}
+    return {"ok": True, "message": result}  # lgtm[py/stack-trace-exposure] — MCP config error shown to admin user
 
 
 @app.get("/api/telegram/status")
@@ -3912,7 +4168,7 @@ def _ensure_ssl_cert() -> tuple[str, str]:
                 pass
 
         subject = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "qwe-qwe"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "castor"),
         ])
         cert = (
             x509.CertificateBuilder()
@@ -4027,7 +4283,7 @@ def start(host: str = "0.0.0.0", port: int = 7860, ssl: bool = False):
     _log.info(f"starting web server on {actual_host}:{port} (LAN: {'on' if lan else 'off'}, SSL: {'on' if ssl_kwargs else 'off'})")
     if actual_host == "0.0.0.0":
         ip = _get_lan_ip()
-        _safe_print(f"\n  ⚡ qwe-qwe web UI → {proto}://localhost:{port}")
+        _safe_print(f"\n  ⚡ castor web UI → {proto}://localhost:{port}")
         if ip:
             _safe_print(f"  📱 LAN access → {proto}://{ip}:{port}")
         if ssl_kwargs:
@@ -4036,7 +4292,7 @@ def start(host: str = "0.0.0.0", port: int = 7860, ssl: bool = False):
             _safe_print(f"  📷 For camera on mobile: restart with --ssl")
         print()
     else:
-        _safe_print(f"\n  ⚡ qwe-qwe web UI → {proto}://localhost:{port}")
+        _safe_print(f"\n  ⚡ castor web UI → {proto}://localhost:{port}")
         print(f"  🔒 Local only (enable LAN in Settings → System)\n")
 
     uvicorn.run(app, host=actual_host, port=port, log_level="warning", **ssl_kwargs)

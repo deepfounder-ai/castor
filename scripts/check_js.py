@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Syntax-check every <script> block inside static/index.html.
 
-qwe-qwe's web UI is a ~5500-line single-file SPA with inline vanilla JS.
+castor's web UI is a ~5500-line single-file SPA with inline vanilla JS.
 There is no Node build step, so typos like `stae.x = 1` only surface at
 runtime. This script extracts each <script>...</script> body, writes it to
 a temp file, and runs `node --check` against it — the cheapest possible
@@ -34,7 +34,7 @@ HTML_PATH = ROOT / "static" / "index.html"
 # captured in group 1. DOTALL so `.` spans newlines; non-greedy so we don't
 # glue multiple blocks together.
 _SCRIPT_RE = re.compile(
-    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script\s*>",
+    r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script[^>]*>",
     re.DOTALL | re.IGNORECASE,
 )
 

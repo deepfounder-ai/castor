@@ -107,7 +107,7 @@ EMBED_DIM = 384  # multilingual-MiniLM output dimension
 def _fastembed_providers() -> list[str] | None:
     """Pick ONNX execution providers based on user preference.
 
-    Setting `embed_device` (or env `QWE_EMBED_DEVICE`) can be:
+    Setting `embed_device` (or env `CASTOR_EMBED_DEVICE`) can be:
       - "auto"  (default): FastEmbed decides — tries CUDA first if the GPU
         onnxruntime is installed, else CPU. We return None to accept FastEmbed's
         auto behavior, BUT we also wrap the init in a CUDA→CPU fallback below
@@ -118,7 +118,7 @@ def _fastembed_providers() -> list[str] | None:
       - "cuda": force ["CUDAExecutionProvider"] — error out loudly if it fails
         instead of silently falling back to CPU. Useful for debugging.
     """
-    mode = (os.environ.get("QWE_EMBED_DEVICE") or config.get("embed_device") or "auto").strip().lower()
+    mode = (os.environ.get("CASTOR_EMBED_DEVICE") or config.get("embed_device") or "auto").strip().lower()
     if mode == "cpu":
         return ["CPUExecutionProvider"]
     if mode == "cuda":
@@ -150,6 +150,15 @@ def _init_fastembed(cls, model_name: str):
     terminal with raw onnxruntime noise.
     """
     import warnings
+    # Suppress fastembed's loguru "Local file sizes do not match the metadata"
+    # spam that appears when the HuggingFace cache metadata is stale.
+    # These are harmless — fastembed re-downloads as needed; we don't want
+    # the noise in the user's terminal on every startup.
+    try:
+        from loguru import logger as _lu
+        _lu.disable("fastembed")
+    except Exception:
+        pass
     providers = _fastembed_providers()
     # First attempt — honor user preference (or auto)
     init_kwargs = {"model_name": model_name}
@@ -915,7 +924,7 @@ def _write_markdown_companion(point_id: str, text: str, tag: str,
     """Mirror a saved memory to its markdown file.
 
     Phase 1 of Living Memory: every Qdrant save also writes a .md file
-    under ``~/.qwe-qwe/memories/atoms/<shard>/mem_<id>.md``. Markdown is
+    under ``~/.castor/memories/atoms/<shard>/mem_<id>.md``. Markdown is
     canonical, Qdrant is the derived search index (see ADR-0001).
 
     Swallows all exceptions — the companion file is best-effort for now.
