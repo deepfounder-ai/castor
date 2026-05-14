@@ -38,6 +38,13 @@ def qwe_temp_data_dir(monkeypatch):
     tmp_root = Path(tempfile.mkdtemp(prefix="castor_pytest_"))
     monkeypatch.setenv("CASTOR_DATA_DIR", str(tmp_root))
 
+    # Prevent config._migrate_data() from copying the developer's real castor.db
+    # into the test sandbox. Both migration helpers check for a marker file and
+    # skip when it's present. Writing them before any module reload means the
+    # helpers are no-ops for every test that uses this fixture.
+    (tmp_root / ".migrated_v2").write_text("test skip\n")
+    (tmp_root / ".migrated_from_qwe_qwe").write_text("test skip\n")
+
     # Close any stale DB connection before reload
     if "db" in sys.modules:
         try:
