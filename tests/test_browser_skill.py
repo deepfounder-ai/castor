@@ -11,7 +11,7 @@ No real browser launches. No Playwright install required (even if the
 package is present, ``_ensure_browser`` is stubbed out before it'd be
 called).
 
-Issue: https://github.com/deepfounder-ai/qwe-qwe/issues/5
+Issue: https://github.com/deepfounder-ai/castor/issues/5
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """Tests for the project blog feed endpoint (Presets view).
 
 The endpoint is a small server-side proxy over `https://deepfounder.ai/
-tag/qwe-qwe/rss/`. We cache for 30 minutes and degrade gracefully when
+tag/castor/rss/`. We cache for 30 minutes and degrade gracefully when
 the upstream is unreachable. Tests pin:
 
 - the parser's bounds (string length, item count) so a malicious /
@@ -26,7 +26,7 @@ def _make_feed(items_xml: str = "") -> bytes:
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<rss version="2.0">'
         '<channel>'
-        '<title>qwe-qwe</title>'
+        '<title>castor</title>'
         '<link>https://deepfounder.ai/</link>'
         '<description>test</description>'
         f'{items_xml}'
@@ -74,7 +74,7 @@ def test_parse_extracts_known_fields(fresh_server):
         link="https://deepfounder.ai/post-1/",
         description="A short summary",
         pub_date="Fri, 08 May 2026 12:00:00 GMT",
-        categories=["qwe-qwe", "release"],
+        categories=["castor", "release"],
     ))
     items = fresh_server._parse_blog_feed_xml(body)
     assert len(items) == 1
@@ -83,7 +83,7 @@ def test_parse_extracts_known_fields(fresh_server):
     assert it["link"] == "https://deepfounder.ai/post-1/"
     assert it["description"] == "A short summary"
     assert it["pub_date"] == "Fri, 08 May 2026 12:00:00 GMT"
-    assert it["categories"] == ["qwe-qwe", "release"]
+    assert it["categories"] == ["castor", "release"]
     # guid populated from <guid>; we set it to the link in _item()
     assert it["guid"] == "https://deepfounder.ai/post-1/"
 
@@ -241,4 +241,4 @@ def test_endpoint_url_points_at_project_blog(fresh_server):
     """Pin the feed URL so a refactor that drops the trailing /rss/
     doesn't silently make us hit a 404 page (which Ghost serves with
     200 + HTML body — would break the parser)."""
-    assert fresh_server._FEED_URL == "https://deepfounder.ai/tag/qwe-qwe/rss/"
+    assert fresh_server._FEED_URL == "https://deepfounder.ai/tag/castor/rss/"

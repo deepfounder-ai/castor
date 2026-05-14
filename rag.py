@@ -10,7 +10,7 @@ import logger
 _log = logger.get("rag")
 
 # Separate Qdrant collection for RAG (not mixed with agent memory)
-RAG_COLLECTION = "qwe_rag"
+RAG_COLLECTION = "castor_rag"
 CHUNK_SIZE = 800        # chars (~200 tokens), configurable via settings
 CHUNK_OVERLAP = 100     # chars (~25 tokens), configurable via settings
 SUPPORTED_EXTENSIONS = {
@@ -552,7 +552,7 @@ def _fetch_youtube_transcript(url: str) -> tuple[str, dict] | None:
 
     # Phase 2: let yt-dlp download the subtitle file itself (so it reuses the
     # authenticated session and avoids 429).
-    tmpdir = Path(tempfile.mkdtemp(prefix="qweqwe_yt_"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="castor_yt_"))
     outtmpl = str(tmpdir / "%(id)s.%(ext)s")
     dl_opts = {
         "skip_download": True,
@@ -737,7 +737,7 @@ def index_url(url: str, tags: list[str] | None = None) -> dict:
     import urllib.request
     try:
         req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (compatible; qwe-qwe/kb; +https://github.com/deepfounder-ai/qwe-qwe)",
+            "User-Agent": "Mozilla/5.0 (compatible; castor/kb; +https://github.com/deepfounder-ai/castor)",
         })
         with urllib.request.urlopen(req, timeout=20) as resp:
             ctype = resp.headers.get("content-type", "").split(";")[0].strip().lower()

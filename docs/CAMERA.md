@@ -8,7 +8,7 @@ The agent can grab a still frame from your machine's camera, send it to a vision
 Vision needs **HTTPS** in the browser (browsers block camera on `http://`). Run with `--ssl`:
 
 ```bash
-qwe-qwe --web --ssl --port 7861
+castor --web --ssl --port 7861
 ```
 
 ## How the agent uses the camera
@@ -64,7 +64,7 @@ Same WS pipeline as `camera_capture`, just initiated by the message rather than 
 
 ## Direct OpenCV (CLI / server-side)
 
-If no browser camera is connected (`camera_capture` from the terminal CLI, or via Telegram which has no live camera), qwe-qwe falls back to direct OpenCV:
+If no browser camera is connected (`camera_capture` from the terminal CLI, or via Telegram which has no live camera), castor falls back to direct OpenCV:
 
 ```python
 # Roughly what runs server-side
@@ -126,16 +126,16 @@ Frame upload happens over the same WebSocket as text, so a slow mobile network =
 
 ## Privacy
 
-- **Frames live on your machine.** Captures are written to `~/.qwe-qwe/uploads/<timestamp>.jpg` and sent to your configured LLM. They're NOT uploaded to qwe-qwe servers (there are none).
+- **Frames live on your machine.** Captures are written to `~/.castor/uploads/<timestamp>.jpg` and sent to your configured LLM. They're NOT uploaded to castor servers (there are none).
 - **Vision LLM sees the frame.** If you use a cloud vision model (OpenAI, Groq, OpenRouter), the frame is sent there — their privacy policy applies. Use a local vision model (LM Studio Qwen2-VL, Ollama llama3.2-vision) for fully on-prem capture.
-- **Uploads cleanup**: `~/.qwe-qwe/uploads/` is swept at startup — frames older than 14 days are deleted. `uploads/kb/` (indexed knowledge sources) is exempt.
+- **Uploads cleanup**: `~/.castor/uploads/` is swept at startup — frames older than 14 days are deleted. `uploads/kb/` (indexed knowledge sources) is exempt.
 - **Telemetry**: per-turn count of `camera_capture` invocations only. Never the frame, never a description.
 
 ## Troubleshooting
 
 **Browser asks for permission every time** — depends on browser; Chrome/Edge remember per-origin, Firefox per-session. Add the localhost cert to your trusted store to make it stickier.
 
-**Frames are pitch-black on Windows** — common DirectShow + dual-camera gotcha. qwe-qwe retries up to 30 times with sensor warmup, but if every retry is still black: pick the right `camera_device_index` manually in Settings (try 1 if 0 returns black).
+**Frames are pitch-black on Windows** — common DirectShow + dual-camera gotcha. castor retries up to 30 times with sensor warmup, but if every retry is still black: pick the right `camera_device_index` manually in Settings (try 1 if 0 returns black).
 
 **No camera in OpenCV path** — `pip install opencv-python`. Doctor catches this. Headless servers without a physical camera can install it but `camera_capture` will fail with a clear error.
 

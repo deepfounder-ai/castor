@@ -185,9 +185,9 @@ def test_check_url_safety_rejects_private_ip(si, monkeypatch):
 
 
 def test_check_url_safety_private_ip_override_via_env(si, monkeypatch):
-    """QWE_ALLOW_PRIVATE_URLS=1 should let private IPs through —
+    """CASTOR_ALLOW_PRIVATE_URLS=1 should let private IPs through —
     same opt-out as /api/knowledge/url."""
-    monkeypatch.setenv("QWE_ALLOW_PRIVATE_URLS", "1")
+    monkeypatch.setenv("CASTOR_ALLOW_PRIVATE_URLS", "1")
     import socket
     monkeypatch.setattr(socket, "getaddrinfo",
                          lambda host, port: [(0, 0, 0, "", ("127.0.0.1", 0))])
@@ -451,7 +451,7 @@ def test_imports_list_and_delete(si, mock_http):
     assert si.list_imports() == []
 
 
-# ── Generated adapter .py is loadable by qwe-qwe's skill validator ──
+# ── Generated adapter .py is loadable by castor's skill validator ──
 
 
 def test_imported_adapter_passes_skill_validator(si, mock_http):
@@ -787,7 +787,7 @@ body
         assert not (assets / cousin).exists(), (
             f"path-traversal write succeeded: {cousin}")
     # Nothing outside the staging dir was created
-    parent = assets.parent.parent  # ~/.qwe-qwe
+    parent = assets.parent.parent  # ~/.castor
     assert not (parent / "passwd.py").exists()
     assert not (parent / "leak.py").exists()
 
@@ -860,7 +860,7 @@ license: MIT
 
 
 def test_imported_skill_loads_via_skill_loader(si, mock_http):
-    """After import, qwe-qwe's `skills.list_all()` must include the
+    """After import, castor's `skills.list_all()` must include the
     new skill AND `skills.enable()` must succeed AND
     `skills.get_tools()` must surface the help tool. End-to-end
     contract — without this, the import "works" but the agent

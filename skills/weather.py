@@ -26,7 +26,7 @@ def execute(name: str, args: dict) -> str:
         city = args["city"].replace(" ", "+")
         url = f"https://wttr.in/{city}?format=%l:+%C+%t+%w+%h"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "qwe-qwe/0.1"})
+            req = urllib.request.Request(url, headers={"User-Agent": "castor/0.1"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return resp.read().decode("utf-8").strip()
         except Exception as e:

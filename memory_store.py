@@ -3,7 +3,7 @@
 Phase 1 of the Living Memory architecture (see ``docs/adr/0001-living-memory.md``).
 
 Every memory that Qdrant holds has a parallel ``.md`` file under
-``~/.qwe-qwe/memories/atoms/<shard>/mem_<id>.md`` with YAML frontmatter.
+``~/.castor/memories/atoms/<shard>/mem_<id>.md`` with YAML frontmatter.
 On this layer, markdown is the **source of truth**; Qdrant is a derived
 search index rebuildable from the files.
 

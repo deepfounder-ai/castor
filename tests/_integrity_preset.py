@@ -1,7 +1,7 @@
 """Integrity smoke test — exercises the full preset lifecycle end-to-end.
 
 Run it standalone (NOT via pytest):
-    QWE_DATA_DIR=<tmp> python tests/_integrity_preset.py
+    CASTOR_DATA_DIR=<tmp> python tests/_integrity_preset.py
 
 Prints a numbered checklist; exits 0 on success, 1 on failure.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 # --- Use an isolated data dir before importing config ---
 tmp_home = tempfile.mkdtemp(prefix="qwe_integrity_")
-os.environ["QWE_DATA_DIR"] = tmp_home
+os.environ["CASTOR_DATA_DIR"] = tmp_home
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -88,7 +88,7 @@ def main() -> int:
             ]
         },
         "knowledge": [{"path": "knowledge/ref.md", "title": "Reference"}],
-        "compatibility": {"qwe_qwe_version": ">=0.1.0"},
+        "compatibility": {"qwe_castor_version": ">=0.1.0"},
     }
     (src / "preset.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
     (src / "system_prompt.md").write_text("You are Integrity, a helpful test agent.\n", encoding="utf-8")
@@ -136,7 +136,7 @@ def main() -> int:
     assert (target / "knowledge" / "ref.md").exists()
     step(5, "All files on disk")
 
-    leftover = list(Path(tempfile.gettempdir()).glob("qwe_preset_*"))
+    leftover = list(Path(tempfile.gettempdir()).glob("castor_preset_*"))
     assert len(leftover) == 0, f"tempdir leaked: {leftover}"
     step(6, "Archive tempdir cleaned up")
 
@@ -187,8 +187,8 @@ def main() -> int:
     step(13, "Hooks return neutral after deactivate")
 
     # Phase 5: dev-link by bare id
-    os.environ["QWE_MARKET_PATH"] = str(Path(tmp_home) / "fake_market")
-    market_root = Path(os.environ["QWE_MARKET_PATH"]) / "presets" / "testing"
+    os.environ["CASTOR_MARKET_PATH"] = str(Path(tmp_home) / "fake_market")
+    market_root = Path(os.environ["CASTOR_MARKET_PATH"]) / "presets" / "testing"
     market_root.mkdir(parents=True)
     shutil.copytree(src, market_root / "integrity-test")
     presets.uninstall("integrity-test")

@@ -1,6 +1,6 @@
 # LLM providers
 
-qwe-qwe talks to any **OpenAI-compatible** chat-completions endpoint. Pick the one that fits — local for data-on-prem, cloud for speed / capability — and switch between them per-thread without restarting.
+castor talks to any **OpenAI-compatible** chat-completions endpoint. Pick the one that fits — local for data-on-prem, cloud for speed / capability — and switch between them per-thread without restarting.
 
 ## Supported out of the box
 
@@ -17,11 +17,11 @@ qwe-qwe talks to any **OpenAI-compatible** chat-completions endpoint. Pick the o
 | **Cerebras** | Cloud | [cloud.cerebras.ai](https://cloud.cerebras.ai) — extremely fast | Free tier available |
 | **Mistral** | Cloud | [console.mistral.ai/api-keys](https://console.mistral.ai/api-keys) | Trial credit |
 
-Any other OpenAI-compatible provider (Azure OpenAI, AWS Bedrock with the OpenAI shim, vLLM, llama.cpp's server, etc.) works the same way — set `QWE_LLM_URL` to its base URL.
+Any other OpenAI-compatible provider (Azure OpenAI, AWS Bedrock with the OpenAI shim, vLLM, llama.cpp's server, etc.) works the same way — set `CASTOR_LLM_URL` to its base URL.
 
 ## Picking a model
 
-Tool-calling is the hard requirement — qwe-qwe relies on `tool_calls` in the response, so **the model must support OpenAI-format function calling**.
+Tool-calling is the hard requirement — castor relies on `tool_calls` in the response, so **the model must support OpenAI-format function calling**.
 
 | Use case | Suggested model | Provider |
 |---|---|---|
@@ -41,21 +41,21 @@ For local models, **4-bit quantization** (Q4_K_M or Q4_0) is the sweet spot — 
 
 ```bash
 # Local — LM Studio defaults
-export QWE_LLM_URL=http://localhost:1234/v1
-export QWE_LLM_MODEL=qwen/qwen2.5-7b-instruct
-export QWE_LLM_KEY=lm-studio
+export CASTOR_LLM_URL=http://localhost:1234/v1
+export CASTOR_LLM_MODEL=qwen/qwen2.5-7b-instruct
+export CASTOR_LLM_KEY=lm-studio
 
 # Cloud — example: Groq free tier
-export QWE_LLM_URL=https://api.groq.com/openai/v1
-export QWE_LLM_MODEL=llama-3.3-70b-versatile
-export QWE_LLM_KEY=gsk_...
+export CASTOR_LLM_URL=https://api.groq.com/openai/v1
+export CASTOR_LLM_MODEL=llama-3.3-70b-versatile
+export CASTOR_LLM_KEY=gsk_...
 ```
 
 Put these in your shell rc or a `.env` file at the repo root. Restart the agent for changes to take effect.
 
 ### Web UI: Settings → Model
 
-Settings → **Model** has a provider picker that lists every provider qwe-qwe knows about. Providers marked with a yellow **NEEDS KEY** badge open a modal with:
+Settings → **Model** has a provider picker that lists every provider castor knows about. Providers marked with a yellow **NEEDS KEY** badge open a modal with:
 
 - A link to where to get the key for that provider
 - The endpoint URL (pre-filled)
@@ -82,7 +82,7 @@ Why this matters: keep a **fast cheap model** for casual chat threads and a **st
 
 ## Context window
 
-qwe-qwe **detects** the model's real context window automatically:
+castor **detects** the model's real context window automatically:
 
 - **LM Studio**: hits `/api/v0/models` to read the loaded model's `loaded_context_length`
 - **Ollama**: hits `/api/show` to read `model_info.context_length` then `num_ctx`
@@ -95,11 +95,11 @@ The Web UI Inspector shows two numbers in the Context Window gauge:
 
 The agent compacts (summarises older messages) when prompt_tokens approaches context_budget — NOT when it approaches the model's actual context. This is intentional: leaves headroom for tool outputs, prevents the LLM from re-summarising your conversation every turn.
 
-If your model has a 128k window but you want to cap how much qwe-qwe sends per turn, lower `context_budget` in Settings. Want the agent to use everything? Raise it.
+If your model has a 128k window but you want to cap how much castor sends per turn, lower `context_budget` in Settings. Want the agent to use everything? Raise it.
 
 ## Provider health
 
-`qwe-qwe --doctor` includes a provider check — verifies the endpoint responds, the model is loaded (local providers), and a token-counting request works.
+`castor --doctor` includes a provider check — verifies the endpoint responds, the model is loaded (local providers), and a token-counting request works.
 
 In the Web UI, **Settings → Model → Test connection** runs the same check with a click. If the local provider is down, you'll see a clear `connection refused` instead of a mysterious failure mid-turn.
 
@@ -107,11 +107,11 @@ In the Web UI, **Settings → Model → Test connection** runs the same check wi
 
 **LM Studio: "model not loaded"** — open LM Studio, go to the chat tab, click any model to load it. The model needs to be ready BEFORE the agent's first turn.
 
-**Ollama: "model not found"** — `ollama pull <name>` first. qwe-qwe won't auto-pull; we don't want a 9GB download starting silently mid-conversation.
+**Ollama: "model not found"** — `ollama pull <name>` first. castor won't auto-pull; we don't want a 9GB download starting silently mid-conversation.
 
 **Groq rate limits** — free tier is generous but does throttle. Heavy tool-using sessions on the 70B model can hit 30 RPM. Drop to the 8B model or move to a different provider for tool-heavy threads.
 
-**Cloud provider blocks tool_calls** — some smaller free-tier models don't support function calling. qwe-qwe will detect malformed responses and try to recover, but switch to a tool-capable model if you see consistent failures.
+**Cloud provider blocks tool_calls** — some smaller free-tier models don't support function calling. castor will detect malformed responses and try to recover, but switch to a tool-capable model if you see consistent failures.
 
 **Model is too small for tools** — anything under ~3B parameters tends to forget tool definitions mid-turn. 7B is a hard floor for reliable agent loops; bigger is better.
 
@@ -119,7 +119,7 @@ In the Web UI, **Settings → Model → Test connection** runs the same check wi
 
 If you want a provider that isn't pre-listed:
 
-1. **Simple route — just use it.** Set `QWE_LLM_URL` / `QWE_LLM_KEY` / `QWE_LLM_MODEL` to whatever you want. The agent doesn't care; it talks OpenAI-format.
+1. **Simple route — just use it.** Set `CASTOR_LLM_URL` / `CASTOR_LLM_KEY` / `CASTOR_LLM_MODEL` to whatever you want. The agent doesn't care; it talks OpenAI-format.
 
 2. **Add a preset** so it shows up in the picker. Edit `providers.py::PRESETS` — typically a one-line addition:
 
@@ -139,7 +139,7 @@ Open a PR — providers are small additions and we ship them.
 
 For **local providers**, cost is just your electricity bill.
 
-For **cloud providers**, the agent does NOT meter anything at the qwe-qwe level — that's between you and the provider. Some practical observations:
+For **cloud providers**, the agent does NOT meter anything at the castor level — that's between you and the provider. Some practical observations:
 
 - **Tool search** keeps the system prompt small (~750 tokens vs ~3000 if every tool were loaded). Real savings on per-message cost.
 - **Tool result clearing** (after 3 cleared tools' worth of history) prevents long tool-heavy threads from re-shipping the same outputs every turn.

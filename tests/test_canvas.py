@@ -50,7 +50,7 @@ def canvas_mod():
 
 @pytest.fixture
 def fresh_server(qwe_temp_data_dir, monkeypatch):
-    """Reload server against a fresh QWE_DATA_DIR — guarantees the
+    """Reload server against a fresh CASTOR_DATA_DIR — guarantees the
     migrations apply against an empty kv table, the canvas_artifacts
     table is created, and we get a fresh TestClient."""
     for mod in ("config", "db", "soul", "threads", "presets", "server"):
@@ -206,12 +206,12 @@ def test_canvas_prompt_validates_html(canvas_mod):
 
 def test_canvas_tools_report_stale_server_with_restart_hint(canvas_mod, monkeypatch):
     """Reported bug: user pulled the canvas commit but didn't restart
-    `qwe-qwe --web`. The running server process is from BEFORE the
+    `castor --web`. The running server process is from BEFORE the
     canvas-helper additions, so `server.broadcast_canvas_render_sync`
     doesn't exist and the agent saw a raw AttributeError.
 
     Fix: skills/canvas.py uses _check_server_compat() to detect the
-    missing helpers up front and return a clear "restart qwe-qwe"
+    missing helpers up front and return a clear "restart castor"
     message instead of crashing.
     """
     import types

@@ -4,7 +4,7 @@ The agent has two ways to use a browser:
 
 1. **Headless** (`browser_open`) — Chromium in the background, fast, invisible. For scraping, fetching content, automated logins. The agent is the only one who sees the page.
 2. **Visible** (`browser_set_visible(true)` then any browser tool) — a real Chrome window pops open on your desktop. You watch the agent navigate; you can intervene; you handle the parts the agent shouldn't (passwords, 2FA codes).
-3. **Open in user's browser** (`open_url`) — qwe-qwe doesn't drive the page at all. Hands the URL to your OS default browser. For "show me this thing" — the agent's job ends at the URL.
+3. **Open in user's browser** (`open_url`) — castor doesn't drive the page at all. Hands the URL to your OS default browser. For "show me this thing" — the agent's job ends at the URL.
 
 The right tool depends on whether the goal is **the page's content** (headless) or **a logged-in workflow** (visible).
 
@@ -46,7 +46,7 @@ tool_search("browser advanced")
 
 ## Visible browser — for logged-in flows
 
-Hosted cloud agents can't sign in to your bank, your CRM, or your invoice system — your credentials don't live in their cloud, and you wouldn't paste them there even if they could. qwe-qwe sidesteps this: **the agent drives YOUR browser, on YOUR machine, with YOUR existing session.**
+Hosted cloud agents can't sign in to your bank, your CRM, or your invoice system — your credentials don't live in their cloud, and you wouldn't paste them there even if they could. castor sidesteps this: **the agent drives YOUR browser, on YOUR machine, with YOUR existing session.**
 
 ```
 You:    Покажи мне свежие счета из админки billing.example.com.
@@ -78,8 +78,8 @@ Visibility state is per-server, not per-thread. If you want a separate persisten
 When the agent has nothing to do with the page itself ("show me the docs", "open this OAuth flow"):
 
 ```
-You:    Открой документацию qwe-qwe.
-Agent:  [open_url url="https://github.com/deepfounder-ai/qwe-qwe"]
+You:    Открой документацию castor.
+Agent:  [open_url url="https://github.com/deepfounder-ai/castor"]
         → opens in your default browser
 ```
 
@@ -150,7 +150,7 @@ The agent doesn't see your password or 2FA — only the OAuth callback URL with 
 | Setting | Default | What it does |
 |---|---|---|
 | `browser_headless_default` | `1` | `0` = visible by default. Most users want `1`. |
-| `browser_user_data_dir` | `~/.qwe-qwe/playwright-data` | Where browser session state (cookies, localStorage) persists |
+| `browser_user_data_dir` | `~/.castor/playwright-data` | Where browser session state (cookies, localStorage) persists |
 | `browser_viewport_width` | `1280` | Headless viewport size |
 | `browser_viewport_height` | `800` | |
 | `browser_timeout_ms` | `30000` | Per-operation timeout (page load, click wait) |
@@ -178,9 +178,9 @@ For visible browser on Linux, you need a display server (X / Wayland). On a head
 
 **Site detects Playwright** — `browser_eval("navigator.webdriver")` returns `true` for default Playwright. Set `browser_stealth=1` in Settings to enable webdriver-flag patching (not bulletproof but defeats most simple checks).
 
-**Visible Chrome doesn't show on Mac** — first time, macOS asks for screen recording permission for the Python interpreter. Approve in System Settings → Privacy → Screen Recording, then restart qwe-qwe.
+**Visible Chrome doesn't show on Mac** — first time, macOS asks for screen recording permission for the Python interpreter. Approve in System Settings → Privacy → Screen Recording, then restart castor.
 
-**Lost session after restart** — Playwright user data lives in `~/.qwe-qwe/playwright-data/`. If you `rm -rf ~/.qwe-qwe`, that's gone. To preserve sessions across re-installs, back up that directory.
+**Lost session after restart** — Playwright user data lives in `~/.castor/playwright-data/`. If you `rm -rf ~/.castor`, that's gone. To preserve sessions across re-installs, back up that directory.
 
 ## Security notes
 
@@ -191,5 +191,5 @@ For visible browser on Linux, you need a display server (X / Wayland). On a head
 ## Cross-links
 
 - [SKILLS.md](SKILLS.md) — the `browser` skill is one of the built-ins
-- [MCP.md](MCP.md) — alternative: Playwright MCP server gives finer-grained tools, though qwe-qwe's built-in works for most cases
+- [MCP.md](MCP.md) — alternative: Playwright MCP server gives finer-grained tools, though castor's built-in works for most cases
 - [PRESET_GUIDE.md](PRESET_GUIDE.md) — presets can have their own browser profile, isolated from your default session

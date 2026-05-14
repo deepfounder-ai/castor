@@ -2,7 +2,7 @@
 
 ## Overview
 
-qwe-qwe is a **local-first, single-process Python agent** tuned for small
+castor is a **local-first, single-process Python agent** tuned for small
 (3B–14B) OpenAI-compatible models on LM Studio / Ollama / llama.cpp. One
 process hosts the CLI, the FastAPI web server, the Telegram bot, the agent
 loop, the tool dispatcher, and the vector store. SQLite and Qdrant
@@ -33,16 +33,16 @@ required.
    │execute()│          │ (7 providers) │   Groq / Together / custom
    └────┬────┘          └───────────────┘
         │
-        ├──► memory.py  ──► Qdrant (~/.qwe-qwe/memory/)  + SQLite FTS5
+        ├──► memory.py  ──► Qdrant (~/.castor/memory/)  + SQLite FTS5
         ├──► rag.py     ──► markitdown / yt-dlp → memory (tag=knowledge)
-        ├──► db.py      ──► SQLite (~/.qwe-qwe/qwe_qwe.db)
+        ├──► db.py      ──► SQLite (~/.castor/castor.db)
         ├──► skills/    ──► plugin tools (browser, notes, timer, …)
         └──► mcp_client ──► MCP servers (subprocess, stdio)
 ```
 
 State lives in SQLite (chat history, threads, scheduled tasks, FTS5
 indexes), Qdrant (dense + sparse vectors) and a few loose directories
-under `~/.qwe-qwe/`.
+under `~/.castor/`.
 
 ## Core modules
 
@@ -71,7 +71,7 @@ under `~/.qwe-qwe/`.
 
 ## Memory architecture
 
-One Qdrant collection (`qwe_qwe`), three layers distinguished by `tag`:
+One Qdrant collection (`castor`), three layers distinguished by `tag`:
 
 - **Raw** (`knowledge/fact/user/...`) — direct saves and RAG chunks (~1000 chars).
 - **Entity** (`entity`) — graph nodes with typed relations, produced by `synthesis.py`.
@@ -92,19 +92,19 @@ tools) on demand — ~75% fewer schema tokens without losing capability.
 
 | Data | Path |
 | --- | --- |
-| User data root | `~/.qwe-qwe/` (override via `QWE_DATA_DIR`) |
-| Messages, threads, kv, FTS5 | `qwe_qwe.db` (SQLite) |
+| User data root | `~/.castor/` (override via `CASTOR_DATA_DIR`) |
+| Messages, threads, kv, FTS5 | `castor.db` (SQLite) |
 | Memory vectors | `memory/` (Qdrant disk mode) |
 | Indexed files | `uploads/kb/` |
 | Wiki summaries | `wiki/` |
 | User skills | `skills/` |
 | Presets | `presets/<id>/` (each with its own `workspace/`, `knowledge/`, `skills/`) |
-| Logs | `logs/qwe-qwe.log`, `logs/errors.log` |
+| Logs | `logs/castor.log`, `logs/errors.log` |
 
 ## Extension points
 
 - **Add a tool** — append an entry to `TOOLS` in `tools.py:466` and add a branch to `execute()` at `tools.py:1016`.
-- **Add a skill** — drop a `.py` in `skills/` (package) or `~/.qwe-qwe/skills/` (user); export `DESCRIPTION`, `TOOLS`, `execute()`. See `skills/notes.py` for a minimal example.
+- **Add a skill** — drop a `.py` in `skills/` (package) or `~/.castor/skills/` (user); export `DESCRIPTION`, `TOOLS`, `execute()`. See `skills/notes.py` for a minimal example.
 - **Add a provider** — extend the registry in `providers.py` (look near `_LOCAL_PROVIDERS` at line 304); an OpenAI-compatible `/v1` endpoint is all that's required.
 
 ## See also

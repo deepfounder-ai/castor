@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="static/logo.png" alt="qwe-qwe" width="280">
+  <img src="static/logo.png" alt="castor" width="280">
 </p>
 
 <h3 align="center">Business-oriented AI agent</h3>
@@ -23,12 +23,12 @@
   <img src="https://img.shields.io/badge/python-3.11+-green" alt="python">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey" alt="platform">
   <img src="https://img.shields.io/badge/license-MIT-orange" alt="license">
-  <a href="https://t.me/qwe_qwe_ai"><img src="https://img.shields.io/badge/community-Telegram-blue?logo=telegram" alt="Telegram"></a>
+  <a href="https://t.me/castor_ai"><img src="https://img.shields.io/badge/community-Telegram-blue?logo=telegram" alt="Telegram"></a>
 </p>
 
 ---
 
-## What is qwe-qwe?
+## What is castor?
 
 A **business-oriented AI agent** built to drop into real workflows: customer ops, internal automation, knowledge retrieval, scheduled reporting, custom integrations, **hardware on the floor**, and **rich UI in chat** (forms, dashboards, mockups). Deploys on your infrastructure — a workstation, your own server, or the cloud account you already have. Chat via web UI, terminal, or Telegram, with tools, semantic memory, browser control, MCP integrations, a cron-like scheduler, direct USB/serial access to scales, scanners, GPS, label printers, and PLCs — and a sandboxed canvas panel where the agent can render arbitrary HTML for visual artifacts.
 
@@ -36,9 +36,9 @@ A **business-oriented AI agent** built to drop into real workflows: customer ops
 
 > **Philosophy**: the system around the LLM should do the heavy lifting. Tool search keeps the prompt lean, recall keeps state out of the conversation, scheduler runs work without you, skills extend capability without redeploys. The result is an agent that's reliable on whatever model you pick — small enough to run on a laptop or large enough to handle complex multi-step tasks.
 
-## Why qwe-qwe
+## Why castor
 
-| | qwe-qwe | Hosted SaaS agents |
+| | castor | Hosted SaaS agents |
 |---|---|---|
 | **Data** | Stays on your infrastructure | Sent to the vendor |
 | **LLM choice** | Any OpenAI-compatible provider | Locked to vendor's model |
@@ -55,7 +55,7 @@ A **business-oriented AI agent** built to drop into real workflows: customer ops
 
 - **Python 3.11+**
 - **An LLM endpoint** — pick one:
-  - **Hosted** (any OpenAI-compatible API): Azure OpenAI, AWS Bedrock, OpenAI, Groq, OpenRouter, DeepSeek, Together. Set `QWE_LLM_URL` + `QWE_LLM_KEY` and you're done.
+  - **Hosted** (any OpenAI-compatible API): Azure OpenAI, AWS Bedrock, OpenAI, Groq, OpenRouter, DeepSeek, Together. Set `CASTOR_LLM_URL` + `CASTOR_LLM_KEY` and you're done.
   - **Local** (data stays on-prem): [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.ai) with any tool-capable model. Qwen 9B / Gemma 4B work well on a single consumer GPU; bigger models if you have the hardware.
 - **Embeddings**: FastEmbed (ONNX, local, CPU) — multilingual-MiniLM (384d, 50+ languages) + SPLADE++. Runs comfortably on a laptop without a GPU.
 
@@ -66,16 +66,16 @@ Runs natively on **Linux**, **macOS** (Intel & Apple Silicon) and **Windows 10/1
 #### 🐧 Linux / 🍎 macOS — one-line
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/deepfounder-ai/qwe-qwe/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/deepfounder-ai/castor/main/install.sh | bash
 ```
 
-This clones the repo, creates a venv, installs everything, verifies critical deps, pre-downloads the embedding model, and drops `qwe-qwe` on your `$PATH`.
+This clones the repo, creates a venv, installs everything, verifies critical deps, pre-downloads the embedding model, and drops `castor` on your `$PATH`.
 
 #### 🪟 Windows
 
 ```cmd
-git clone https://github.com/deepfounder-ai/qwe-qwe.git
-cd qwe-qwe
+git clone https://github.com/deepfounder-ai/castor.git
+cd castor
 setup.bat
 ```
 
@@ -84,8 +84,8 @@ On Windows shell commands are routed through **Git Bash** (auto-detected at inst
 #### Manual (any platform)
 
 ```bash
-git clone https://github.com/deepfounder-ai/qwe-qwe.git
-cd qwe-qwe
+git clone https://github.com/deepfounder-ai/castor.git
+cd castor
 
 # Create venv
 python3 -m venv .venv            # or `python -m venv .venv` on Windows
@@ -96,14 +96,14 @@ source .venv/bin/activate        # macOS/Linux
 pip install -e .
 
 # Verify everything is wired
-qwe-qwe --doctor
+castor --doctor
 ```
 
 #### Update an existing install
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/deepfounder-ai/qwe-qwe/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/deepfounder-ai/castor/main/install.sh | bash
 
 # Any platform, inside the checkout:
 git pull && pip install -e . --upgrade
@@ -114,19 +114,19 @@ The update script is idempotent — re-running it detects an existing checkout a
 ### Run
 
 ```bash
-qwe-qwe              # terminal chat
-qwe-qwe --web        # web UI at http://localhost:7860
-qwe-qwe --doctor     # check everything works
+castor              # terminal chat
+castor --web        # web UI at http://localhost:7860
+castor --doctor     # check everything works
 ```
 
 LM Studio / Ollama are auto-detected on localhost during setup. If your server is on another machine:
 ```bash
-export QWE_LLM_URL=http://<your-ip>:1234/v1
+export CASTOR_LLM_URL=http://<your-ip>:1234/v1
 ```
 
 ### System requirements
 
-For **hosted-LLM** deployments, qwe-qwe itself is light — any modern laptop or small VM works (the agent process is ~300MB resident, plus Qdrant on disk for memory).
+For **hosted-LLM** deployments, castor itself is light — any modern laptop or small VM works (the agent process is ~300MB resident, plus Qdrant on disk for memory).
 
 For **local-LLM** deployments where the model runs on the same machine:
 
@@ -178,8 +178,8 @@ These are the techniques the agent uses to stay reliable across model sizes — 
 ### Web UI
 
 ```bash
-qwe-qwe --web                    # http://localhost:7860
-qwe-qwe --web --ssl --port 7861  # HTTPS (needed for mic/camera)
+castor --web                    # http://localhost:7860
+castor --web --ssl --port 7861  # HTTPS (needed for mic/camera)
 ```
 
 Premium single-file SPA — **zero runtime JS dependencies** (no React, no CDN build). Linear / Vercel / Anthropic-Console aesthetic with Geist + Instrument Serif + Geist Mono type stack.
@@ -219,7 +219,7 @@ Premium single-file SPA — **zero runtime JS dependencies** (no React, no CDN b
 ### Terminal (CLI)
 
 ```bash
-qwe-qwe
+castor
 ```
 
 Rich-formatted terminal chat with 20+ slash commands: `/soul`, `/skills`, `/memory`, `/model`, `/thread`, `/cron`, `/logs`, `/stats`, `/doctor` and more.
@@ -230,7 +230,7 @@ Full mobile access — streaming responses, slash commands, topic-to-thread mapp
 
 ## Tool Search
 
-qwe-qwe uses a **meta-tool architecture** to minimize token usage. Only 8 core tools are loaded by default:
+castor uses a **meta-tool architecture** to minimize token usage. Only 8 core tools are loaded by default:
 
 | Core Tool | Purpose |
 |-----------|---------|
@@ -307,7 +307,7 @@ Activated via `tool_search("browser")`. The agent can navigate pages, read conte
 
 ## Hardware
 
-qwe-qwe runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your floor; qwe-qwe can. The built-in **`serial_port`** skill talks USB-serial / RS-232 / RS-485 to the universe of business devices that show up on every loading dock, lab bench, retail counter, and factory line.
+castor runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your floor; castor can. The built-in **`serial_port`** skill talks USB-serial / RS-232 / RS-485 to the universe of business devices that show up on every loading dock, lab bench, retail counter, and factory line.
 
 Cross-platform via `pyserial`: same API on **Windows** (`COM3`), **macOS** (`/dev/tty.usbserial-…`), and **Linux** (`/dev/ttyUSB0`).
 
@@ -384,7 +384,7 @@ Agent: [tool_search("schedule")] [tool_search("gps")]
 
 ### Setup notes
 
-- **Linux**: serial reads need `dialout` group membership. `qwe-qwe --doctor` flags this and prints the fix: `sudo usermod -aG dialout $USER` then re-login.
+- **Linux**: serial reads need `dialout` group membership. `castor --doctor` flags this and prints the fix: `sudo usermod -aG dialout $USER` then re-login.
 - **macOS**: FTDI cables work out of the box. CH340 / CH341 cables on Apple Silicon need the [WCH driver](https://www.wch.cn/downloads/CH34XSER_MAC_ZIP.html).
 - **Windows**: drivers usually auto-install via Windows Update. CH340 may need the [WCH driver](https://www.wch.cn/download/CH341SER_EXE.html); FTDI cables are plug-and-play.
 
@@ -468,7 +468,7 @@ The knowledge base ingests **50+ formats** via Microsoft **MarkItDown** (primary
 2. **Paste URL** — `POST /api/knowledge/url` fetches, converts to markdown, indexes under `source:url` tag
 3. **Scan folder** — preview first (lists indexable files with size/method), then index all in one pass
 
-Each source is stored under `~/.qwe-qwe/uploads/kb/<slug>_<name>`, chunked into ~800-char pieces, embedded + dense-vector-indexed in Qdrant, and queued for the nightly **synthesis** job that extracts entities + wiki pages from the content.
+Each source is stored under `~/.castor/uploads/kb/<slug>_<name>`, chunked into ~800-char pieces, embedded + dense-vector-indexed in Qdrant, and queued for the nightly **synthesis** job that extracts entities + wiki pages from the content.
 
 ## Memory & Knowledge Graph
 
@@ -496,7 +496,7 @@ Layer 1: RAW           Layer 2: ENTITIES        Layer 3: WIKI
 - LLM extracts entities + relations from chunks
 - Creates entity nodes with typed relations (uses, built_on, part_of, etc.)
 - Generates wiki summaries stored as searchable chunks
-- Writes markdown to `~/.qwe-qwe/wiki/` as human-readable backup
+- Writes markdown to `~/.castor/wiki/` as human-readable backup
 
 **During search** (enriched context):
 - Wiki chunks found first (synthesized = higher quality embeddings)
@@ -586,7 +586,7 @@ Plus custom traits, agent name, and language selection. Edit via `/soul` (CLI), 
 ## Diagnostics
 
 ```bash
-qwe-qwe --doctor
+castor --doctor
 ```
 
 Checks 20+ system components: Python, dependencies, SQLite, Qdrant, provider, LLM API, model loaded, embeddings, inference latency, agent loop v2, MCP servers, browser skill, Telegram, threads, skills, tools, cron/heartbeat, STT/TTS, files indexed, knowledge graph (entities/wiki), synthesis cron, BM25 index, disk space, logs.
@@ -596,24 +596,24 @@ Checks 20+ system components: Python, dependencies, SQLite, Qdrant, provider, LL
 Environment variables:
 
 ```bash
-QWE_LLM_URL=http://localhost:1234/v1   # LLM server URL
-QWE_LLM_MODEL=qwen/qwen3.5-9b          # Model name
-QWE_LLM_KEY=lm-studio                  # API key
-QWE_DB_PATH=~/.qwe-qwe/qwe_qwe.db      # Database path
-QWE_DATA_DIR=~/.qwe-qwe                # Where threads / memory / uploads live
-QWE_QDRANT_MODE=disk                   # memory | disk | server
-QWE_PASSWORD=                          # Web UI password (shows login modal if set)
-QWE_STT_DEVICE=cpu                     # STT inference device (cpu | cuda)
+CASTOR_LLM_URL=http://localhost:1234/v1   # LLM server URL
+CASTOR_LLM_MODEL=qwen/qwen3.5-9b          # Model name
+CASTOR_LLM_KEY=lm-studio                  # API key
+CASTOR_DB_PATH=~/.castor/castor.db      # Database path
+CASTOR_DATA_DIR=~/.castor                # Where threads / memory / uploads live
+CASTOR_QDRANT_MODE=disk                   # memory | disk | server
+CASTOR_PASSWORD=                          # Web UI password (shows login modal if set)
+CASTOR_STT_DEVICE=cpu                     # STT inference device (cpu | cuda)
 ```
 
 Everything else (30+ knobs — `context_budget`, `rag_chunk_size`, `synthesis_time`, `tts_api_url`, etc.) lives in **Settings → Advanced → Settings** and persists in SQLite.
 
 ### Data layout
 
-All user data in `~/.qwe-qwe/` (configurable via `QWE_DATA_DIR`):
+All user data in `~/.castor/` (configurable via `CASTOR_DATA_DIR`):
 
 ```
-qwe_qwe.db        SQLite — messages, threads, KV, settings
+castor.db        SQLite — messages, threads, KV, settings
 memory/           Qdrant vectors (disk mode)
 wiki/             Synthesized markdown pages
 skills/           User-created skills
@@ -621,7 +621,7 @@ uploads/          Images, documents, camera captures
   kb/             Knowledge-base files awaiting / done indexing
 workspace/        Default CWD for relative paths (switches per-preset)
 presets/<id>/     Installed presets (each with own workspace/, knowledge/, skills/)
-logs/             qwe-qwe.log (INFO+), errors.log (WARNING+)
+logs/             castor.log (INFO+), errors.log (WARNING+)
 ```
 
 ## Docker
@@ -688,7 +688,7 @@ Per-feature user guides live in [`docs/`](docs/README.md). The hub indexes every
 
 ## Contributing
 
-**Contributions welcome.** qwe-qwe is a small open project — your PR won't get lost in a queue.
+**Contributions welcome.** castor is a small open project — your PR won't get lost in a queue.
 
 - 📘 Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup + workflow
 - 🏗️ See [ARCHITECTURE.md](ARCHITECTURE.md) for the big picture
@@ -721,9 +721,9 @@ Dependencies are tracked by [Dependabot](.github/dependabot.yml) — weekly grou
 
 ## Community
 
-- 💬 [Telegram — @qwe_qwe_ai](https://t.me/qwe_qwe_ai) — quick chat, show-and-tell, release announcements
+- 💬 [Telegram — @castor_ai](https://t.me/castor_ai) — quick chat, show-and-tell, release announcements
 - 💭 [GitHub Discussions](../../discussions) — long-form questions, workflow sharing
-- ⭐ If qwe-qwe is useful — **star the repo**. It's the clearest signal we're on the right track.
+- ⭐ If castor is useful — **star the repo**. It's the clearest signal we're on the right track.
 
 ## License
 

@@ -242,7 +242,7 @@ def _pre_dispatch_safety_check(tool_name: str, args: dict, self_check_fn=None) -
     2. For ``shell``: route through ``tools._check_shell_safety`` on the
        ``command`` argument.
     3. For ``write_file``: route through ``tools._resolve_path(raw, for_write=True)``
-       so the workspace whitelist catches writes outside ~/.qwe-qwe/ / cwd.
+       so the workspace whitelist catches writes outside ~/.castor/ / cwd.
 
     Returns None on allow, str on reject. Never raises.
     """

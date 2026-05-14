@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0a0a0a">
-<title>qwe-qwe — workspace</title>
+<title>castor — workspace</title>
 <link rel="icon" href="/static/favicon.ico">
 <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1756,7 +1756,7 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
 <div id="app"></div>
 
 <script>
-/* qwe-qwe · v2 premium shell · vanilla JS · wires to /ws + /api/* */
+/* castor · v2 premium shell · vanilla JS · wires to /ws + /api/* */
 
 const I = {
   chat:'M116,96a20,20,0,1,1,20,20A20,20,0,0,1,116,96Zm40,0a20,20,0,1,1-20-20A20,20,0,0,1,156,96Zm72,32A100,100,0,0,1,79.2,215.2L46.6,225.1A16,16,0,0,1,26.9,205.4l9.9-32.6A100,100,0,1,1,228,128Zm-16,0A84,84,0,1,0,51.5,165.9a8,8,0,0,1,.8,6.6L42,206l33.5-10.3a7.8,7.8,0,0,1,2.3-.3,8.5,8.5,0,0,1,4.3,1.1A84,84,0,0,0,212,128Z',
@@ -1940,8 +1940,8 @@ function openLoginModal() {
     '</div>' +
     '<div class="field">' +
       '<div class="label">Password</div>' +
-      '<input type="password" id="lg-pwd" placeholder="your qwe-qwe password" autofocus>' +
-      '<div class="hint">Set via <span class="mono">QWE_PASSWORD</span> env var when the server starts.</div>' +
+      '<input type="password" id="lg-pwd" placeholder="your castor password" autofocus>' +
+      '<div class="hint">Set via <span class="mono">CASTOR_PASSWORD</span> env var when the server starts.</div>' +
     '</div>';
   openModal({
     title: 'Sign in', body,
@@ -2070,7 +2070,7 @@ const state = {
   messages: [],
   streaming: null,
   busy: false,
-  soul: { agent_name: 'qwe-qwe' },
+  soul: { agent_name: 'castor' },
   status: null,
   model: { provider: '', model: '' },
   settingsTab: 'model',
@@ -2097,7 +2097,7 @@ const state = {
   memoryEntries: [],
   cronJobs: [],
   presetList: [],
-  blogFeed: [],          // RSS items from deepfounder.ai/tag/qwe-qwe — lazy-loaded when Presets view opens
+  blogFeed: [],          // RSS items from deepfounder.ai/tag/castor — lazy-loaded when Presets view opens
   blogFeedLoaded: false, // gate so we only fetch once per session even on rapid view switches
   kbFiles: [],
   memoryEntries: [],   // plain memories (Save-to-memory button + agent's memory_save calls)
@@ -3247,7 +3247,7 @@ async function loadMemory() {
   } catch { state.kbFiles = []; render(); }
   // Plain memories — what the Save-to-memory button writes. Lives
   // alongside the indexed knowledge sources. Phase 1 Living Memory
-  // reads from the markdown layer (~/.qwe-qwe/memories/atoms/).
+  // reads from the markdown layer (~/.castor/memories/atoms/).
   try {
     const r = await api('/api/memory/list?limit=50');
     state.memoryEntries = (r && r.entries) || [];
@@ -4112,7 +4112,7 @@ function renderTopBar() {
     (state.view === 'chat'
       ? '<button class="mobile-hamburger" data-act="toggle-threadlist" aria-label="Threads">' + ico('chat', 14) + '</button>'
       : '') +
-    '<div class="crumb"><span class="root">qwe-qwe</span><span class="sep">/</span>' +
+    '<div class="crumb"><span class="root">castor</span><span class="sep">/</span>' +
     '<span class="name">' + esc(crumbMap[state.view]) + '</span></div>' +
     '<button class="cmd-btn" data-act="palette">' + ico('search', 12) +
       '<span class="label">Ask, search, or run a command…</span><span class="kbd">' + MOD + ' K</span></button>' +
@@ -4349,7 +4349,7 @@ function renderMessage(m) {
     ? '<div class="head"><span class="avatar">' + esc(((state.status && state.status.user && state.status.user.name) || 'Y')[0].toUpperCase()) + '</span>' +
       '<span class="who user">you</span><span class="time">·</span><span class="time">' + esc(fmtTime(m.time)) + '</span></div>'
     : '<div class="head"><span class="avatar duck"><img src="/static/logo.png" class="duck-micro" alt=""></span>' +
-      '<span class="who">' + esc(state.soul.agent_name || 'qwe-qwe') + '</span>' +
+      '<span class="who">' + esc(state.soul.agent_name || 'castor') + '</span>' +
       '<span class="time">·</span><span class="time">' + esc(fmtTime(m.time)) + '</span>' +
       (m.streaming ? '<span class="gen-tag"><span class="dot"></span>generating</span>' : '') + '</div>';
   // Thinking: expanded during active streaming (so user sees progress),
@@ -4495,7 +4495,7 @@ function renderChatView() {
     : '<div class="thread-header"><div class="meta-row"><span class="tag accent">new</span></div><h1>Start a new thread</h1></div>';
   const empty = !state.messages.length
     ? '<div class="empty"><img class="duck-big duck-idle" src="/static/logo.png" alt=""><h3>Ask anything</h3>' +
-      '<p>qwe-qwe runs on-device. Tools, memory, and scheduled work are all wired into this canvas.</p></div>'
+      '<p>castor runs on-device. Tools, memory, and scheduled work are all wired into this canvas.</p></div>'
     : '';
   const chipStrip = (state.pendingAttachments.length || state.capturedFrame)
     ? '<div class="attach-strip">' +
@@ -4546,7 +4546,7 @@ function renderChatView() {
         ['/recall', '/remember', '/cron', '/tools'].map(c => '<button class="slash" data-slash="'+c+'">'+c+'</button>').join('') +
       '</div>' +
       '<div class="box">' + canvasStrip + chipStrip +
-        '<textarea id="composer-ta" rows="1" placeholder="Reply to ' + esc(state.soul.agent_name || 'qwe-qwe') + '…"></textarea>' +
+        '<textarea id="composer-ta" rows="1" placeholder="Reply to ' + esc(state.soul.agent_name || 'castor') + '…"></textarea>' +
         '<div class="actions">' +
           '<div class="left">' +
             '<button class="icon-btn" data-act="attach" title="Attach file">' + ico('attach', 14) + '</button>' +
@@ -5044,7 +5044,7 @@ function renderMemoryView() {
   return '<div class="scroll-col"><div class="inner-xwide">' +
     '<div class="page-hdr"><div class="copy">' +
       '<div class="eyebrow">MEMORY · ' + totalChunks.toLocaleString() + ' chunks · ' + humanSize(totalBytes) + (files.length ? ' · ' + files.length + ' source' + (files.length === 1 ? '' : 's') : '') + (facts.length ? ' · ' + facts.length + ' fact' + (facts.length === 1 ? '' : 's') : '') + '</div>' +
-      '<h1>What qwe-qwe knows</h1>' +
+      '<h1>What castor knows</h1>' +
       '<p class="sub">Files, URLs, and free-form facts — all searched together via semantic + keyword + graph proximity. File-sources are chunked for retrieval; facts are atomic saves.</p>' +
     '</div>' +
     '<div style="display:flex;gap:8px;align-items:center">' + indexing +
@@ -5243,7 +5243,7 @@ function renderSchedulerView() {
     '</div><button class="page-primary" data-act="new-cron">' + ico('plusSmall', 12) + ' New routine</button></div>' +
 
     // Awake-only banner — borrowed from Claude Routines, sets correct
-    // expectation: qwe-qwe is local-first, no cloud cron daemon.
+    // expectation: castor is local-first, no cloud cron daemon.
     '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;background:var(--surface);border:1px solid var(--line-2);margin:18px 0 12px;font-size:12px;color:var(--fg-3)">' +
       ico('shield', 14) + '<span>Local routines only run while your computer is awake.</span>' +
     '</div>' +
@@ -5312,7 +5312,7 @@ function renderSchedulerView() {
       (!userJobs.length ? '<div style="grid-column:1/-1;padding:60px 0;text-align:center;color:var(--fg-4)">No routines yet. Click <span class="mono">New routine</span> to create one.</div>' : '') +
     '</div>' +
 
-    // System tasks — qwe-qwe's own maintenance routines (heartbeat, nightly
+    // System tasks — castor's own maintenance routines (heartbeat, nightly
     // synthesis). Visually demoted (smaller, dimmed, no click-to-open) so
     // they don't visually compete with user routines. Still visible so
     // users can see run counts / status and confirm the agent is healthy.
@@ -5401,7 +5401,7 @@ function renderBlogFeedStrip() {
   return '<div class="feed-strip">' +
     '<div class="feed-hdr">' +
       '<span class="feed-title">From the blog</span>' +
-      '<a class="feed-more" href="https://deepfounder.ai/tag/qwe-qwe/" target="_blank" rel="noopener noreferrer">all posts →</a>' +
+      '<a class="feed-more" href="https://deepfounder.ai/tag/castor/" target="_blank" rel="noopener noreferrer">all posts →</a>' +
     '</div>' +
     '<div class="feed-list">' + itemsHtml + '</div>' +
   '</div>';
@@ -5486,7 +5486,7 @@ async function spicyActivate() {
       h.classList.add('burst');
       setTimeout(() => h.classList.remove('burst'), 500);
     });
-    toast('🌶️ spicy mode unlocked — ' + (state.soul.agent_name || 'qwe-qwe') + ' gets a little naughty', 'err');
+    toast('🌶️ spicy mode unlocked — ' + (state.soul.agent_name || 'castor') + ' gets a little naughty', 'err');
     applySpicy();
     setTimeout(() => { loadSkills(); render(); }, 600);
   } catch { toast('could not flip spicy_duck', 'err'); }
@@ -5558,7 +5558,7 @@ async function loadAdvanced() {
 }
 
 async function loadAdvancedLogs() {
-  const file = state._logsFile || 'qwe-qwe.log';
+  const file = state._logsFile || 'castor.log';
   try {
     const r = await api('/api/logs?lines=500&file=' + encodeURIComponent(file));
     const lines = Array.isArray(r.lines) ? r.lines : [];
@@ -5578,7 +5578,7 @@ async function checkFirstRunSetup() {
 
 function openFirstRunWizard() {
   const steps = ['welcome', 'identity', 'model', 'personality', 'done'];
-  const s = { idx: 0, user_name: '', agent_name: 'qwe-qwe', language: 'en',
+  const s = { idx: 0, user_name: '', agent_name: 'castor', language: 'en',
     provider: '', endpoint: '', api_key: '', model: '',
     traits: { humor: 'moderate', honesty: 'high', curiosity: 'high', brevity: 'moderate',
               formality: 'low', proactivity: 'moderate', empathy: 'moderate', creativity: 'moderate' },
@@ -5589,7 +5589,7 @@ function openFirstRunWizard() {
   const bodyFor = (step) => {
     if (step === 'welcome') {
       return '<div style="text-align:center;padding:20px 0"><img src="/static/logo.png" class="duck-idle" style="width:80px;height:80px;filter:drop-shadow(0 10px 30px rgba(255,122,26,0.3))"></div>' +
-        '<p style="font-size:14px;color:var(--fg-2);line-height:1.6">Welcome to qwe-qwe — a fully local AI agent. Four quick steps and you\'re in.</p>' +
+        '<p style="font-size:14px;color:var(--fg-2);line-height:1.6">Welcome to castor — a fully local AI agent. Four quick steps and you\'re in.</p>' +
         '<ul style="margin-top:14px;color:var(--fg-3);font-size:12.5px;line-height:1.8;list-style:none;padding:0">' +
         '<li>• Identify yourself (name + agent name + language)</li>' +
         '<li>• Pick an inference provider (LM Studio, Ollama, or remote)</li>' +
@@ -5634,7 +5634,7 @@ function openFirstRunWizard() {
   const save = (fromStep) => {
     if (fromStep === 'identity') {
       s.user_name = (document.getElementById('st-user') || {}).value || '';
-      s.agent_name = (document.getElementById('st-agent') || {}).value || 'qwe-qwe';
+      s.agent_name = (document.getElementById('st-agent') || {}).value || 'castor';
       s.language = (document.getElementById('st-lang') || {}).value || 'en';
     } else if (fromStep === 'model') {
       s.provider = (document.getElementById('st-prov') || {}).value || '';
@@ -5999,7 +5999,7 @@ function renderTabModel() {
       (models.length === 0
         ? (state.modelsLoading
             ? '<div style="padding:12px 0;color:var(--fg-3);font-size:12px;display:flex;align-items:center;gap:10px"><div class="spinner" style="width:13px;height:13px;border:2px solid var(--line-2);border-top-color:var(--accent);border-radius:50%;animation:kb-spin 0.8s linear infinite"></div>Loading models from ' + esc(activeProv || 'provider') + '…</div>'
-            : '<div style="padding:10px 0;color:var(--fg-4);font-size:12px">No models yet. Select a provider first, or use <span class="mono">qwe-qwe --doctor</span>.</div>')
+            : '<div style="padding:10px 0;color:var(--fg-4);font-size:12px">No models yet. Select a provider first, or use <span class="mono">castor --doctor</span>.</div>')
         : '<div class="picker-grid">' + models.map(m => {
             const id = m.id || m.name || m;
             return '<button class="picker-card ' + (id === activeModel ? 'active' : '') + '" data-pick-model="' + esc(id) + '">' +
@@ -6042,7 +6042,7 @@ function renderTabSoul() {
   };
   return '<h2>Soul</h2><p class="intro">Personality traits shape tone, verbosity, and style. Saved instantly.</p>' +
     settingsSection('Identity',
-      settingRow('Agent name', '', '<input class="setting-input" data-soul="name" value="' + esc(values.name || values.agent_name || 'qwe-qwe') + '">') +
+      settingRow('Agent name', '', '<input class="setting-input" data-soul="name" value="' + esc(values.name || values.agent_name || 'castor') + '">') +
       settingRow('Language', 'Two-letter code: en, ru, es…', '<input class="setting-input mono" data-soul="language" value="' + esc(values.language || 'en') + '">')
     ) +
     settingsSection('Built-in traits',
@@ -6239,7 +6239,7 @@ function renderTabTools() {
       (state.spicy
         ? '<span class="spicy-label active">spicy mode · ON</span>' +
           '<button class="chip" data-act="spicy-off">disable</button>'
-        : '<span class="spicy-label">qwe-qwe</span>') +
+        : '<span class="spicy-label">castor</span>') +
     '</div>';
 
   const searchBar =
@@ -6380,7 +6380,7 @@ function renderTabTelegram() {
   const allowed = t.allowed_groups || [];
   const statusCls = verified && running ? 'ok' : (hasToken ? 'warn' : 'err');
   const statusLabel = !hasToken ? 'no token' : (running ? (verified ? 'live' : 'unverified') : 'stopped');
-  return '<h2>Telegram</h2><p class="intro">Chat with qwe-qwe from your phone. Set a bot token, activate, and optionally allow groups.</p>' +
+  return '<h2>Telegram</h2><p class="intro">Chat with castor from your phone. Set a bot token, activate, and optionally allow groups.</p>' +
     settingsSection('Status',
       settingRow('Bot', username ? '@' + esc(username) : 'not configured',
         '<span class="status-badge ' + statusCls + '"><span class="sbdot"></span>' + statusLabel + '</span>') +
@@ -6536,11 +6536,11 @@ function renderTabNetwork() {
 
 function renderTabPrivacy() {
   const st = state.status || {};
-  const dataDir = st.data_dir || '~/.qwe-qwe';
+  const dataDir = st.data_dir || '~/.castor';
   const tel = state.telemetry || null;
-  return '<h2>Privacy</h2><p class="intro">qwe-qwe runs fully on-device. Nothing leaves your machine unless you explicitly enable an outbound tool (<span class="mono">http_request</span>, <span class="mono">browser_open</span>, remote providers, Telegram bot).</p>' +
+  return '<h2>Privacy</h2><p class="intro">castor runs fully on-device. Nothing leaves your machine unless you explicitly enable an outbound tool (<span class="mono">http_request</span>, <span class="mono">browser_open</span>, remote providers, Telegram bot).</p>' +
     settingsSection('What\'s local',
-      settingRow('Threads & messages', 'SQLite at ' + esc(dataDir) + '/qwe_qwe.db',
+      settingRow('Threads & messages', 'SQLite at ' + esc(dataDir) + '/castor.db',
         '<span class="status-badge ok"><span class="sbdot"></span>local</span>') +
       settingRow('Memory vectors', 'Qdrant on-disk embeddings.',
         '<span class="status-badge ok"><span class="sbdot"></span>local</span>') +
@@ -6605,7 +6605,7 @@ function renderTelemetryPanel(tel) {
     '<div style="display:flex;align-items:center;gap:12px;padding:6px 0 14px;border-bottom:1px solid var(--line-2);margin-bottom:14px">' +
       '<div style="flex:1">' +
         '<div style="font-size:13px;font-weight:500;color:var(--fg);margin-bottom:3px">Share anonymous usage metrics ' + badge + '</div>' +
-        '<div style="font-size:11.5px;color:var(--fg-4);line-height:1.5">Helps the project understand how qwe-qwe is used and what to fix. <strong>Default OFF.</strong> Opt-in only. No chat content, no soul / personality, no file paths, no model ids, no PII. <a href="https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full policy →</a></div>' +
+        '<div style="font-size:11.5px;color:var(--fg-4);line-height:1.5">Helps the project understand how castor is used and what to fix. <strong>Default OFF.</strong> Opt-in only. No chat content, no soul / personality, no file paths, no model ids, no PII. <a href="https://github.com/deepfounder-ai/castor/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full policy →</a></div>' +
       '</div>' +
       '<button class="' + (enabled ? 'btn-secondary' : 'btn-primary') + '" data-act="' + (enabled ? 'telemetry-opt-out' : 'telemetry-opt-in') + '" style="padding:6px 14px;flex-shrink:0">' +
         (enabled ? 'Disable' : 'Enable') +
@@ -6640,7 +6640,7 @@ function renderTelemetryPanel(tel) {
 }
 
 function renderTabAppearance() {
-  return '<h2>Appearance</h2><p class="intro">Tune how qwe-qwe looks.</p>' +
+  return '<h2>Appearance</h2><p class="intro">Tune how castor looks.</p>' +
     settingRow('Theme', 'Dark is the premium experience.', '<input class="setting-input mono" value="Dark · premium" readonly>') +
     settingRow('Right inspector', 'Default visibility on chat view.', '<button class="toggle ' + (state.inspectorOn ? 'on' : '') + '" data-act="toggle-inspector"><span class="knob"></span></button>') +
     settingRow('Duck animations', '', '<button class="toggle ' + (state.anim ? 'on' : '') + '" data-act="toggle-anim"><span class="knob"></span></button>') +
@@ -6781,7 +6781,7 @@ function renderAdvancedSub() {
     return '<p class="intro">Server logs (last 500 lines). Read-only.</p>' +
       '<div style="display:flex;gap:6px;margin-bottom:10px;align-items:center">' +
         '<button class="btn-secondary" data-act="logs-reload">' + ico('refresh', 12) + ' reload</button>' +
-        '<button class="btn-secondary" data-act="logs-file" data-file="qwe-qwe.log">qwe-qwe.log</button>' +
+        '<button class="btn-secondary" data-act="logs-file" data-file="castor.log">castor.log</button>' +
         '<button class="btn-secondary" data-act="logs-file" data-file="errors.log">errors.log</button>' +
         '<div style="flex:1"></div>' +
         '<button class="btn-secondary" data-act="logs-copy">' + ico('download', 12) + ' copy</button>' +
@@ -6797,7 +6797,7 @@ function renderTabAccount() {
   return '<h2>Account</h2><p class="intro">Local install. No cloud account required.</p>' +
     settingRow('Display name', '', '<input class="setting-input" value="' + esc((state.status && state.status.user && state.status.user.name) || '') + '">') +
     settingRow('Version', 'On-disk build.', '<input class="setting-input mono" value="' + esc(v || '—') + '" readonly>') +
-    settingRow('Data directory', 'Threads, memory, uploads.', '<input class="setting-input mono" value="' + esc((state.status && state.status.data_dir) || '~/.qwe-qwe') + '" readonly>');
+    settingRow('Data directory', 'Threads, memory, uploads.', '<input class="setting-input mono" value="' + esc((state.status && state.status.data_dir) || '~/.castor') + '" readonly>');
 }
 
 
@@ -7082,7 +7082,7 @@ function renderPalette() {
     { group: 'ask', label: 'Ask: ' + (q || 'what can you do?'), icon: 'sparkle', ask: true, act: () => { go('chat'); setTimeout(() => sendMessage(q || 'what can you do?'), 60); } },
   ];
   const filtered = q ? items.filter(it => it.label.toLowerCase().includes(q.toLowerCase()) || it.group === 'ask') : items.filter(it => it.group !== 'ask');
-  const groups = { go: 'NAVIGATE', action: 'ACTIONS', ask: 'ASK QWE-QWE' };
+  const groups = { go: 'NAVIGATE', action: 'ACTIONS', ask: 'ASK CASTOR' };
   const grouped = {};
   filtered.forEach(it => { (grouped[it.group] = grouped[it.group] || []).push(it); });
   window.__paletteItems = filtered;
@@ -7105,7 +7105,7 @@ function renderPalette() {
       '</div>' +
       '<div class="cmdk-foot"><span><span class="kbd">↑</span><span class="kbd">↓</span> navigate</span>' +
         '<span><span class="kbd">↵</span> select</span><div style="flex:1"></div>' +
-        '<img src="/static/logo.png" style="width:12px;height:12px"><span>qwe-qwe</span></div>' +
+        '<img src="/static/logo.png" style="width:12px;height:12px"><span>castor</span></div>' +
     '</div></div>';
 }
 
@@ -8301,7 +8301,7 @@ function wireEvents() {
       try {
         const r = await fetch('/api/tts', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: 'Hello — this is ' + (state.soul.agent_name || 'qwe-qwe') + ' speaking.' }),
+          body: JSON.stringify({ text: 'Hello — this is ' + (state.soul.agent_name || 'castor') + ' speaking.' }),
         });
         if (!r.ok) throw 0;
         const blob = await r.blob();
@@ -8655,7 +8655,7 @@ function wireEvents() {
       catch { toast('delete failed', 'err'); }
     };
   });
-  document.querySelectorAll('[data-act="logs-reload"]').forEach(b => { b.onclick = () => { state._logsFile = state._logsFile || 'qwe-qwe.log'; loadAdvancedLogs(); }; });
+  document.querySelectorAll('[data-act="logs-reload"]').forEach(b => { b.onclick = () => { state._logsFile = state._logsFile || 'castor.log'; loadAdvancedLogs(); }; });
   document.querySelectorAll('[data-act="logs-file"]').forEach(b => {
     b.onclick = async () => {
       state._logsFile = b.dataset.file;
@@ -8907,7 +8907,7 @@ async function openSkillImportModal(opts) {
     '<input id="skill-import-url" type="text" placeholder="https://skills.sh/<owner>/<repo>/<skill> or https://github.com/<owner>/<repo>/tree/<ref>/<path>" ' +
       'value="' + esc(initialUrl) + '" ' +
       'style="width:100%;padding:9px 11px;background:var(--surface);border:1px solid var(--line);border-radius:6px;color:var(--fg);font-family:var(--font-mono);font-size:12px">' +
-    '<div style="font-size:11px;color:var(--fg-4);margin-top:6px;line-height:1.5">Paste a public URL. The skill\'s <span class="mono">SKILL.md</span> + adjacent scripts will be fetched, validated, and installed under <span class="mono">~/.qwe-qwe/skills/</span>.</div>' +
+    '<div style="font-size:11px;color:var(--fg-4);margin-top:6px;line-height:1.5">Paste a public URL. The skill\'s <span class="mono">SKILL.md</span> + adjacent scripts will be fetched, validated, and installed under <span class="mono">~/.castor/skills/</span>.</div>' +
     '<label style="display:flex;gap:6px;align-items:center;margin-top:14px;font-size:11.5px;color:var(--fg-2);cursor:pointer">' +
       '<input type="checkbox" id="skill-import-overwrite" ' + (overwrite ? 'checked' : '') + '>' +
       'Overwrite if a skill with the same name already exists' +
@@ -9102,10 +9102,10 @@ async function checkTelemetryFirstRun() {
     // any time in Settings → Privacy → Telemetry.
     let _decided = false;
     openModal({
-      title: 'Help improve qwe-qwe?',
+      title: 'Help improve castor?',
       body:
         '<div style="font-size:12.5px;color:var(--fg-2);line-height:1.6;margin-bottom:14px">' +
-          'qwe-qwe can send <strong>anonymous usage metrics</strong> to the project so we can see what\'s used and what to fix. <strong>This is opt-in.</strong> If you say no, nothing leaves your machine.' +
+          'castor can send <strong>anonymous usage metrics</strong> to the project so we can see what\'s used and what to fix. <strong>This is opt-in.</strong> If you say no, nothing leaves your machine.' +
         '</div>' +
         '<div style="font-size:11.5px;color:var(--fg-3);line-height:1.6;margin-bottom:10px">If you enable, events go to <span class="mono" style="color:var(--fg-2)">' + esc(tel.endpoint || 'the project\'s analytics server') + '</span> — operated by deepfounder.ai.</div>' +
         '<details style="margin-bottom:10px">' +
@@ -9123,7 +9123,7 @@ async function checkTelemetryFirstRun() {
             '<li>API keys, secrets, Telegram tokens</li>' +
           '</ul>' +
         '</details>' +
-        '<div style="font-size:11px;color:var(--fg-4);margin-top:10px">Default is <strong>off</strong>. If you close this without choosing, telemetry stays off — change any time in Settings → Privacy. <a href="https://github.com/deepfounder-ai/qwe-qwe/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full privacy policy →</a></div>',
+        '<div style="font-size:11px;color:var(--fg-4);margin-top:10px">Default is <strong>off</strong>. If you close this without choosing, telemetry stays off — change any time in Settings → Privacy. <a href="https://github.com/deepfounder-ai/castor/blob/main/docs/PRIVACY.md" target="_blank" style="color:var(--accent)">Full privacy policy →</a></div>',
       onClose: () => {
         // Backdrop / X / ESC dismissal without an explicit choice →
         // treat as silent decline. Fires opt-out so consent_version

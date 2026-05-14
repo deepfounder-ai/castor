@@ -447,7 +447,7 @@ def test_agent_run_accepts_system_note(qwe_temp_data_dir, mock_llm):
 - [ ] **Step 2: Find current `agent.run` signature**
 
 ```bash
-grep -n "^def run(\|^def run\>" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/agent.py | head -5
+grep -n "^def run(\|^def run\>" /Users/kirleshkevich/Documents/GitHub/castor/agent.py | head -5
 ```
 
 Read ~20 lines below the match to understand the existing signature.
@@ -596,7 +596,7 @@ This test is flaky-prone (depends on timing of mock_llm chunks); if it can't be 
 - [ ] **Step 2: Find the existing `finally:` in `run_loop`**
 
 ```bash
-grep -n "_final_status\|finalize_agent_run\|final_content" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/agent_loop.py | head -15
+grep -n "_final_status\|finalize_agent_run\|final_content" /Users/kirleshkevich/Documents/GitHub/castor/agent_loop.py | head -15
 ```
 
 The finally block was added in spec #1 Task 11. Locate it (around line 815 in current `agent_loop.py`).
@@ -635,7 +635,7 @@ if _is_aborted and final_content:
 - [ ] **Step 4: Verify save_message accepts `meta` as dict**
 
 ```bash
-grep -n "def save_message" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/db.py
+grep -n "def save_message" /Users/kirleshkevich/Documents/GitHub/castor/db.py
 ```
 
 Read the function. If `meta` is already a dict parameter that gets JSON-serialized into the column, no work needed. If `meta` is a string parameter, wrap: `meta=json.dumps({...})`. Update the spec implementation accordingly.
@@ -962,7 +962,7 @@ The TestClient WS protocol may vary; if the connect signature differs, adapt. Go
 - [ ] **Step 2: Find WS handler**
 
 ```bash
-grep -n "@app.websocket\|async def ws_\|websocket_endpoint" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/server.py | head -5
+grep -n "@app.websocket\|async def ws_\|websocket_endpoint" /Users/kirleshkevich/Documents/GitHub/castor/server.py | head -5
 ```
 
 Locate where the WS handler authenticates and binds the thread_id.
@@ -1148,7 +1148,7 @@ git commit -m "feat(api): POST /api/resume/{id} + /api/resume/{id}/dismiss"
 - [ ] **Step 1: Locate command-handler pattern**
 
 ```bash
-grep -n "@bot.command\|@dp.message\|handle_.*command" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/telegram_bot.py | head -10
+grep -n "@bot.command\|@dp.message\|handle_.*command" /Users/kirleshkevich/Documents/GitHub/castor/telegram_bot.py | head -10
 ```
 
 Match the existing command-handler decorator pattern.
@@ -1238,7 +1238,7 @@ def test_scheduler_respects_routine_auto_off(qwe_temp_data_dir, mock_llm):
 - [ ] **Step 2: Find `detect_missed_runs`**
 
 ```bash
-grep -n "def detect_missed_runs" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/scheduler.py
+grep -n "def detect_missed_runs" /Users/kirleshkevich/Documents/GitHub/castor/scheduler.py
 ```
 
 - [ ] **Step 3: Extend the function**
@@ -1294,7 +1294,7 @@ git commit -m "feat(scheduler): auto-resume aborted routine runs within window"
 - [ ] **Step 1: Find WS message handler**
 
 ```bash
-grep -n "handleWsMessage\|handleWSMessage\|onmessage\|state.streaming" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/static/index.html | head -10
+grep -n "handleWsMessage\|handleWSMessage\|onmessage\|state.streaming" /Users/kirleshkevich/Documents/GitHub/castor/static/index.html | head -10
 ```
 
 - [ ] **Step 2: Add HTML for banner**
@@ -1400,7 +1400,7 @@ git commit -m "feat(ui): interrupted-turn banner with Resume/Dismiss actions"
 - [ ] **Step 1: Find assistant message render**
 
 ```bash
-grep -n "msg-assistant\|renderAssistantMessage\|role.*assistant" /Users/kirleshkevich/Documents/GitHub/qwe-qwe/static/index.html | head -10
+grep -n "msg-assistant\|renderAssistantMessage\|role.*assistant" /Users/kirleshkevich/Documents/GitHub/castor/static/index.html | head -10
 ```
 
 - [ ] **Step 2: Branch on `msg.meta.interrupted`**

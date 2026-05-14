@@ -27,11 +27,11 @@ import pytest
 
 @pytest.fixture
 def sc(qwe_temp_data_dir):
-    """Reload skill_creator against a fresh temp QWE_DATA_DIR.
+    """Reload skill_creator against a fresh temp CASTOR_DATA_DIR.
 
     Important because USER_SKILLS_DIR resolves at import time off
     config.DATA_DIR — without this, tests would write to the real
-    user's ~/.qwe-qwe/skills/.
+    user's ~/.castor/skills/.
     """
     if "skills.skill_creator" in sys.modules:
         del sys.modules["skills.skill_creator"]
@@ -523,7 +523,7 @@ def test_step3_code_examples_cover_camera_memory_secret(sc):
 
 
 def test_instruction_enforces_table_namespacing(sc):
-    """qwe-qwe uses one shared SQLite. Without a prefix rule, two
+    """castor uses one shared SQLite. Without a prefix rule, two
     user-created skills could accidentally share a `notes` table.
     The rule must be in INSTRUCTION (LLM sees it directly) AND
     backed by a concrete prefix example."""

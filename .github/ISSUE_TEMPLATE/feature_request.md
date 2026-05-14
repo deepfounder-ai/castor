@@ -28,5 +28,5 @@ assignees: ""
 Before submitting:
 
 - [ ] I searched existing issues + discussions
-- [ ] This fits qwe-qwe's scope (local-first agent optimised for small models — not a cloud product, not a replacement for ChatGPT API wrappers)
+- [ ] This fits castor's scope (local-first agent optimised for small models — not a cloud product, not a replacement for ChatGPT API wrappers)
 - [ ] I'm OK with the maintainers rejecting or reshaping this — feature requests are conversation starters, not demands

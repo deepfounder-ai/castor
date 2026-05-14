@@ -1,11 +1,11 @@
 # Voice — Live Voice Mode, STT, TTS
 
-qwe-qwe ships a full voice loop in the Web UI: **press the mic, talk, see the transcript fill in, the agent responds, hear the answer read back, mic re-opens automatically.** VAD handles turn-taking — no walkie-talkie button.
+castor ships a full voice loop in the Web UI: **press the mic, talk, see the transcript fill in, the agent responds, hear the answer read back, mic re-opens automatically.** VAD handles turn-taking — no walkie-talkie button.
 
 Voice features need **HTTPS** for browser mic/camera access. Run with `--ssl`:
 
 ```bash
-qwe-qwe --web --ssl --port 7861
+castor --web --ssl --port 7861
 # Web UI at https://localhost:7861
 ```
 
@@ -39,7 +39,7 @@ Three modes (Settings → Voice → STT mode):
 ### Local — faster-whisper
 
 ```
-QWE_STT_DEVICE=cpu               # or `cuda` if you've installed onnxruntime-gpu
+CASTOR_STT_DEVICE=cpu               # or `cuda` if you've installed onnxruntime-gpu
 Settings → Voice → STT model     # "Systran/faster-whisper-base" (default) etc.
 ```
 
@@ -59,11 +59,11 @@ OpenAI's `whisper-1` works too if you have a key.
 
 ### FFmpeg fallback
 
-faster-whisper wants ffmpeg for non-WAV inputs. If ffmpeg isn't installed, qwe-qwe falls back to **PyAV** (pure-Python decoding) — `pip install av`. Doctor checks both.
+faster-whisper wants ffmpeg for non-WAV inputs. If ffmpeg isn't installed, castor falls back to **PyAV** (pure-Python decoding) — `pip install av`. Doctor checks both.
 
 ## TTS — text to speech
 
-qwe-qwe auto-detects three TTS API shapes:
+castor auto-detects three TTS API shapes:
 
 | Style | Endpoint pattern | Examples |
 |---|---|---|
@@ -75,7 +75,7 @@ Set the URL in Settings → Voice → TTS API URL, and the voice name/ID in Voic
 
 ### Streaming
 
-If your TTS endpoint streams chunked audio, qwe-qwe plays each chunk as it arrives — first audio in ~500 ms instead of waiting for the whole reply. Falls back to "wait for full file" if the endpoint doesn't stream.
+If your TTS endpoint streams chunked audio, castor plays each chunk as it arrives — first audio in ~500 ms instead of waiting for the whole reply. Falls back to "wait for full file" if the endpoint doesn't stream.
 
 ### Free / local options
 
@@ -126,11 +126,11 @@ Groq's Whisper is sub-second on free tier. Combined with a Groq Llama for chat, 
 
 ### "Voice in Telegram"
 
-Telegram bot accepts voice messages — qwe-qwe transcribes them through the same STT pipeline and treats them as text input. Replies are text by default; enable TTS in Settings → Telegram → Reply with voice to get audio back.
+Telegram bot accepts voice messages — castor transcribes them through the same STT pipeline and treats them as text input. Replies are text by default; enable TTS in Settings → Telegram → Reply with voice to get audio back.
 
 ## Privacy
 
-- **Local STT** + **no TTS API**: audio never leaves the machine. Recording happens in the browser; the file is POSTed to your own qwe-qwe server; faster-whisper transcribes locally; the audio file is deleted after transcription.
+- **Local STT** + **no TTS API**: audio never leaves the machine. Recording happens in the browser; the file is POSTed to your own castor server; faster-whisper transcribes locally; the audio file is deleted after transcription.
 - **API STT**: audio is sent to the configured endpoint (Groq, OpenAI, …). Their privacy policy applies.
 - **TTS**: text is sent to the configured endpoint. Avoid sending sensitive replies through a TTS API; either turn TTS off or use a local one.
 

@@ -1,4 +1,4 @@
-"""Spicy Duck — Lovense smart device integration for qwe-qwe.
+"""Spicy Duck — Lovense smart device integration for castor.
 
 Connects to Lovense toys via LAN API (local network) or Cloud API.
 Requires Lovense Remote app running on phone with toys connected.

@@ -1,6 +1,6 @@
 # Soul — personality
 
-qwe-qwe's **soul** is a structured personality config that shapes the system prompt every turn: name, language, 8 trait sliders, optional custom traits. The agent reads this verbatim and uses it as a behaviour anchor. Twist a slider, hit save, and the next turn the agent shifts noticeably.
+castor's **soul** is a structured personality config that shapes the system prompt every turn: name, language, 8 trait sliders, optional custom traits. The agent reads this verbatim and uses it as a behaviour anchor. Twist a slider, hit save, and the next turn the agent shifts noticeably.
 
 This isn't a chat-bot avatar — it's a serious knob for making the agent fit your workflow. Examples:
 
@@ -57,7 +57,7 @@ Beyond traits, the soul also has:
 
 | Field | Default | What it does |
 |---|---|---|
-| **Name** | "qwe-qwe" | What the agent calls itself. Set to whatever — "Полина", "Assistant", "Boris" — and it adopts the name. |
+| **Name** | "castor" | What the agent calls itself. Set to whatever — "Полина", "Assistant", "Boris" — and it adopts the name. |
 | **Language** | `auto` | `auto` / `en` / `ru` / `es` / `de` / ... — the language the agent replies in regardless of what you write to it. `auto` matches your input language. |
 
 Setting language explicitly is useful when:
@@ -121,11 +121,11 @@ So tuning the soul once changes the whole agent's behaviour everywhere. No per-i
 
 ## Configuration
 
-The soul lives in `~/.qwe-qwe/soul.json`:
+The soul lives in `~/.castor/soul.json`:
 
 ```json
 {
-  "name": "qwe-qwe",
+  "name": "castor",
   "language": "auto",
   "traits": {
     "humor": "moderate",
@@ -141,7 +141,7 @@ The soul lives in `~/.qwe-qwe/soul.json`:
 }
 ```
 
-You can edit this file directly — qwe-qwe re-reads on next turn. Backup before fiddling; the Web UI has a reset button if you want to start over.
+You can edit this file directly — castor re-reads on next turn. Backup before fiddling; the Web UI has a reset button if you want to start over.
 
 ## Patterns
 
@@ -199,7 +199,7 @@ Concise, military-style. Will warn you about destructive actions but won't edito
 The soul shapes voice and approach, but **does not override safety rules** baked into the agent loop and soul.py:
 
 - Shell safety check still blocks `rm -rf /`, `sudo`, etc.
-- Write-file whitelist still prevents writing outside `~/.qwe-qwe/`
+- Write-file whitelist still prevents writing outside `~/.castor/`
 - Tool result clearing still happens
 - The 12 core rules in soul.py (NEVER STOP EARLY, MEMORY DISCIPLINE, etc.) always apply
 
@@ -219,7 +219,7 @@ See [PRIVACY.md](PRIVACY.md).
 
 **Agent is contradicting the soul** — the soul is a soft signal. For a 7B model, traits land most of the time but not always. Bump to a 13B+ model for stricter adherence, or strengthen the custom traits with explicit do/don't phrasing.
 
-**Can't remember what soul I had last week** — `soul.json` is plain JSON, version it in git if you care. Each release of qwe-qwe leaves the file untouched, so your soul survives upgrades.
+**Can't remember what soul I had last week** — `soul.json` is plain JSON, version it in git if you care. Each release of castor leaves the file untouched, so your soul survives upgrades.
 
 ## Cross-links
 

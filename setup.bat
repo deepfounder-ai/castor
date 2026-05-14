@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
 echo.
-echo   qwe-qwe installer (Windows)
+echo   castor installer (Windows)
 echo   ───────────────────────────
 echo.
 
@@ -51,7 +51,7 @@ if errorlevel 1 (
     echo   [!] pip install -e . failed, trying requirements.txt...
     pip install -q -r requirements.txt 2>nul
 )
-echo   [OK] Installed qwe-qwe + dependencies
+echo   [OK] Installed castor + dependencies
 
 :: 6. Verify critical dependencies
 echo   [ ] Verifying dependencies...
@@ -108,7 +108,7 @@ for %%P in (1234 11434 8080) do (
 )
 if "%LM_FOUND%"=="0" (
     echo   [!] No LLM server found on localhost
-    echo       Start LM Studio or Ollama, load a model, then run qwe-qwe
+    echo       Start LM Studio or Ollama, load a model, then run castor
 )
 
 :: 10. Summary
@@ -119,8 +119,8 @@ echo.
 echo   Usage:
 echo     .venv\Scripts\activate
 echo.
-echo     qwe-qwe              # terminal chat
-echo     qwe-qwe --web        # web UI (http://localhost:7860)
+echo     castor              # terminal chat
+echo     castor --web        # web UI (http://localhost:7860)
 echo.
 echo     python cli.py         # alternative: run directly
 echo     python server.py      # alternative: web server directly

@@ -1,4 +1,4 @@
-"""Web server for qwe-qwe — FastAPI + WebSocket chat."""
+"""Web server for castor — FastAPI + WebSocket chat."""
 
 import faulthandler
 import sys
@@ -503,7 +503,7 @@ def _emit_session_start_telemetry(source: str) -> None:
     # follow-up event; for now, "unknown" is the safe default.
     model_size_bucket = telemetry.bucket_model_size(None)
     telemetry.track_event("session_start", {
-        "qwe_version": str(config.VERSION),
+        "castor_version": str(config.VERSION),
         "python_version": telemetry.python_version(),
         "os": telemetry.os_kind(),
         "provider_kind": provider_kind,
@@ -522,16 +522,16 @@ def _emit_session_start_telemetry(source: str) -> None:
 
 # ── App ──
 
-app = FastAPI(title="qwe-qwe", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="castor", version="0.3.0", lifespan=lifespan)
 
-# ── Optional auth (set QWE_PASSWORD env to enable) ──
-_AUTH_PASSWORD = os.environ.get("QWE_PASSWORD", "")
-_AUTH_COOKIE = "qwe_auth"
+# ── Optional auth (set CASTOR_PASSWORD env to enable) ──
+_AUTH_PASSWORD = os.environ.get("CASTOR_PASSWORD", "")
+_AUTH_COOKIE = "castor_auth"
 # Use HMAC-SHA256 so the token derivation is domain-separated and resistant
 # to length-extension attacks. SHA256 alone is fine for tokens (not stored
 # password hashes), but HMAC is the better practice here.
 _AUTH_TOKEN = (
-    hmac.new(b"qwe-auth-v1", _AUTH_PASSWORD.encode(), hashlib.sha256).hexdigest()[:32]
+    hmac.new(b"castor-auth-v1", _AUTH_PASSWORD.encode(), hashlib.sha256).hexdigest()[:32]
     if _AUTH_PASSWORD else ""
 )
 
@@ -585,7 +585,7 @@ async def auth_and_rate_middleware(request: Request, call_next):
     if not _check_rate_limit(client_ip):
         return JSONResponse({"error": "rate limit exceeded"}, status_code=429)
 
-    # Auth check (only if QWE_PASSWORD is set)
+    # Auth check (only if CASTOR_PASSWORD is set)
     if _AUTH_PASSWORD:
         # Allow login page
         if path == "/" and request.method == "GET":
@@ -1021,7 +1021,7 @@ def _check_version_sync() -> dict:
     except Exception:
         try:
             import importlib.metadata
-            current = importlib.metadata.version("qwe-qwe")
+            current = importlib.metadata.version("castor")
         except Exception:
             current = app.version
 
@@ -1035,8 +1035,8 @@ def _check_version_sync() -> dict:
     if not cached or not cached_at or (now - float(cached_at)) > 21600:
         try:
             req = urllib.request.Request(
-                "https://api.github.com/repos/deepfounder-ai/qwe-qwe/releases/latest",
-                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "qwe-qwe"}
+                "https://api.github.com/repos/deepfounder-ai/castor/releases/latest",
+                headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "castor"}
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode())
@@ -1330,7 +1330,7 @@ async def history(limit: int = 20, thread_id: str | None = None):
 
 
 @app.get("/api/logs")
-async def logs(file: str = "qwe-qwe.log", lines: int = 50):
+async def logs(file: str = "castor.log", lines: int = 50):
     """Tail log files."""
     # Whitelist allowed filenames — only .log files, no path separators
     import re as _re_mod
@@ -1957,7 +1957,7 @@ async def kv_set(request: Request):
 async def export_config_endpoint():
     """Export all settings as downloadable JSON."""
     data = config.export_config()
-    filename = f"qwe-qwe-config-{time.strftime('%Y%m%d')}.json"
+    filename = f"castor-config-{time.strftime('%Y%m%d')}.json"
     return Response(
         content=json.dumps(data, indent=2, ensure_ascii=False),
         media_type="application/json",
@@ -2412,7 +2412,7 @@ async def file_browse(request: Request):
 
 # ── Project blog feed (shown in the Presets view) ───────────────────────
 #
-# Fetches https://deepfounder.ai/tag/qwe-qwe/rss/ server-side, parses it,
+# Fetches https://deepfounder.ai/tag/castor/rss/ server-side, parses it,
 # returns a small JSON list. Server-side fetch keeps:
 #   - the user's IP off deepfounder.ai (only the install reaches out, and
 #     we cache for 30 min so the request rate is bounded);
@@ -2424,7 +2424,7 @@ async def file_browse(request: Request):
 # It carries no body, no anonymous_id — the only signal deepfounder.ai
 # sees is "an install asked for the feed". Documented in PRIVACY.md.
 
-_FEED_URL = "https://deepfounder.ai/tag/qwe-qwe/rss/"
+_FEED_URL = "https://deepfounder.ai/tag/castor/rss/"
 _FEED_CACHE_TTL_S = 1800  # 30 min — feed `<ttl>` says 60 (minutes) so we're well under
 _FEED_TIMEOUT_S = 15.0
 _FEED_MAX_ITEMS = 10
@@ -2486,7 +2486,7 @@ async def blog_feed():
             return {"items": _feed_cache["items"], "cached": True,
                     "fetched_at": _feed_cache["fetched_at"]}
     try:
-        ua = f"qwe-qwe/{config.VERSION}"
+        ua = f"castor/{config.VERSION}"
         req = urllib.request.Request(_FEED_URL, headers={"User-Agent": ua})
         with urllib.request.urlopen(req, timeout=_FEED_TIMEOUT_S) as r:
             body = r.read()
@@ -2514,7 +2514,7 @@ async def blog_feed():
 # in the `canvas_artifacts` table, and the `Canvases` left-nav view in the
 # Web UI loads them via these REST routes.
 #
-# Privacy: artifacts are stored locally in qwe_qwe.db like everything else.
+# Privacy: artifacts are stored locally in castor.db like everything else.
 # Never sent off-machine. The 256 KB size cap matches the cap inside
 # `skills/canvas.py` so the table can't grow unbounded from a runaway
 # model.
@@ -2802,7 +2802,7 @@ def _url_resolves_to_private(url: str) -> str | None:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified:
             return (
                 f"Private/loopback URLs not allowed (resolved to {addr}). "
-                "Set QWE_ALLOW_PRIVATE_URLS=1 to override."
+                "Set CASTOR_ALLOW_PRIVATE_URLS=1 to override."
             )
     return None
 
@@ -2821,9 +2821,9 @@ async def knowledge_url(data: dict):
         return JSONResponse({"error": "URL must start with http:// or https://"}, status_code=400)
 
     # SSRF guard — reject URLs that resolve to private/loopback/link-local ranges.
-    # Opt out by setting QWE_ALLOW_PRIVATE_URLS=1 (e.g. for self-hosted wikis on
+    # Opt out by setting CASTOR_ALLOW_PRIVATE_URLS=1 (e.g. for self-hosted wikis on
     # a LAN).
-    if os.environ.get("QWE_ALLOW_PRIVATE_URLS", "").strip() != "1":
+    if os.environ.get("CASTOR_ALLOW_PRIVATE_URLS", "").strip() != "1":
         err = _url_resolves_to_private(url)
         if err:
             return JSONResponse({"error": err}, status_code=403)
@@ -4142,7 +4142,7 @@ def _ensure_ssl_cert() -> tuple[str, str]:
                 pass
 
         subject = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "qwe-qwe"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "castor"),
         ])
         cert = (
             x509.CertificateBuilder()
@@ -4257,7 +4257,7 @@ def start(host: str = "0.0.0.0", port: int = 7860, ssl: bool = False):
     _log.info(f"starting web server on {actual_host}:{port} (LAN: {'on' if lan else 'off'}, SSL: {'on' if ssl_kwargs else 'off'})")
     if actual_host == "0.0.0.0":
         ip = _get_lan_ip()
-        _safe_print(f"\n  ⚡ qwe-qwe web UI → {proto}://localhost:{port}")
+        _safe_print(f"\n  ⚡ castor web UI → {proto}://localhost:{port}")
         if ip:
             _safe_print(f"  📱 LAN access → {proto}://{ip}:{port}")
         if ssl_kwargs:
@@ -4266,7 +4266,7 @@ def start(host: str = "0.0.0.0", port: int = 7860, ssl: bool = False):
             _safe_print(f"  📷 For camera on mobile: restart with --ssl")
         print()
     else:
-        _safe_print(f"\n  ⚡ qwe-qwe web UI → {proto}://localhost:{port}")
+        _safe_print(f"\n  ⚡ castor web UI → {proto}://localhost:{port}")
         print(f"  🔒 Local only (enable LAN in Settings → System)\n")
 
     uvicorn.run(app, host=actual_host, port=port, log_level="warning", **ssl_kwargs)

@@ -54,19 +54,19 @@ def fresh_tools(qwe_temp_data_dir):
 
 
 @pytest.mark.parametrize("cmd", [
-    "rm -rf ~/.qwe-qwe",
-    "rm -rf $HOME/.qwe-qwe",
-    "rm -rf ~/.qwe-qwe/memory",
-    "rm -rf ~/.qwe-qwe/vault",
+    "rm -rf ~/.castor",
+    "rm -rf $HOME/.castor",
+    "rm -rf ~/.castor/memory",
+    "rm -rf ~/.castor/vault",
     "rm -rf .git",
     "rm -rf /home/user/project/.git/",
-    "rm /home/user/.qwe-qwe/qwe_qwe.db",
-    "rm ~/.qwe-qwe/qwe_qwe.db",
-    "> ~/.qwe-qwe/qwe_qwe.db",
-    "echo x > /home/user/.qwe-qwe/vault.enc",
-    "dd if=/dev/zero of=/home/user/.qwe-qwe/qwe_qwe.db",
-    "sqlite3 ~/.qwe-qwe/qwe_qwe.db 'DROP TABLE messages'",
-    "sqlite3 ~/.qwe-qwe/qwe_qwe.db 'DELETE FROM messages'",
+    "rm /home/user/.castor/castor.db",
+    "rm ~/.castor/castor.db",
+    "> ~/.castor/castor.db",
+    "echo x > /home/user/.castor/vault.enc",
+    "dd if=/dev/zero of=/home/user/.castor/castor.db",
+    "sqlite3 ~/.castor/castor.db 'DROP TABLE messages'",
+    "sqlite3 ~/.castor/castor.db 'DELETE FROM messages'",
 ])
 def test_shell_blocks_agent_integrity_attacks(fresh_tools, cmd):
     """Every one of these would wipe something irreversible."""
@@ -76,9 +76,9 @@ def test_shell_blocks_agent_integrity_attacks(fresh_tools, cmd):
 
 
 @pytest.mark.parametrize("cmd", [
-    "ls ~/.qwe-qwe",                                 # read-only is fine
-    "cat ~/.qwe-qwe/qwe_qwe.db",                     # reading is fine
-    "grep foo ~/.qwe-qwe/logs/qwe-qwe.log",          # reading logs
+    "ls ~/.castor",                                 # read-only is fine
+    "cat ~/.castor/castor.db",                     # reading is fine
+    "grep foo ~/.castor/logs/castor.log",          # reading logs
 ])
 def test_shell_allows_read_ops_on_agent_paths(fresh_tools, cmd):
     """Read-only ops against the data dir must still work — we only block writes."""
@@ -87,21 +87,21 @@ def test_shell_allows_read_ops_on_agent_paths(fresh_tools, cmd):
     )
 
 
-def test_integrity_pattern_distinguishes_qwe_qwe_from_similar_dir_names(fresh_tools):
-    """The .qwe-qwe word-boundary must not catch ``~/.qwe-qwe-backup`` etc.
+def test_integrity_pattern_distinguishes_castor_from_similar_dir_names(fresh_tools):
+    """The .castor word-boundary must not catch ``~/.castor-backup`` etc.
 
     Uses absolute paths (not ``~/``) to isolate from the legacy broad
     ``rm -rf ~/`` block which catches everything under home.
     """
     # This one SHOULD be caught by our integrity pattern
-    assert fresh_tools._AGENT_INTEGRITY_PATTERNS.search("rm -rf /data/.qwe-qwe/memory")
+    assert fresh_tools._AGENT_INTEGRITY_PATTERNS.search("rm -rf /data/.castor/memory")
     # This one must NOT — different directory, just prefix-similar
     assert fresh_tools._AGENT_INTEGRITY_PATTERNS.search(
-        "rm -rf /data/.qwe-qwe-backup"
+        "rm -rf /data/.castor-backup"
     ) is None
-    # Same for .qwe-qwe2 (no word-boundary)
+    # Same for .castor2 (no word-boundary)
     assert fresh_tools._AGENT_INTEGRITY_PATTERNS.search(
-        "rm -rf /data/.qwe-qwe2"
+        "rm -rf /data/.castor2"
     ) is None
 
 
@@ -109,23 +109,23 @@ def test_integrity_pattern_distinguishes_qwe_qwe_from_similar_dir_names(fresh_to
 
 
 def test_write_blocks_sqlite_db(fresh_tools):
-    """Direct writes to qwe_qwe.db are blocked even from inside the whitelist."""
+    """Direct writes to castor.db are blocked even from inside the whitelist."""
     import config
-    db_path = config.DATA_DIR / "qwe_qwe.db"
-    with pytest.raises(PermissionError, match="qwe_qwe.db"):
+    db_path = config.DATA_DIR / "castor.db"
+    with pytest.raises(PermissionError, match="castor.db"):
         fresh_tools._resolve_path(str(db_path), for_write=True)
 
 
 def test_write_blocks_sqlite_wal_sidecar(fresh_tools):
     """WAL / SHM sidecars must also be protected (touching them corrupts the DB)."""
     import config
-    wal = config.DATA_DIR / "qwe_qwe.db-wal"
-    with pytest.raises(PermissionError, match="qwe_qwe.db"):
+    wal = config.DATA_DIR / "castor.db-wal"
+    with pytest.raises(PermissionError, match="castor.db"):
         fresh_tools._resolve_path(str(wal), for_write=True)
 
 
 def test_write_blocks_qdrant_memory_store(fresh_tools):
-    """Writing into ~/.qwe-qwe/memory/ corrupts every synthesised memory."""
+    """Writing into ~/.castor/memory/ corrupts every synthesised memory."""
     import config
     target = config.DATA_DIR / "memory" / "collection" / "foo.bin"
     # Make sure the parent exists for the resolve() not to error out before our check
@@ -148,15 +148,15 @@ def test_write_blocks_git_dir(fresh_tools, tmp_path, monkeypatch):
 
 def test_write_blocks_own_source_tree_by_default(fresh_tools, monkeypatch):
     """Agent cannot write to tools.py (or any .py in its own package)."""
-    monkeypatch.delenv("QWE_ALLOW_SELF_MODIFY", raising=False)
+    monkeypatch.delenv("CASTOR_ALLOW_SELF_MODIFY", raising=False)
     tools_py = Path(fresh_tools.__file__).resolve()
     with pytest.raises(PermissionError, match="source tree"):
         fresh_tools._resolve_path(str(tools_py), for_write=True)
 
 
 def test_write_allows_own_source_tree_when_override_set(fresh_tools, monkeypatch):
-    """Users who WANT the agent to refactor qwe-qwe can opt in via env var."""
-    monkeypatch.setenv("QWE_ALLOW_SELF_MODIFY", "1")
+    """Users who WANT the agent to refactor castor can opt in via env var."""
+    monkeypatch.setenv("CASTOR_ALLOW_SELF_MODIFY", "1")
     # Also add the source tree to the write whitelist — normally it's cwd,
     # but just to be explicit about what we're testing here. monkeypatch
     # auto-reverts so the main suite doesn't get a corrupt whitelist.

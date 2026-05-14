@@ -23,7 +23,7 @@ import pytest
 
 @pytest.fixture
 def fresh_tel(qwe_temp_data_dir):
-    """Reload telemetry against a fresh QWE_DATA_DIR so each test starts
+    """Reload telemetry against a fresh CASTOR_DATA_DIR so each test starts
     with a clean kv table + empty queue."""
     if "telemetry" in sys.modules:
         importlib.reload(sys.modules["telemetry"])
@@ -41,7 +41,7 @@ def test_telemetry_disabled_by_default(fresh_tel):
 
 def test_track_event_is_noop_when_disabled(fresh_tel):
     accepted = fresh_tel.track_event("session_start", {
-        "qwe_version": "0.18.4",
+        "castor_version": "0.18.4",
         "python_version": "3.12.0",
         "os": "linux",
         "provider_kind": "openai",
@@ -273,7 +273,7 @@ def test_invalid_tool_category_in_list_rejected(fresh_tel):
 def test_provider_kind_must_be_in_enum(fresh_tel):
     fresh_tel.opt_in()
     accepted = fresh_tel.track_event("session_start", {
-        "qwe_version": "0.18.4",
+        "castor_version": "0.18.4",
         "python_version": "3.12.0",
         "os": "linux",
         "provider_kind": "https://my-internal-llm.corp.com",  # leak attempt
@@ -512,7 +512,7 @@ def test_default_sender_posts_json(monkeypatch, configured_endpoint, no_sleep):
     # urllib lowercases header names in get_header_items
     assert captured["headers"].get("content-type") == "application/json"
     ua = captured["headers"].get("user-agent", "")
-    assert ua.startswith("qwe-qwe/")
+    assert ua.startswith("castor/")
     # Anonymous-Id echoed in header for receiver-side bucketing
     assert captured["headers"].get("x-qwe-anonymous-id") == event["anonymous_id"]
 
@@ -855,7 +855,7 @@ def test_send_countly_post_shape(monkeypatch, countly_endpoint, no_sleep):
     assert e1["segmentation"]["tool_categories_used"] == "memory,files"
     headers_lc = {k.lower(): v for k, v in c["headers"].items()}
     assert headers_lc["content-type"] == "application/json"
-    assert headers_lc["user-agent"].startswith("qwe-qwe/")
+    assert headers_lc["user-agent"].startswith("castor/")
 
 
 def test_send_countly_uses_anonymous_id_as_device_id(monkeypatch, countly_endpoint, no_sleep):

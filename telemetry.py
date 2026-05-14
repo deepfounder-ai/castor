@@ -93,7 +93,7 @@ _BACKOFF_SCHEDULE_S = (1.0, 2.0, 4.0)
 
 ALLOWED_EVENTS: dict[str, dict[str, type]] = {
     "session_start": {
-        "qwe_version": str,        # e.g. "0.18.4" — already public on GitHub
+        "castor_version": str,        # e.g. "0.18.4" — already public on GitHub
         "python_version": str,     # e.g. "3.12.10"
         "os": str,                 # "linux" / "macos" / "windows"
         # Provider KIND only — never the URL (could be internal corp endpoint)
@@ -262,7 +262,7 @@ def anonymous_id() -> str:
 
 
 def session_id() -> str:
-    """Per-process session id. Resets on every qwe-qwe start."""
+    """Per-process session id. Resets on every castor start."""
     return _SESSION_ID
 
 
@@ -561,7 +561,7 @@ def _send_raw(events: list[dict]) -> bool:
         body = json.dumps({"events": events}).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": f"qwe-qwe/{config.VERSION}",
+            "User-Agent": f"castor/{config.VERSION}",
         }
         # Echo anonymous_id as a header so receivers can bucket without
         # parsing JSON. All events in a batch share the same id (track_event
@@ -703,7 +703,7 @@ def _send_countly(events: list[dict]) -> bool:
       internally, no salt rotation, so cross-day per-user tracking
       works out of the box)
     - events array with `key` (event name) and optional segmentation
-    - User-Agent header (we send `qwe-qwe/{version}`)
+    - User-Agent header (we send `castor/{version}`)
 
     Privacy note: Countly receives our anonymous_id as device_id.
     That's stable across days, by design — the user OPTED IN, and a
@@ -763,7 +763,7 @@ def _send_countly_batch(endpoint: str, app_key: str, device_id: str,
         body = json.dumps(body_obj).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": f"qwe-qwe/{config.VERSION}",
+            "User-Agent": f"castor/{config.VERSION}",
         }
         req = urllib.request.Request(
             endpoint, data=body, headers=headers, method="POST"

@@ -1,4 +1,4 @@
-# JSON Schema (в YAML) для валидации preset.yaml в пресетах qwe-qwe market.
+# JSON Schema (в YAML) для валидации preset.yaml в пресетах castor market.
 # Соответствует SPEC.md, schema_version: 1
 #
 # Как пользоваться:
@@ -8,7 +8,7 @@
 #   jsonschema.validate(preset, schema)
 
 $schema: "http://json-schema.org/draft-07/schema#"
-title: qwe-qwe market preset manifest
+title: castor market preset manifest
 type: object
 additionalProperties: true
 
@@ -232,9 +232,9 @@ properties:
   compatibility:
     type: object
     additionalProperties: false
-    required: [qwe_qwe_version]
+    required: [qwe_castor_version]
     properties:
-      qwe_qwe_version:
+      qwe_castor_version:
         type: string
       models:
         type: object

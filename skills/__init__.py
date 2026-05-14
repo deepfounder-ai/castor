@@ -2,7 +2,7 @@
 
 Skills are loaded from two directories:
   1. Built-in skills: shipped with the project (skills/ in repo)
-  2. User skills: ~/.qwe-qwe/skills/ (safe from git updates)
+  2. User skills: ~/.castor/skills/ (safe from git updates)
 """
 
 import importlib, importlib.util, re, sys
@@ -40,8 +40,8 @@ def _all_skill_paths() -> dict[str, Path]:
     """Return {name: path} for all skills. Later dirs override earlier ones.
 
     Priority (highest wins):
-        1. Active preset skills (~/.qwe-qwe/presets/<id>/skills/)
-        2. User skills (~/.qwe-qwe/skills/)
+        1. Active preset skills (~/.castor/presets/<id>/skills/)
+        2. User skills (~/.castor/skills/)
         3. Built-in skills (skills/)
 
     Hidden skills only appear when their activation key is set.

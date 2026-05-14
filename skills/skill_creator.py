@@ -50,7 +50,7 @@ CONFIG / SCHEDULER / TASKS (available but rarely needed):
 - import scheduler; scheduler.add(name, schedule, prompt) for cron-style
 - import tasks; tasks.register(name, description) for background work
 
-TABLE NAMING (CRITICAL — qwe-qwe uses ONE shared SQLite for everything):
+TABLE NAMING (CRITICAL — castor uses ONE shared SQLite for everything):
 - ALWAYS prefix your skill's tables with "skill_<skill_name>_". Example:
   skill_meal_logger_meals, skill_workout_tracker_sets, skill_slack_notify_webhooks
 - This prevents silent data collisions with other skills (two skills both
@@ -77,7 +77,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_skill",
-            "description": "Generate a new skill module that adds tools to qwe-qwe. Use this WHENEVER the user asks to connect/integrate/use a service or build a capability that doesn't already exist as a tool — Gmail, Slack, Notion, GitHub, weather APIs, fitness trackers, custom workflows. Do NOT shell-install CLI tools or write loose scripts for these requests; use this tool instead. Runs in background, returns immediately, notifies when ready.",
+            "description": "Generate a new skill module that adds tools to castor. Use this WHENEVER the user asks to connect/integrate/use a service or build a capability that doesn't already exist as a tool — Gmail, Slack, Notion, GitHub, weather APIs, fitness trackers, custom workflows. Do NOT shell-install CLI tools or write loose scripts for these requests; use this tool instead. Runs in background, returns immediately, notifies when ready.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -152,7 +152,7 @@ def execute(name: str, args: dict) -> str:
 
 STEP1_PLAN = """You are a skill architect. Given a skill description, output a JSON plan.
 
-Skills you create run inside the qwe-qwe agent and can use ALL of its
+Skills you create run inside the castor agent and can use ALL of its
 capabilities — they are not sandboxed mini-apps. You may compose tools
 that combine:
 
@@ -447,7 +447,7 @@ def _t_http_request(name: str, spec: dict, first: bool) -> str:
         lines.append(f'            req.add_header("Content-Type", "application/json")')
     else:
         lines.append(f'            req = urllib.request.Request(target_url)')
-    lines.append(f'            req.add_header("User-Agent", "qwe-qwe/skill")')
+    lines.append(f'            req.add_header("User-Agent", "castor/skill")')
     lines.append(f'            with urllib.request.urlopen(req, timeout=15) as resp:')
     lines.append(f'                result = resp.read().decode("utf-8")[:2000]')
     lines.append(f'            return f"OK ({{len(result)}} chars): {{result[:200]}}"')
@@ -527,7 +527,7 @@ def _t_telegram(name: str, spec: dict, first: bool) -> str:
     lines.append(f'        try:')
     lines.append(f'            req = urllib.request.Request(url, data=payload, method="POST")')
     lines.append(f'            req.add_header("Content-Type", "application/json")')
-    lines.append(f'            req.add_header("User-Agent", "qwe-qwe/skill")')
+    lines.append(f'            req.add_header("User-Agent", "castor/skill")')
     lines.append(f'            with urllib.request.urlopen(req, timeout=15) as resp:')
     lines.append(f'                result = _json.loads(resp.read().decode("utf-8"))')
     lines.append(f'            if result.get("ok"):')
@@ -931,7 +931,7 @@ def _create_skill_async(skill_name: str, description: str) -> str:
         _active_skills.add(skill_name)
 
     import config
-    skills_dir = config.USER_SKILLS_DIR  # user skills go to ~/.qwe-qwe/skills/
+    skills_dir = config.USER_SKILLS_DIR  # user skills go to ~/.castor/skills/
     target = skills_dir / f"{skill_name}.py"
     if target.exists():
         with _active_lock:

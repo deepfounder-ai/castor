@@ -1,10 +1,10 @@
 -- v0.18.x: audit trail for skills imported from skills.sh / GitHub.
 --
--- qwe-qwe skills live as single `.py` files at ~/.qwe-qwe/skills/.
+-- castor skills live as single `.py` files at ~/.castor/skills/.
 -- When the user imports a skill from skills.sh (or any compatible
 -- Anthropic-style SKILL.md source), we generate a thin adapter `.py`
 -- AND stage the original assets (scripts/, references/) under
--- ~/.qwe-qwe/skills_imported/<name>/.
+-- ~/.castor/skills_imported/<name>/.
 --
 -- This table records the provenance: which `.py` came from which URL,
 -- what SHA the source had at import time, what license the upstream
@@ -20,7 +20,7 @@
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS skill_imports (
-    name        TEXT PRIMARY KEY,           -- matches `~/.qwe-qwe/skills/<name>.py` stem
+    name        TEXT PRIMARY KEY,           -- matches `~/.castor/skills/<name>.py` stem
     source_url  TEXT NOT NULL,              -- canonical user-supplied URL (skills.sh/<…> or github://…)
     source_kind TEXT NOT NULL,              -- "skills_sh" / "github" — for future fetcher routing
     hash        TEXT NOT NULL,              -- SHA-256 of canonical SKILL.md content at import

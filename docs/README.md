@@ -1,12 +1,12 @@
 # Documentation
 
-User guides for qwe-qwe — one document per feature. If you're looking at qwe-qwe for the first time, start with the [project README](../README.md) for a tour. The docs here go deeper.
+User guides for castor — one document per feature. If you're looking at castor for the first time, start with the [project README](../README.md) for a tour. The docs here go deeper.
 
 ## Getting started
 
 | Document | About |
 |---|---|
-| [Project README](../README.md) | What qwe-qwe is, quick-start install, architecture diagram |
+| [Project README](../README.md) | What castor is, quick-start install, architecture diagram |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Dev setup, test workflow, release flow |
 | [CLAUDE.md](../CLAUDE.md) | What an LLM agent needs to know to navigate the codebase |
 

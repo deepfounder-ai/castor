@@ -1,6 +1,6 @@
 # Telegram bot
 
-qwe-qwe can run as a Telegram bot — same agent, same memory, accessible from your phone with no UI of its own to maintain. Streaming responses, slash commands, voice messages, images, formatted text. Routines deliver their output here.
+castor can run as a Telegram bot — same agent, same memory, accessible from your phone with no UI of its own to maintain. Streaming responses, slash commands, voice messages, images, formatted text. Routines deliver their output here.
 
 ## Setup (one-time)
 
@@ -8,7 +8,7 @@ qwe-qwe can run as a Telegram bot — same agent, same memory, accessible from y
 
 In Telegram: open [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts. You'll get a **bot token** like `1234567890:ABCdef-xyz123…`. Keep it private.
 
-### 2. Set the token in qwe-qwe
+### 2. Set the token in castor
 
 ```bash
 # CLI:
@@ -24,7 +24,7 @@ In Telegram: open [@BotFather](https://t.me/BotFather), send `/newbot`, follow t
 # or Settings → Telegram → Start (Web)
 ```
 
-qwe-qwe begins polling Telegram. The bot is now listening, but it doesn't know who's allowed to talk to it.
+castor begins polling Telegram. The bot is now listening, but it doesn't know who's allowed to talk to it.
 
 ### 4. Generate an activation code
 
@@ -35,7 +35,7 @@ qwe-qwe begins polling Telegram. The bot is now listening, but it doesn't know w
 
 ### 5. Send the code to the bot in Telegram
 
-Open your bot in Telegram, send `482917`. qwe-qwe verifies the code, records your Telegram user ID as **the owner**, and the bot is now exclusively yours.
+Open your bot in Telegram, send `482917`. castor verifies the code, records your Telegram user ID as **the owner**, and the bot is now exclusively yours.
 
 You're done. Send any message to the bot and it'll route through the agent.
 
@@ -51,7 +51,7 @@ You're done. Send any message to the bot and it'll route through the agent.
 
 ## Daily use
 
-Once activated, the bot acts as your phone-side qwe-qwe:
+Once activated, the bot acts as your phone-side castor:
 
 ```
 You (Telegram): Сколько у меня встреч завтра?
@@ -91,9 +91,9 @@ These are routed to the same code as their CLI equivalents — no separate Teleg
 
 ## Streaming replies
 
-Telegram doesn't natively support streaming, so qwe-qwe uses **`editMessageText`** to repeatedly rewrite the bot's reply as the LLM streams. You see the reply growing in real time, with each tool call appearing as a separate edit.
+Telegram doesn't natively support streaming, so castor uses **`editMessageText`** to repeatedly rewrite the bot's reply as the LLM streams. You see the reply growing in real time, with each tool call appearing as a separate edit.
 
-For long replies (above Telegram's 4096-char message cap), qwe-qwe splits into multiple messages on paragraph boundaries.
+For long replies (above Telegram's 4096-char message cap), castor splits into multiple messages on paragraph boundaries.
 
 ## Image support
 
@@ -107,7 +107,7 @@ Needs a vision-capable LLM (see [PROVIDERS.md](PROVIDERS.md)). Without one, the 
 
 ## Voice messages
 
-Send a Telegram voice message — qwe-qwe transcribes it through your configured STT (see [VOICE.md](VOICE.md)) and treats the transcript as your text input.
+Send a Telegram voice message — castor transcribes it through your configured STT (see [VOICE.md](VOICE.md)) and treats the transcript as your text input.
 
 ```
 You (voice, 4s): "Сколько у меня встреч завтра?"
@@ -127,15 +127,15 @@ Routines (see [ROUTINES.md](ROUTINES.md)) use `telegram_notify_owner(text)` to s
 telegram_notify_owner("Daily digest:\n• ...\n• ...")
 ```
 
-No bot-token / chat-id wrangling — qwe-qwe knows who the owner is. One-line send, formatted message.
+No bot-token / chat-id wrangling — castor knows who the owner is. One-line send, formatted message.
 
 ## Topics → threads
 
-Telegram **supergroup topics** map 1:1 to qwe-qwe chat threads. If you've made the bot a member of a supergroup with topics enabled:
+Telegram **supergroup topics** map 1:1 to castor chat threads. If you've made the bot a member of a supergroup with topics enabled:
 
 - Each topic becomes its own thread
 - Messages in topic A stay in thread A
-- Switching topics in Telegram = switching threads on the qwe-qwe side
+- Switching topics in Telegram = switching threads on the castor side
 
 Useful for shared bots in a team chat where different topics serve different purposes (one topic per project, one per role, etc.). Note: by default only the verified owner can chat with the bot. To allow team-wide use, see "Multi-user setup" below — it's available but requires opting in.
 
@@ -145,7 +145,7 @@ Default is **single-owner**. To allow multiple Telegram users to talk to the bot
 
 1. `/telegram allow_user <telegram_user_id>` — whitelist a user by their numeric ID
 2. Each allowed user gets activation code; they activate the same way
-3. Each user has their own owner-state in qwe-qwe; their messages are scoped to their threads
+3. Each user has their own owner-state in castor; their messages are scoped to their threads
 
 Security note: multi-user mode is **less safe** than single-owner. The bot's reply quality is the user's responsibility; one user can read another's threads if you mis-configure. Don't multi-user unless you really need it.
 
@@ -153,7 +153,7 @@ Security note: multi-user mode is **less safe** than single-owner. The bot's rep
 
 Bot replies use **MarkdownV2** with HTML fallback (Telegram's two markup modes). The agent's markdown output is converted: bold, italic, inline code, code blocks, links, lists.
 
-Telegram doesn't support tables natively, so qwe-qwe converts markdown tables to fixed-width text blocks. Wide tables get truncated — for "show me data" workflows, return JSON or a screenshot from the Web UI.
+Telegram doesn't support tables natively, so castor converts markdown tables to fixed-width text blocks. Wide tables get truncated — for "show me data" workflows, return JSON or a screenshot from the Web UI.
 
 ## Configuration
 
@@ -161,7 +161,7 @@ Telegram doesn't support tables natively, so qwe-qwe converts markdown tables to
 |---|---|---|
 | `telegram_token` | — | Bot token (BotFather) |
 | `telegram_owner_id` | — | Set by activation; read-only afterwards |
-| `telegram_polling_interval_s` | `2` | How often qwe-qwe long-polls Telegram for updates |
+| `telegram_polling_interval_s` | `2` | How often castor long-polls Telegram for updates |
 | `telegram_reply_with_voice` | `0` | If `1`, TTS the agent's reply and send as voice message |
 | `telegram_thinking_visible` | `0` | If `1`, include the agent's thinking block in bot replies |
 | `telegram_topic_thread_mapping` | `1` | Topics → threads (vs everything-in-one-thread) |
@@ -171,9 +171,9 @@ Web UI: Settings → Telegram exposes all of these.
 ## Privacy
 
 - **All chat content goes through Telegram's servers.** Their privacy policy applies; messages are encrypted in transit but not end-to-end.
-- **Bot token is sensitive** — anyone with it can talk to your bot (subject to qwe-qwe's owner check). Store in the [vault](MEMORY.md#vault) if you don't want it in plain settings.
-- **Voice / image content** goes to Telegram → qwe-qwe → your configured STT/vision provider. If those are cloud providers, that's where the data ends up.
-- **No telemetry on Telegram traffic.** qwe-qwe doesn't count messages, doesn't report bot activity. Routine fires emit the same `turn_complete` event whether they came from Telegram or chat.
+- **Bot token is sensitive** — anyone with it can talk to your bot (subject to castor's owner check). Store in the [vault](MEMORY.md#vault) if you don't want it in plain settings.
+- **Voice / image content** goes to Telegram → castor → your configured STT/vision provider. If those are cloud providers, that's where the data ends up.
+- **No telemetry on Telegram traffic.** castor doesn't count messages, doesn't report bot activity. Routine fires emit the same `turn_complete` event whether they came from Telegram or chat.
 
 ## Troubleshooting
 
@@ -188,7 +188,7 @@ Web UI: Settings → Telegram exposes all of these.
 
 **Voice messages don't transcribe** — STT misconfigured. See [VOICE.md](VOICE.md). For Telegram-specific debugging: voice messages come as `.oga` files which need ffmpeg or PyAV for decode.
 
-**Replies cut off / weird formatting** — Telegram's MarkdownV2 has strict escaping rules; certain combinations of characters confuse it and qwe-qwe falls back to plain text. Open an issue with the problematic reply and we'll fix the escape pattern.
+**Replies cut off / weird formatting** — Telegram's MarkdownV2 has strict escaping rules; certain combinations of characters confuse it and castor falls back to plain text. Open an issue with the problematic reply and we'll fix the escape pattern.
 
 **Bot replies in the wrong language** — soul.language influences both bot replies and Web UI replies. Set it via `/soul language ru` (or whatever); applies everywhere.
 

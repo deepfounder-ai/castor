@@ -90,13 +90,13 @@ Each routine card has a four-state badge:
 - **🔴 last run failed** — most recent firing errored. Click into the thread to see the failure tool calls / error message.
 - **⏸ paused** — schedule skipped, will resume when you toggle
 
-Failures don't auto-disable the routine — qwe-qwe assumes you want to know about transient errors but keep trying. If a routine fails 10 times in a row, the badge stays red but firings continue. Pause it manually if you want it stopped.
+Failures don't auto-disable the routine — castor assumes you want to know about transient errors but keep trying. If a routine fails 10 times in a row, the badge stays red but firings continue. Pause it manually if you want it stopped.
 
 ## Tools available inside routines
 
 Everything from a live chat, plus one extra:
 
-- **`telegram_notify_owner(text)`** — single-call send to the verified Telegram owner. No bot-token / chat-id wrangling — qwe-qwe knows who you are. Common pattern: every routine ends with `telegram_notify_owner("daily digest: ...")`.
+- **`telegram_notify_owner(text)`** — single-call send to the verified Telegram owner. No bot-token / chat-id wrangling — castor knows who you are. Common pattern: every routine ends with `telegram_notify_owner("daily digest: ...")`.
 
 Things to know:
 
@@ -209,7 +209,7 @@ Delete the routine, delete the thread, and the thread's message history all casc
 
 ## Troubleshooting
 
-**Routine didn't fire** — `cron_check_interval_s` is 30s by default; a routine scheduled for 09:00 might fire at 09:00:29. Check `last_run` on the card. If still empty after a minute, the scheduler crashed — restart qwe-qwe or check `logs/qwe-qwe.log`.
+**Routine didn't fire** — `cron_check_interval_s` is 30s by default; a routine scheduled for 09:00 might fire at 09:00:29. Check `last_run` on the card. If still empty after a minute, the scheduler crashed — restart castor or check `logs/castor.log`.
 
 **`telegram_notify_owner` returns "not verified"** — you haven't completed Telegram setup. See [TELEGRAM.md](TELEGRAM.md).
 

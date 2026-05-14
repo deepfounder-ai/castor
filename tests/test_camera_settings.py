@@ -21,7 +21,7 @@ import pytest
 
 @pytest.fixture
 def fresh(qwe_temp_data_dir):
-    """Reload tools + config against a fresh QWE_DATA_DIR."""
+    """Reload tools + config against a fresh CASTOR_DATA_DIR."""
     if "tools" in sys.modules:
         importlib.reload(sys.modules["tools"])
     import tools as t

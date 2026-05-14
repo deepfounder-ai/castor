@@ -9,7 +9,7 @@
 
 ## 1. Problem statement
 
-qwe-qwe today handles aborts cleanly — `ctx.abort_event.set()` fires from the WS disconnect handler (server.py:3525), the `/api/abort` Stop button, or a server shutdown, and `agent_loop` checks the event per chunk so the loop exits without thrashing. After spec #1 (cost tracking) the aborted run gets recorded in `agent_runs` with `status='aborted'`.
+castor today handles aborts cleanly — `ctx.abort_event.set()` fires from the WS disconnect handler (server.py:3525), the `/api/abort` Stop button, or a server shutdown, and `agent_loop` checks the event per chunk so the loop exits without thrashing. After spec #1 (cost tracking) the aborted run gets recorded in `agent_runs` with `status='aborted'`.
 
 But the user-visible behaviour ends there. The partial assistant reply is lost (it lived only in the streaming buffer), the conversation history shows the user's question with no answer, and there is no mechanism to pick up where the agent left off. For long agentic tasks ("research X, write a doc, deploy it") this means an interrupted laptop battery, a network blip, or a server restart silently throws away minutes of work — sometimes including expensive tool calls (Brave Search, browser sessions, LLM-driven extraction) whose output the user can no longer see.
 

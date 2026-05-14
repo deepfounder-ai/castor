@@ -1,9 +1,9 @@
 #!/bin/bash
-# qwe-qwe installer — run once to set up everything
+# castor installer — run once to set up everything
 set -e
 
 echo ""
-echo "  ⚡ qwe-qwe installer"
+echo "  ⚡ castor installer"
 echo "  ─────────────────────"
 echo ""
 
@@ -48,7 +48,7 @@ source .venv/bin/activate
 # 3. Install package
 pip install -q --upgrade pip 2>/dev/null
 pip install -q -e "." 2>/dev/null || pip install -q -r requirements.txt 2>/dev/null
-step "Installed qwe-qwe + dependencies"
+step "Installed castor + dependencies"
 
 # 4. Verify critical dependencies
 MISSING=""
@@ -104,8 +104,8 @@ for port in 1234 11434 8080; do
 done
 if ! $LM_FOUND; then
     warn "No LLM server found on localhost"
-    info "Start LM Studio or Ollama, load a model, then run qwe-qwe"
-    info "Or set QWE_LLM_URL=http://<ip>:<port>/v1"
+    info "Start LM Studio or Ollama, load a model, then run castor"
+    info "Or set CASTOR_LLM_URL=http://<ip>:<port>/v1"
 fi
 
 # 8. Summary
@@ -116,9 +116,9 @@ echo ""
 echo "  Usage:"
 echo "    source .venv/bin/activate"
 echo ""
-echo "    qwe-qwe              # terminal chat"
-echo "    qwe-qwe --web        # web UI (http://localhost:7860)"
-echo "    qwe-qwe --web --port 8080"
+echo "    castor              # terminal chat"
+echo "    castor --web        # web UI (http://localhost:7860)"
+echo "    castor --web --port 8080"
 echo ""
 echo "    python cli.py        # alternative: run directly"
 echo "    python server.py     # alternative: web server directly"

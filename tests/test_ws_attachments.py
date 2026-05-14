@@ -29,19 +29,19 @@ import pytest
 
 @pytest.fixture(scope="module", autouse=True)
 def _ws_attach_env():
-    """Point QWE_DATA_DIR at a fresh tempdir and reload server."""
-    original = os.environ.get("QWE_DATA_DIR")
+    """Point CASTOR_DATA_DIR at a fresh tempdir and reload server."""
+    original = os.environ.get("CASTOR_DATA_DIR")
     tmp_root = Path(tempfile.mkdtemp(prefix="qwe_ws_attach_"))
-    os.environ["QWE_DATA_DIR"] = str(tmp_root)
+    os.environ["CASTOR_DATA_DIR"] = str(tmp_root)
     _reload_core()
     try:
         yield tmp_root
     finally:
         _close_db()
         if original is not None:
-            os.environ["QWE_DATA_DIR"] = original
+            os.environ["CASTOR_DATA_DIR"] = original
         else:
-            os.environ.pop("QWE_DATA_DIR", None)
+            os.environ.pop("CASTOR_DATA_DIR", None)
         if tmp_root.exists():
             shutil.rmtree(tmp_root, ignore_errors=True)
         _reload_core()

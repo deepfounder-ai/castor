@@ -1,6 +1,6 @@
 # Cost tracking
 
-qwe-qwe records token counts and estimated cost for every LLM call made during
+castor records token counts and estimated cost for every LLM call made during
 a session. The data lives entirely on your machine — nothing is sent anywhere
 except a one-time pricing JSON fetch from a public URL (no session data is
 included in that request).
@@ -25,7 +25,7 @@ for a future release).
 
 ## Where the data lives
 
-SQLite database at `~/.qwe-qwe/qwe_qwe.db` (override via `QWE_DATA_DIR`),
+SQLite database at `~/.castor/castor.db` (override via `CASTOR_DATA_DIR`),
 table `agent_runs`. Added by migration `008_agent_runs.sql`.
 
 Each row contains:
@@ -88,10 +88,10 @@ POST /api/pricing/refresh             -- force a fresh pricing fetch
 
 1. **LiteLLM community JSON** — fetched from
    `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json`
-   and cached locally at `~/.qwe-qwe/pricing_cache.json`. The URL is
+   and cached locally at `~/.castor/pricing_cache.json`. The URL is
    configurable via the `pricing_url` setting.
 2. **Bundled fallback** — a hardcoded table covering the top-10 most common
-   models ships with qwe-qwe and is used when the cache is absent (first run
+   models ships with castor and is used when the cache is absent (first run
    offline) or stale beyond the configured TTL.
 3. **Per-model override** — you can pin exact prices for any model (useful for
    enterprise agreements or self-hosted models with a known cost).

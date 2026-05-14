@@ -132,7 +132,7 @@ Full postMessage protocol, sandbox limits, and a reference HTML template live in
 
 ## 📦 Skill import — install community skills from skills.sh / GitHub
 
-Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification) — the same format Claude Code / Claude.ai use — now works in qwe-qwe via a thin adapter layer. Browse [skills.sh](https://skills.sh) or any compatible GitHub repo, paste the URL into Settings → Tools & skills → **Import skill**, click Import.
+Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification) — the same format Claude Code / Claude.ai use — now works in castor via a thin adapter layer. Browse [skills.sh](https://skills.sh) or any compatible GitHub repo, paste the URL into Settings → Tools & skills → **Import skill**, click Import.
 
 ### Recognised URL shapes
 
@@ -142,7 +142,7 @@ Anthropic's [agentskills.io SKILL.md spec](https://agentskills.io/specification)
 
 ### How the bridge works
 
-skills.sh skills are **markdown instructions for an LLM** + optional executable scripts. qwe-qwe skills are **single Python modules with `TOOLS` + `execute()`**. The importer generates a thin adapter `.py` at `~/.qwe-qwe/skills/<name>.py` that exposes one tool — `<name>_help` — returning the full SKILL.md body. Scripts / references / assets land at `~/.qwe-qwe/skills_imported/<name>/`. The agent reads them via the regular `read_file` / `shell` tools.
+skills.sh skills are **markdown instructions for an LLM** + optional executable scripts. castor skills are **single Python modules with `TOOLS` + `execute()`**. The importer generates a thin adapter `.py` at `~/.castor/skills/<name>.py` that exposes one tool — `<name>_help` — returning the full SKILL.md body. Scripts / references / assets land at `~/.castor/skills_imported/<name>/`. The agent reads them via the regular `read_file` / `shell` tools.
 
 Best for **knowledge-heavy procedures** (PDF manipulation patterns, document conversion recipes, etc.). Pure-code wrappers around a specific API are still better written natively via `create_skill`.
 
@@ -156,7 +156,7 @@ Best for **knowledge-heavy procedures** (PDF manipulation patterns, document con
 | **Built-in collision** | `browser`, `canvas`, `skill_creator`, etc. **cannot be replaced** even with `overwrite: true`. Typosquatting defense. |
 | **License surfacing** | Word-anchored SPDX-ish regex + denylist of non-OSS riders (Commons Clause / BUSL / SSPL / Elastic / "Complete terms in LICENSE.txt"). Non-OSS licenses return HTTP **451 `license_confirm_required`** — the UI shows a confirmation panel with the license text before installing. |
 | **Size caps** | SKILL.md ≤100 KB, total fetch ≤1 MB, ≤50 files, binaries / images filtered out. |
-| **Atomic write** | Adapter writes to a tempfile, runs `skills.validate_skill` on it, **then** `os.replace` into final position. A broken renderer can never leave a half-written `.py` in `~/.qwe-qwe/skills/`. |
+| **Atomic write** | Adapter writes to a tempfile, runs `skills.validate_skill` on it, **then** `os.replace` into final position. A broken renderer can never leave a half-written `.py` in `~/.castor/skills/`. |
 | **Sentinel-protected delete** | `delete_import` checks for the auto-generated sentinel before unlinking. If you replaced an imported skill's `.py` with hand-written code, your file survives. |
 | **Audit trail** | Every install recorded in the `skill_imports` table — source URL, SHA-256 hash, license, timestamp. Query via `GET /api/skills/imports`. |
 
@@ -192,7 +192,7 @@ The user-created and imported skills appear in their own categories so you can t
 
 - **`fix(canvas)` — cross-thread leak + tool confusion.** The model couldn't "read forms back" because `_pending_canvas_renders` was a module global keyed by request_id only — concurrent threads would step on each other. Now bucketed by thread_id.
 
-- **`fix(canvas)` — stale server message.** If you reload qwe-qwe after upgrading the server, the JS knows about canvas tools but the server doesn't have the endpoint yet. We now show a clear "restart qwe-qwe" toast instead of a confusing 404.
+- **`fix(canvas)` — stale server message.** If you reload castor after upgrading the server, the JS knows about canvas tools but the server doesn't have the endpoint yet. We now show a clear "restart castor" toast instead of a confusing 404.
 
 ---
 
@@ -220,4 +220,4 @@ Two new migrations apply automatically on first boot. No config changes needed. 
 
 ## 🙏 Inspirations
 
-Canvas takes obvious inspiration from Claude.ai's Artifacts — but the sandboxed-iframe-only approach matters more here, since qwe-qwe runs on your own machine and Anthropic doesn't sit between the LLM and your filesystem. Skill import works because Anthropic published the [agentskills.io spec](https://agentskills.io/specification) as a portable format — you can drop the same `SKILL.md` into Claude Code, Claude.ai, and qwe-qwe and it works in all three. The [skills.sh](https://skills.sh) catalog made discovery trivial.
+Canvas takes obvious inspiration from Claude.ai's Artifacts — but the sandboxed-iframe-only approach matters more here, since castor runs on your own machine and Anthropic doesn't sit between the LLM and your filesystem. Skill import works because Anthropic published the [agentskills.io spec](https://agentskills.io/specification) as a portable format — you can drop the same `SKILL.md` into Claude Code, Claude.ai, and castor and it works in all three. The [skills.sh](https://skills.sh) catalog made discovery trivial.

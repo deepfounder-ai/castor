@@ -1,6 +1,6 @@
-# Creating qwe-qwe Presets
+# Creating castor Presets
 
-A preset transforms qwe-qwe into a domain specialist — customer support agent, architect assistant, code reviewer, etc. It packages personality, knowledge, tools, and system instructions into a single `.qwp` archive.
+A preset transforms castor into a domain specialist — customer support agent, architect assistant, code reviewer, etc. It packages personality, knowledge, tools, and system instructions into a single `.qwp` archive.
 
 ## Structure
 
@@ -20,7 +20,7 @@ my-preset/
 ## Quick Start
 
 1. Create a directory with `preset.yaml` + `system_prompt.md`
-2. Test: drag-drop the folder into qwe-qwe Market page
+2. Test: drag-drop the folder into castor Market page
 3. Package: `zip -r my-preset.qwp my-preset/`
 4. Distribute the `.qwp` file
 
@@ -127,7 +127,7 @@ install:
 
 # ── Compatibility ──
 compatibility:
-  qwe_qwe_version: ">=0.12.0"
+  qwe_castor_version: ">=0.12.0"
   models:
     recommended: [qwen2.5:7b, llama3.1:8b]
     minimum_params_b: 7        # minimum model size in billions
@@ -276,9 +276,9 @@ cd my-preset/
 zip -r ../my-preset.qwp .
 
 # The .qwp file can be:
-# - Dragged into qwe-qwe Market page
+# - Dragged into castor Market page
 # - Shared with others
-# - Published to qwe-qwe marketplace
+# - Published to castor marketplace
 ```
 
 ## Testing
@@ -291,7 +291,7 @@ zip -r ../my-preset.qwp .
 
 ## Validation
 
-qwe-qwe validates presets on install:
+castor validates presets on install:
 - YAML schema check (all required fields, correct types)
 - File existence (all referenced paths must exist inside preset dir)
 - Security: no path traversal (all paths confined to preset directory)
@@ -300,7 +300,7 @@ qwe-qwe validates presets on install:
 ## Lifecycle
 
 ```
-Install (.qwp → ~/.qwe-qwe/presets/<id>/)
+Install (.qwp → ~/.castor/presets/<id>/)
     ↓
 Activate
     ├── Backup current soul
@@ -324,4 +324,4 @@ Uninstall
 
 ## Example Presets
 
-See `~/.qwe-qwe/presets/ecom-support-ru/` for a complete working example with knowledge base and custom skills.
+See `~/.castor/presets/ecom-support-ru/` for a complete working example with knowledge base and custom skills.

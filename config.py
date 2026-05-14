@@ -1,9 +1,9 @@
-"""qwe-qwe configuration — all settings in one place.
+"""castor configuration — all settings in one place.
 
-Override any setting via environment variables with QWE_ prefix:
-  QWE_LLM_URL, QWE_LLM_MODEL, QWE_LLM_KEY,
-  QWE_QDRANT_MODE, QWE_QDRANT_PATH, QWE_QDRANT_URL,
-  QWE_DB_PATH, QWE_DATA_DIR
+Override any setting via environment variables with CASTOR_ prefix:
+  CASTOR_LLM_URL, CASTOR_LLM_MODEL, CASTOR_LLM_KEY,
+  CASTOR_QDRANT_MODE, CASTOR_QDRANT_PATH, CASTOR_QDRANT_URL,
+  CASTOR_DB_PATH, CASTOR_DATA_DIR
 
 Embeddings are handled by FastEmbed (ONNX, local, no server needed).
 """
@@ -15,22 +15,22 @@ VERSION = "0.22.1"
 _env = os.environ.get
 
 # ── Data directory (all user data lives here, safe from git) ──
-DATA_DIR = Path(_env("QWE_DATA_DIR", str(Path.home() / ".qwe-qwe")))
+DATA_DIR = Path(_env("CASTOR_DATA_DIR", str(Path.home() / ".castor")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # LLM
-LLM_BASE_URL = _env("QWE_LLM_URL", "http://localhost:1234/v1")
-LLM_MODEL = _env("QWE_LLM_MODEL", "qwen/qwen3.5-9b")
-LLM_API_KEY = _env("QWE_LLM_KEY", "lm-studio")
+LLM_BASE_URL = _env("CASTOR_LLM_URL", "http://localhost:1234/v1")
+LLM_MODEL = _env("CASTOR_LLM_MODEL", "qwen/qwen3.5-9b")
+LLM_API_KEY = _env("CASTOR_LLM_KEY", "lm-studio")
 
 # Qdrant (local disk for persistence, no server needed)
-QDRANT_MODE = _env("QWE_QDRANT_MODE", "disk")  # "memory" | "disk" | "server"
-QDRANT_PATH = _env("QWE_QDRANT_PATH", str(DATA_DIR / "memory"))  # for disk mode
-QDRANT_URL = _env("QWE_QDRANT_URL", "http://localhost:6333")  # for server mode
-QDRANT_COLLECTION = _env("QWE_QDRANT_COLLECTION", "qwe_qwe")
+QDRANT_MODE = _env("CASTOR_QDRANT_MODE", "disk")  # "memory" | "disk" | "server"
+QDRANT_PATH = _env("CASTOR_QDRANT_PATH", str(DATA_DIR / "memory"))  # for disk mode
+QDRANT_URL = _env("CASTOR_QDRANT_URL", "http://localhost:6333")  # for server mode
+QDRANT_COLLECTION = _env("CASTOR_QDRANT_COLLECTION", "castor")
 
 # SQLite
-DB_PATH = _env("QWE_DB_PATH", str(DATA_DIR / "qwe_qwe.db"))
+DB_PATH = _env("CASTOR_DB_PATH", str(DATA_DIR / "castor.db"))
 
 # Other data paths
 UPLOADS_DIR = DATA_DIR / "uploads"
@@ -50,7 +50,7 @@ PRESETS_DIR.mkdir(exist_ok=True)
 _PROJECT_ROOT = Path(__file__).parent
 
 def _migrate_data():
-    """Move user data from old locations to ~/.qwe-qwe/ (one-time migration).
+    """Move user data from old locations to ~/.castor/ (one-time migration).
 
     Old versions stored data relative to CWD (could be ~, project root, anywhere).
     We search multiple candidate dirs to find the real data.
@@ -70,7 +70,7 @@ def _migrate_data():
             _candidates.append(d)
 
     # Files to migrate — pick the LARGEST (most data) from candidates
-    for fname in ("qwe_qwe.db", "qwe_qwe.db-shm", "qwe_qwe.db-wal",
+    for fname in ("castor.db", "castor.db-shm", "castor.db-wal",
                   "soul.json", "user.md", "heartbeat.md"):
         dst = DATA_DIR / fname
         if dst.exists() and dst.stat().st_size > 0:
@@ -167,7 +167,7 @@ EDITABLE_SETTINGS = {
     "ollama_num_ctx":       ("setting:ollama_num_ctx",        int, 16384,  "Ollama context window (tokens)", 2048, 131072),
     "model_context":        ("setting:model_context",         int, 0,      "Model context window in tokens (0 = auto-detect from provider, else override)", 0, 2000000),
     "yt_cookies_from_browser": ("setting:yt_cookies_from_browser", str, "", "Use browser cookies for YouTube to bypass rate limits. Values: chrome, firefox, edge, safari, brave, chromium, opera, vivaldi. Empty = anonymous (rate-limited after a few videos).", "", ""),
-    "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. qwe-qwe is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
+    "embed_device":            ("setting:embed_device",            str, "cpu", "FastEmbed ONNX execution provider. castor is CPU-only by design — the CPU embedder runs comfortably on a laptop and avoids CUDA install pain. Set to 'cuda' only if you've explicitly installed onnxruntime-gpu + CUDA Toolkit + cuDNN and want GPU acceleration; 'auto' tries CUDA first and falls back to CPU on failure.", "", ""),
     # ── Privacy / Telemetry ──
     # All four default to "off / empty" — no telemetry leaves the machine
     # without explicit opt-in via Settings → Privacy or first-run prompt.

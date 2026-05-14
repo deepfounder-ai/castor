@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add per-run token & USD-cost tracking across every LLM call site in qwe-qwe, surface totals + drilldown in the Sessions list, and replace `routine_runs` with a unified `agent_runs` table fed by an online pricing source.
+**Goal:** Add per-run token & USD-cost tracking across every LLM call site in castor, surface totals + drilldown in the Sessions list, and replace `routine_runs` with a unified `agent_runs` table fed by an online pricing source.
 
 **Architecture:** A new module `pricing.py` fetches LiteLLM's pricing JSON and caches it locally (chain: KV override → memory → disk → bundled). A new `agent_runs` table (replacing `routine_runs`) records one row per LLM-call site (main loop, synthesis, skill creator, scheduler). New `db.py` helpers (`insert_agent_run` / `finalize_agent_run`) bracket each call. Sessions list gains `Tokens` + `Cost` columns plus a `SessionRunsModal` drilldown. Settings gains a Cost-tracking section. Routines page gains a `Cost (30d)` column.
 
@@ -200,7 +200,7 @@ def test_migration_008_copies_legacy_routine_runs(qwe_temp_data_dir):
     import db, sqlite3, time
     # Build a DB at schema_version=7 with routine_runs populated, then
     # let the migration runner fast-forward to 8.
-    conn = sqlite3.connect(qwe_temp_data_dir / "qwe_qwe.db")
+    conn = sqlite3.connect(qwe_temp_data_dir / "castor.db")
     conn.executescript(open("migrations/001_initial.sql").read())
     for n in range(2, 8):
         path = f"migrations/00{n}_"
@@ -1047,9 +1047,9 @@ Expected: FAIL — `refresh_pricing` is a stub.
 
 ```python
 def _ssrf_allowed(url: str) -> bool:
-    """Block private/loopback/link-local unless QWE_ALLOW_PRIVATE_URLS=1."""
+    """Block private/loopback/link-local unless CASTOR_ALLOW_PRIVATE_URLS=1."""
     import os
-    if os.environ.get("QWE_ALLOW_PRIVATE_URLS") == "1":
+    if os.environ.get("CASTOR_ALLOW_PRIVATE_URLS") == "1":
         return True
     try:
         host = urllib.parse.urlparse(url).hostname or ""
@@ -1075,7 +1075,7 @@ def refresh_pricing(force: bool = False) -> bool:
         _log.warning(f"pricing_url blocked by SSRF guard: {url}")
         return False
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "qwe-qwe-pricing/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "castor-pricing/1.0"})
         with urllib.request.urlopen(req, timeout=REMOTE_TIMEOUT_SEC) as resp:
             body = resp.read(MAX_BODY_BYTES + 1)
         if len(body) > MAX_BODY_BYTES:
@@ -1638,7 +1638,7 @@ git commit -m "refactor(scheduler): point routine bookkeeping at agent_runs"
 - Modify: `server.py` (handler at line 2984)
 - Test: `tests/test_analytics_api.py` (new file)
 
-**Naming note:** qwe-qwe's data layer uses "threads" everywhere. The UI's "Sessions list" is a thread list, and the endpoint is `GET /api/threads`. The spec uses "session" in user-facing copy but every code path is "thread".
+**Naming note:** castor's data layer uses "threads" everywhere. The UI's "Sessions list" is a thread list, and the endpoint is `GET /api/threads`. The spec uses "session" in user-facing copy but every code path is "thread".
 
 - [ ] **Step 1: Find existing endpoint**
 

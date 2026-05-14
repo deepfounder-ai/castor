@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the qwe-qwe test suite.
+"""Shared pytest fixtures for the castor test suite.
 
 Historical note: several legacy test files used to inject mock modules into
 ``sys.modules`` at import time (``sys.modules["memory"] = FakeModule()``).
@@ -28,15 +28,15 @@ if str(_REPO_ROOT) not in sys.path:
 
 @pytest.fixture
 def qwe_temp_data_dir(monkeypatch):
-    """Point QWE_DATA_DIR at a fresh tempdir and reload config/db.
+    """Point CASTOR_DATA_DIR at a fresh tempdir and reload config/db.
 
     Yields the Path of the tempdir. Original env + module state are restored
     automatically by ``monkeypatch``; the tempdir itself is removed on exit.
     """
     import importlib
 
-    tmp_root = Path(tempfile.mkdtemp(prefix="qwe_pytest_"))
-    monkeypatch.setenv("QWE_DATA_DIR", str(tmp_root))
+    tmp_root = Path(tempfile.mkdtemp(prefix="castor_pytest_"))
+    monkeypatch.setenv("CASTOR_DATA_DIR", str(tmp_root))
 
     # Close any stale DB connection before reload
     if "db" in sys.modules:
@@ -75,7 +75,7 @@ def qwe_temp_data_dir(monkeypatch):
         except Exception:
             pass
         shutil.rmtree(tmp_root, ignore_errors=True)
-        # Reload core modules against whatever QWE_DATA_DIR is now in effect
+        # Reload core modules against whatever CASTOR_DATA_DIR is now in effect
         # (monkeypatch will have restored the original value before this runs
         #  in the normal finalizer order — but we also reload here so later
         #  tests don't see state tied to the now-removed tempdir).

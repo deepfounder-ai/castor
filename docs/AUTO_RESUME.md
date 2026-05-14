@@ -1,6 +1,6 @@
 # Auto-resume after interrupt
 
-qwe-qwe v0.20.0 makes every abort recoverable: closed tab, dropped network, clicked Stop, or server restart no longer throws away an in-progress agent turn. The agent picks up from where it left off, not from scratch.
+castor v0.20.0 makes every abort recoverable: closed tab, dropped network, clicked Stop, or server restart no longer throws away an in-progress agent turn. The agent picks up from where it left off, not from scratch.
 
 ## What's resumable
 
@@ -59,7 +59,7 @@ Stored in KV as `resume_ttl_web_sec`, `resume_ttl_telegram_sec`, `resume_ttl_rou
 
 ## Privacy
 
-No new outbound network traffic. The partial assistant content is stored locally in `~/.qwe-qwe/qwe_qwe.db` (same place as the rest of your conversation history). No telemetry payload carries content — see `docs/PRIVACY.md`.
+No new outbound network traffic. The partial assistant content is stored locally in `~/.castor/castor.db` (same place as the rest of your conversation history). No telemetry payload carries content — see `docs/PRIVACY.md`.
 
 ## Analytics
 

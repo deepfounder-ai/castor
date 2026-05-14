@@ -187,7 +187,7 @@ def _convert_via_pyav(audio_bytes: bytes, format: str) -> bytes:
 def _get_model():
     """Lazy-load the faster-whisper model on CPU (works everywhere).
 
-    Users with CUDA + cuDNN installed can set env QWE_STT_DEVICE=cuda for GPU.
+    Users with CUDA + cuDNN installed can set env CASTOR_STT_DEVICE=cuda for GPU.
     """
     global _model
     if _model is None:
@@ -198,7 +198,7 @@ def _get_model():
             model_size = config.get("stt_model") or "base"
         except Exception:
             model_size = "base"
-        device = os.environ.get("QWE_STT_DEVICE", "cpu")
+        device = os.environ.get("CASTOR_STT_DEVICE", "cpu")
         compute_type = "int8_float16" if device == "cuda" else "int8"
         _log.info("loading whisper model: %s (%s)", model_size, device)
         try:

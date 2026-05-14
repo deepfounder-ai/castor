@@ -1108,7 +1108,7 @@ def _execute_task(task_desc: str, max_rounds: int = 10) -> str:
             "You will NOT be able to ask follow-up questions — make decisions and act.\n"
             "\n"
             "Known paths (use read_file DIRECTLY, don't shell-find first):\n"
-            f"  {data_dir}/logs/qwe-qwe.log   — full INFO+ log\n"
+            f"  {data_dir}/logs/castor.log   — full INFO+ log\n"
             f"  {data_dir}/logs/errors.log    — WARNING+ only (usually what you want for summaries)\n"
             f"  {data_dir}/workspace/         — agent workspace (for writes)\n"
             "\n"

@@ -12,7 +12,7 @@ Thanks for contributing! A few pointers:
 
 ## Test plan
 
-<!-- How you verified this. E.g. "added 3 tests, ran pytest, smoke-tested via qwe-qwe --doctor". -->
+<!-- How you verified this. E.g. "added 3 tests, ran pytest, smoke-tested via castor --doctor". -->
 
 - [ ]
 - [ ]

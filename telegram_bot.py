@@ -18,7 +18,7 @@ Security:
 Features:
 - Private chat with owner
 - Group support: bot responds in allowed groups
-- Supergroup topics: Telegram topic_id ↔ qwe-qwe thread
+- Supergroup topics: Telegram topic_id ↔ castor thread
 """
 
 import atexit
@@ -76,13 +76,13 @@ _lock_held = False                 # True while this process owns the lock
 # ── Single-instance lock ───────────────────────────────────────────────
 #
 # Telegram allows exactly one long-poll client per bot token. If a second
-# qwe-qwe process (or a stale background uvicorn from a previous session)
+# castor process (or a stale background uvicorn from a previous session)
 # also calls start(), both clients `getUpdates` and Telegram returns a
 # "Conflict: terminated by other getUpdates request" error on whoever
 # isn't the latest caller — spamming the log.
 #
 # To prevent this we take a process-level lock via a PID file at
-# ~/.qwe-qwe/telegram.lock BEFORE entering the polling loop:
+# ~/.castor/telegram.lock BEFORE entering the polling loop:
 #
 #   * if the file doesn't exist → create it atomically, write our PID
 #   * if it exists and holds a LIVE PID → another instance already runs,
@@ -319,7 +319,7 @@ def set_group_mode(mode: str):
 
 
 def is_topics_enabled() -> bool:
-    """Whether to map Telegram topics to qwe-qwe threads."""
+    """Whether to map Telegram topics to castor threads."""
     return db.kv_get("telegram:topics_enabled") != "0"  # default on
 
 
@@ -426,12 +426,12 @@ def _topic_thread_key(chat_id: int, topic_id: int) -> str:
 
 
 def get_thread_for_topic(chat_id: int, topic_id: int) -> str | None:
-    """Get qwe-qwe thread_id for a Telegram topic."""
+    """Get castor thread_id for a Telegram topic."""
     return db.kv_get(_topic_thread_key(chat_id, topic_id))
 
 
 def set_thread_for_topic(chat_id: int, topic_id: int, thread_id: str):
-    """Map a Telegram topic to a qwe-qwe thread."""
+    """Map a Telegram topic to a castor thread."""
     db.kv_set(_topic_thread_key(chat_id, topic_id), thread_id)
 
 
@@ -1033,7 +1033,7 @@ def _run_doctor_checks() -> str:
     import threads
     import db as _db
 
-    lines = ["⚡ *qwe-qwe doctor*\n"]
+    lines = ["⚡ *castor doctor*\n"]
     passed = failed = warns = 0
 
     def ok(name, msg=""):
@@ -1427,7 +1427,7 @@ def get_me(token: str | None = None) -> dict:
 def start(on_message: Callable | None = None):
     """Start the Telegram bot polling loop.
 
-    Acquires a process-level lock first so a second qwe-qwe instance
+    Acquires a process-level lock first so a second castor instance
     (e.g. a leftover uvicorn) never ends up fighting the first one
     over getUpdates.
     """
@@ -1443,7 +1443,7 @@ def start(on_message: Callable | None = None):
         return
 
     if not _acquire_lock():
-        # Another live qwe-qwe instance already owns the lock. Don't start
+        # Another live castor instance already owns the lock. Don't start
         # polling — bail silently to avoid log spam.
         return
 
@@ -1623,7 +1623,7 @@ def _handle_update(update: dict, token: str, bot_username: str):
             # No activation code generated yet — tell user to generate one
             send_message(chat_id,
                 "🔐 Activation required.\n\n"
-                "Generate an activation code in qwe-qwe:\n"
+                "Generate an activation code in castor:\n"
                 "• Web UI → Settings → Telegram\n"
                 "• CLI → `/telegram activate`\n\n"
                 "Then send the 6-digit code here.",

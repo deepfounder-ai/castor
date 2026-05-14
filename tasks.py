@@ -34,7 +34,7 @@ def _build_worker_prompt(depth: int = 0, continuation: str | None = None) -> str
         "",
         "YOUR FILE SYSTEM:",
         f"- Data dir: {data_dir}/",
-        f"- Logs: {data_dir}/logs/qwe-qwe.log, {data_dir}/logs/errors.log",
+        f"- Logs: {data_dir}/logs/castor.log, {data_dir}/logs/errors.log",
         f"- Workspace: {data_dir}/workspace/",
         f"- Database: {config.DB_PATH}",
         "",

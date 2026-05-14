@@ -63,7 +63,7 @@ The iframe is rigorously sandboxed. **Allowed:**
 - Reading `parent.document` / `parent.cookie` / `parent.localStorage` — origin is `"null"`, same-origin policy blocks
 - Top-level navigation (`top.location = ...`) — `allow-top-navigation` is off
 - Popups (`window.open`) — `allow-popups` is off
-- Same-origin XHR/fetch against qwe-qwe's own server with session cookies — origin `null` doesn't carry the user's auth
+- Same-origin XHR/fetch against castor's own server with session cookies — origin `null` doesn't carry the user's auth
 
 ## Size cap
 
@@ -76,7 +76,7 @@ Inlined SVG charts and a small JS library fit easily. If you need more, split th
 
 ## Storage
 
-Saved artifacts live in `~/.qwe-qwe/qwe_qwe.db` in the `canvas_artifacts` table:
+Saved artifacts live in `~/.castor/castor.db` in the `canvas_artifacts` table:
 
 | Column | Type | Notes |
 |---|---|---|

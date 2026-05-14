@@ -1,6 +1,6 @@
 # Memory — what the agent remembers, and how to influence it
 
-Memory is the difference between a stateless chat that re-introduces itself every turn and an agent that knows you, your context, and your history. qwe-qwe has memory by default — you don't configure it, you just notice it works.
+Memory is the difference between a stateless chat that re-introduces itself every turn and an agent that knows you, your context, and your history. castor has memory by default — you don't configure it, you just notice it works.
 
 This doc explains how it works **from the user's side**: what gets saved, when, what the agent recalls, and how to nudge it. For the architecture, see [how-memory-works.md](how-memory-works.md).
 
@@ -9,8 +9,8 @@ This doc explains how it works **from the user's side**: what gets saved, when, 
 **By the agent, automatically:** durable facts the agent thinks matter weeks later.
 
 ```
-You:    Меня зовут Кирилл, я работаю над qwe-qwe.
-Agent:  [memory_save "User's name is Kirill; works on qwe-qwe project"]
+You:    Меня зовут Кирилл, я работаю над castor.
+Agent:  [memory_save "User's name is Kirill; works on castor project"]
         Запомнил.
 ```
 
@@ -40,7 +40,7 @@ Agent:  [memory_search "delivery service"] → finds it
 
 ## What gets recalled
 
-Every time you send a message, qwe-qwe does an **auto-recall** before the LLM sees the message:
+Every time you send a message, castor does an **auto-recall** before the LLM sees the message:
 
 1. Embed your message
 2. Hybrid search across the memory store (dense + sparse + BM25, fused via RRF)
@@ -88,7 +88,7 @@ Agent:  [memory_save "User's dog: Rex" tag="global"]
 
 ## Compaction — when the conversation gets long
 
-When the conversation hits the **context budget** (default 24 000 tokens), qwe-qwe runs **structured compaction**:
+When the conversation hits the **context budget** (default 24 000 tokens), castor runs **structured compaction**:
 
 1. Old messages get summarised by the LLM into a 9-section structured summary (Current State / Goals / Key Files / Learnings / Next Steps / Open Questions / Errors / Decisions / Pending)
 2. The summary is injected back into the conversation as a system message
@@ -134,7 +134,7 @@ For real secret storage, use the [Vault](#vault) — encrypted, opt-in.
 
 | Tool | What it does |
 |---|---|
-| `secret_save(name, value)` | Encrypt + store. Master key in `~/.qwe-qwe/.vault_key`. |
+| `secret_save(name, value)` | Encrypt + store. Master key in `~/.castor/.vault_key`. |
 | `secret_get(name)` | Decrypt + return. Tool result clears at end of turn so it doesn't leak into history. |
 | `secret_list()` | List secret names (NOT values). |
 | `secret_delete(name)` | Remove. |
@@ -154,11 +154,11 @@ Use the vault for API keys, passwords, tokens — anything the agent needs to US
 | `synthesis_time` | `03:00` | When synthesis runs |
 | `auto_save_enabled` | `1` | Let the agent auto-save (turn off for "don't ever save anything") |
 
-`QWE_QDRANT_MODE` env var picks the vector store backend:
+`CASTOR_QDRANT_MODE` env var picks the vector store backend:
 
 - `memory` — in-process, lost on restart. For testing.
-- `disk` (default) — Qdrant on disk under `~/.qwe-qwe/memory/`. What you want.
-- `server` — remote Qdrant at `QWE_QDRANT_URL`. For multi-machine setups.
+- `disk` (default) — Qdrant on disk under `~/.castor/memory/`. What you want.
+- `server` — remote Qdrant at `CASTOR_QDRANT_URL`. For multi-machine setups.
 
 ## Patterns
 
@@ -188,9 +188,9 @@ Memory operations bucket into the `tool_calls_count` / `tool_errors_count` numbe
 
 **Auto-recall pulls irrelevant memories** — your `recall_min_score` might be too low. Raise it (Settings → Memory) so weaker matches don't make it into the context.
 
-**Knowledge graph is empty** — synthesis hasn't run yet. Either wait for 03:00 or run manually via `/cron run synthesis` (CLI). Check `logs/qwe-qwe.log` for `[synthesis]` lines.
+**Knowledge graph is empty** — synthesis hasn't run yet. Either wait for 03:00 or run manually via `/cron run synthesis` (CLI). Check `logs/castor.log` for `[synthesis]` lines.
 
-**Memory takes forever to search** — disk-mode Qdrant on a slow disk. Try `QWE_QDRANT_MODE=memory` for the session (loses memory at restart but very fast) or move `~/.qwe-qwe/memory/` to an SSD.
+**Memory takes forever to search** — disk-mode Qdrant on a slow disk. Try `CASTOR_QDRANT_MODE=memory` for the session (loses memory at restart but very fast) or move `~/.castor/memory/` to an SSD.
 
 **Compaction summary loses important context** — the structured summary's 9 sections are designed to cover what matters, but for long highly-technical threads the summary can drop nuance. Workaround: use [presets](PRESET_GUIDE.md) — each preset gets its own thread + memory namespace, so context never has to span weeks of unrelated work.
 

@@ -1,4 +1,4 @@
-"""Core agent loop — the brain of qwe-qwe."""
+"""Core agent loop — the brain of castor."""
 
 import json
 import re

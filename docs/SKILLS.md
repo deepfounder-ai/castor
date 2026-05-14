@@ -1,12 +1,12 @@
 # Skills — the agent's extensible capability layer
 
-A **skill** is a self-contained Python module that bundles related tools + an instruction string that teaches the agent when to use them. Skills are how qwe-qwe stays small (the core ships with ~30 tools, the rest live in skills) and extensible (you can add a skill without restarting, without touching core code).
+A **skill** is a self-contained Python module that bundles related tools + an instruction string that teaches the agent when to use them. Skills are how castor stays small (the core ships with ~30 tools, the rest live in skills) and extensible (you can add a skill without restarting, without touching core code).
 
 Three things to know:
 
 1. Some skills are **auto-active** — their tools are searchable from day one.
 2. The rest activate on demand via `tool_search(keyword)` — keeps the system prompt lean.
-3. Anyone can write a new skill. You can ask the agent to write one (`skill_creator`), import one from skills.sh, or drop a `.py` into `~/.qwe-qwe/skills/`.
+3. Anyone can write a new skill. You can ask the agent to write one (`skill_creator`), import one from skills.sh, or drop a `.py` into `~/.castor/skills/`.
 
 ## Built-in skills
 
@@ -28,7 +28,7 @@ Three things to know:
 
 ## How tools get activated
 
-qwe-qwe loads **only ~29 core tools** into the system prompt by default. To use anything else, the agent calls `tool_search("keyword")` which:
+castor loads **only ~29 core tools** into the system prompt by default. To use anything else, the agent calls `tool_search("keyword")` which:
 
 1. Scans the keyword index across all installed skills
 2. Activates the matching skill's tools for this turn (system prompt gains them via injection)
@@ -71,7 +71,7 @@ Agent:  [tool_search("habit")] [habit_tracker_log habit="прогулка"]
         Отмечено. Это третий раз на этой неделе.
 ```
 
-The pipeline runs in a background thread; you get a "skill ready" notification when it lands. Skills get a SQLite schema (`skill_<name>_*` tables, prefixed to prevent collisions) and a `.py` file at `~/.qwe-qwe/skills/<name>.py`.
+The pipeline runs in a background thread; you get a "skill ready" notification when it lands. Skills get a SQLite schema (`skill_<name>_*` tables, prefixed to prevent collisions) and a `.py` file at `~/.castor/skills/<name>.py`.
 
 ### What skill_creator is good at
 
@@ -81,7 +81,7 @@ The pipeline runs in a background thread; you get a "skill ready" notification w
 
 ### What it's NOT good at
 
-- **Large stateful capabilities** — multi-file logic, complex algorithms, anything needing a UI. Use the Python ecosystem directly (write the code yourself, drop the `.py` in `~/.qwe-qwe/skills/`).
+- **Large stateful capabilities** — multi-file logic, complex algorithms, anything needing a UI. Use the Python ecosystem directly (write the code yourself, drop the `.py` in `~/.castor/skills/`).
 - **Real-time / streaming workflows** — skills are turn-shaped; for "watch this stream and act on events", use routines + a polling skill.
 
 ## Importing a skill from skills.sh
@@ -96,13 +96,13 @@ Agent:  [tool_search("import")]
           LICENSE.txt). Tools: pdf_help.
 ```
 
-skills.sh hosts skills following the [Anthropic SKILL.md spec](https://agentskills.io/specification). qwe-qwe imports them via a thin adapter — the SKILL.md body becomes the agent's instructions, the `scripts/` and `references/` get staged for `read_file` access.
+skills.sh hosts skills following the [Anthropic SKILL.md spec](https://agentskills.io/specification). castor imports them via a thin adapter — the SKILL.md body becomes the agent's instructions, the `scripts/` and `references/` get staged for `read_file` access.
 
 Full doc: [SKILLS_IMPORT.md](SKILLS_IMPORT.md). Covers security (domain allowlist, SSRF guard, license surfacing), what skills work well, and the audit trail.
 
 ## Anatomy of a skill
 
-If you want to write one by hand, here's the minimal structure (`~/.qwe-qwe/skills/example.py`):
+If you want to write one by hand, here's the minimal structure (`~/.castor/skills/example.py`):
 
 ```python
 """Example skill — illustrates the contract."""
@@ -157,7 +157,7 @@ def execute(name: str, args: dict) -> str:
     return f"Unknown tool: {name}"
 ```
 
-That's the whole contract. Drop the file in `~/.qwe-qwe/skills/`, restart qwe-qwe (or hot-reload via `/reload` CLI), it's live.
+That's the whole contract. Drop the file in `~/.castor/skills/`, restart castor (or hot-reload via `/reload` CLI), it's live.
 
 Built-in skills (in `skills/`) follow the same shape — read `skills/weather.py` or `skills/notes.py` for short reference implementations.
 
@@ -203,7 +203,7 @@ For imported skills, use `delete_import` instead — it preserves the `.py` if y
 
 | Setting | Default | What it does |
 |---|---|---|
-| `skills_dir` | `~/.qwe-qwe/skills` | Where user-installed skills live (env: `QWE_DATA_DIR`-derived) |
+| `skills_dir` | `~/.castor/skills` | Where user-installed skills live (env: `CASTOR_DATA_DIR`-derived) |
 | `skill_creator_provider` | (inherit) | Use a separate provider for skill generation (e.g. local model to avoid cloud cost) |
 | `skill_creator_retries` | `3` | How many times the pipeline retries on validation failure |
 
@@ -215,7 +215,7 @@ Regular tool calls from skills bucket into the `skills` telemetry category in `t
 
 ## Troubleshooting
 
-**Skill won't load** — syntax error in the `.py`. `qwe-qwe --doctor` lists skills with their validation status; an invalid skill is flagged with the line number. Open the file, fix, `/reload`.
+**Skill won't load** — syntax error in the `.py`. `castor --doctor` lists skills with their validation status; an invalid skill is flagged with the line number. Open the file, fix, `/reload`.
 
 **`tool_search` doesn't find my skill's tools** — keyword index didn't register. The skill needs an entry in `_TOOL_SEARCH_INDEX` for the keywords you expect (`tools.py` for built-ins, the skill's own module for user-installed).
 

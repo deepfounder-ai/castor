@@ -1,4 +1,4 @@
-"""qwe-qwe updater — safe pull, migrate, restart.
+"""castor updater — safe pull, migrate, restart.
 
 Usage:
     import updater
@@ -60,7 +60,7 @@ def _current_version() -> str:
     except Exception:
         try:
             import importlib.metadata
-            return importlib.metadata.version("qwe-qwe")
+            return importlib.metadata.version("castor")
         except Exception:
             return "unknown"
 
@@ -142,14 +142,14 @@ def backup_db() -> str | None:
 
     BACKUP_DIR.mkdir(exist_ok=True)
     ts = int(time.time())
-    backup_path = BACKUP_DIR / f"qwe_qwe.db.{ts}"
+    backup_path = BACKUP_DIR / f"castor.db.{ts}"
 
     try:
         shutil.copy2(db_path, backup_path)
         _log.info(f"database backed up to {backup_path}")
 
         # Rotate old backups
-        backups = sorted(BACKUP_DIR.glob("qwe_qwe.db.*"), key=lambda f: f.stat().st_mtime)
+        backups = sorted(BACKUP_DIR.glob("castor.db.*"), key=lambda f: f.stat().st_mtime)
         for old in backups[:-MAX_BACKUPS]:
             old.unlink(missing_ok=True)
 
@@ -277,7 +277,7 @@ def perform_update(on_progress=None) -> dict:
     if r.returncode == 0 and r.stdout.strip():
         # Stash local changes
         emit("preflight", "stashing", "Stashing local changes...")
-        _git("stash", "push", "-m", f"qwe-qwe-update-{int(time.time())}")
+        _git("stash", "push", "-m", f"castor-update-{int(time.time())}")
 
     steps.append({"step": "preflight", "status": "ok"})
     emit("preflight", "ok", "Repository ready")

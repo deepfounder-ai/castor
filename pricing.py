@@ -160,8 +160,8 @@ def _normalize_litellm(raw: dict) -> dict[str, dict[str, float]]:
 
 
 def _ssrf_allowed(url: str) -> bool:
-    """Block private/loopback/link-local unless QWE_ALLOW_PRIVATE_URLS=1."""
-    if os.environ.get("QWE_ALLOW_PRIVATE_URLS") == "1":
+    """Block private/loopback/link-local unless CASTOR_ALLOW_PRIVATE_URLS=1."""
+    if os.environ.get("CASTOR_ALLOW_PRIVATE_URLS") == "1":
         return True
     try:
         host = urllib.parse.urlparse(url).hostname or ""
@@ -191,7 +191,7 @@ def refresh_pricing(force: bool = False) -> bool:
         _log.warning(f"pricing_url blocked by SSRF guard: {url}")
         return False
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "qwe-qwe-pricing/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "castor-pricing/1.0"})
         with urllib.request.urlopen(req, timeout=REMOTE_TIMEOUT_SEC) as resp:
             body = resp.read(MAX_BODY_BYTES + 1)
         if len(body) > MAX_BODY_BYTES:

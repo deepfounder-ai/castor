@@ -206,7 +206,7 @@ def test_migration_008_copies_legacy_routine_runs(qwe_temp_data_dir):
     import glob
     # Build a DB at schema_version=7 with routine_runs populated, then
     # let the migration runner fast-forward to 8.
-    db_path = qwe_temp_data_dir / "qwe_qwe.db"
+    db_path = qwe_temp_data_dir / "castor.db"
     conn = sqlite3.connect(db_path)
     conn.executescript(open("migrations/001_initial.sql").read())
     for n in range(2, 8):
