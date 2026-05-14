@@ -2438,23 +2438,28 @@ const handleWsMessage = (msg) => {
       if (typeof msg.thinking === 'string' && msg.thinking) s.thinking = msg.thinking;
       if (Array.isArray(msg.tools) && msg.tools.length) {
         // Server's reply.tools is result.tool_calls_made — a list of name
-        // strings ("shell", "self_config", ...). Older code mapped each
-        // string through ``tc.name`` which is undefined on a string, so
-        // every reloaded tool row rendered as name="tool". Treat strings
-        // as the name directly; preserve the object shape if the server
-        // ever upgrades to sending richer per-call dicts.
-        s.tools = msg.tools.map((tc, i) => {
-          if (typeof tc === 'string') {
-            return { id: tc + '-final-' + i, name: tc, status: 'ok', args: {}, result: '' };
-          }
-          return {
-            id: tc.id || ((tc.name || 'tool') + '-final-' + i),
-            name: tc.name || 'tool',
-            status: tc.error ? 'err' : 'ok',
-            args: tc.args || tc.input || {},
-            result: tc.result || tc.output || '',
-          };
-        });
+        // strings ("shell", "self_config", ...). During streaming, s.tools was
+        // populated by tool_call/tool_end events that carry actual args + results.
+        // Replacing s.tools here with empty-result stubs would wipe that data.
+        // Only replace when the server sends rich objects (future upgrade path);
+        // when it's all strings, keep the streaming-populated array so tool
+        // results remain visible to the user after the turn completes.
+        const allStrings = msg.tools.every(tc => typeof tc === 'string');
+        if (!allStrings) {
+          s.tools = msg.tools.map((tc, i) => {
+            if (typeof tc === 'string') {
+              return { id: tc + '-final-' + i, name: tc, status: 'ok', args: {}, result: '' };
+            }
+            return {
+              id: tc.id || ((tc.name || 'tool') + '-final-' + i),
+              name: tc.name || 'tool',
+              status: tc.error ? 'err' : 'ok',
+              args: tc.args || tc.input || {},
+              result: tc.result || tc.output || '',
+            };
+          });
+        }
+        // else: keep s.tools as-is — results from streaming events are preserved
       }
       const split = splitFiles(msg.files);
       if (split.images.length) s._images = (s._images || []).concat(split.images);

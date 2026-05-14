@@ -349,6 +349,42 @@ def test_reload_path_runs_meta_files_through_splitfiles():
     )
 
 
+def test_reply_event_preserves_streaming_tool_results():
+    """Reported: skill runs and returns data, but user can't see its output.
+
+    Root cause: when the `reply` WS event arrives, the handler replaces
+    s.tools with msg.tools.map(...) where every tool gets result:''. Since
+    server sends result.tool_calls_made — a list of name strings — this
+    wipes the args + results that tool_call/tool_end events accumulated
+    during streaming.  User sees empty tool bubbles even though the skill
+    ran successfully.
+
+    Fix: when msg.tools is all strings (allStrings check), skip the replace
+    so the streaming-populated s.tools is preserved.
+
+    This test pins that contract by asserting the allStrings guard exists
+    in the reply event handler.
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text(encoding="utf-8")
+    # Anchor on the comment that documents this exact contract
+    anchor = "keep s.tools as-is — results from streaming events are preserved"
+    assert anchor in src, (
+        "reply event handler no longer guards against wiping streaming tool results. "
+        "When msg.tools is a list of name strings (as server always sends), replacing "
+        "s.tools sets result:'' on every tool bubble — erasing data the user should see. "
+        "Restore the allStrings guard in static/index.html's 'reply' event handler."
+    )
+    # Also assert the allStrings check itself is present near the anchor
+    idx = src.find(anchor)
+    window = src[max(0, idx - 600): idx + 50]
+    assert "allStrings" in window, (
+        "allStrings variable not found near the streaming-results guard comment. "
+        "The guard must check that all msg.tools entries are strings before skipping "
+        "the s.tools replacement."
+    )
+
+
 def test_soul_trait_description_uses_low_high_not_raw_object():
     """Reported: Settings → Soul shows '[object Object]' next to every
     built-in trait (humor, honesty, etc.).
