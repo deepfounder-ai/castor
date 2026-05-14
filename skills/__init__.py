@@ -12,7 +12,7 @@ import db
 import config
 
 # Skill names: lowercase alphanumeric + underscores only, no path separators
-_SKILL_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
 USER_SKILLS_DIR = config.USER_SKILLS_DIR
