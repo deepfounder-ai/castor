@@ -172,6 +172,29 @@ async def _main(once: bool = False) -> None:
     await _poll_loop(once=once)
 
 
+# ── Inline mode (web server embeds the worker) ───────────────────────────────
+#
+# When `worker_inline` is True (default), server.py spawns the worker as an
+# asyncio task inside its own lifespan instead of forcing the user to start a
+# separate `python -m worker` daemon. Great UX for dev / desktop installs;
+# operators running a dedicated launchd / systemd worker should set
+# worker_inline=False to avoid double-claim races (which are safe but waste
+# poll cycles).
+
+
+async def start_inline(shutdown_event: asyncio.Event) -> None:
+    """Run the worker poll loop sharing the caller's event loop.
+
+    Different from _main(): doesn't install signal handlers (the host
+    process owns them) and uses the caller-provided shutdown_event so
+    server.py can wave the worker down during its own lifespan teardown.
+    The _poll_loop itself handles the startup lease cleanup.
+    """
+    global _shutdown_event
+    _shutdown_event = shutdown_event
+    await _poll_loop(once=False)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="castor durable goal worker")
     parser.add_argument(

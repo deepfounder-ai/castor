@@ -133,7 +133,8 @@ def _migrate_from_qwe_qwe():
     and user data directories, then updates Qdrant's meta.json so the renamed
     collections are recognised on first startup.
     """
-    import shutil, json
+    import shutil
+    import json
 
     marker = DATA_DIR / ".migrated_from_qwe_qwe"
     if marker.exists():
@@ -353,6 +354,7 @@ EDITABLE_SETTINGS = {
     "checkpoint_round_interval": ("setting:checkpoint_round_interval", int, 3,      "Goal runtime: save a checkpoint every N orchestrator rounds. Lower = safer resume, more DB writes.", 1, 100),
     "worker_concurrency":        ("setting:worker_concurrency",        int, 1,      "Max goals castor-worker runs concurrently. Default 1 (browser-heavy workloads are serial).", 1, 16),
     "worker_poll_interval_sec":  ("setting:worker_poll_interval_sec",  int, 5,      "How often castor-worker polls for new goals.", 1, 300),
+    "worker_inline":             ("setting:worker_inline",             bool, True,  "Run the goal worker INSIDE the web server (great for dev/desktop). Disable when running a dedicated castor-worker via launchd/systemd.", None, None),
 }
 
 

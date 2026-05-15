@@ -450,6 +450,28 @@ async def lifespan(app: FastAPI):
             telegram_bot.start(on_message=_telegram_handler)
     except Exception as e:
         _log.warning(f"Telegram startup: {e}")
+
+    # ── Inline goal worker (Phase 1 of long-running agent runtime) ──
+    # When config.worker_inline is True (default), the web server hosts the
+    # castor-worker poll loop in its own asyncio task. This makes Goals
+    # work out of the box for dev / desktop installs — no separate
+    # `python -m worker` daemon required. Operators running a dedicated
+    # launchd / systemd worker should disable this setting to avoid two
+    # workers competing for the same goals (safe — claim_next_goal is
+    # atomic — but wasteful).
+    app.state._worker_shutdown = None
+    app.state._worker_task = None
+    if config.get("worker_inline"):
+        try:
+            import worker
+            app.state._worker_shutdown = asyncio.Event()
+            app.state._worker_task = asyncio.create_task(
+                worker.start_inline(app.state._worker_shutdown)
+            )
+            _log.info("inline goal worker started")
+        except Exception as e:
+            _log.exception(f"inline worker startup failed: {e}")
+
     _log.info("web server started")
     # Telemetry — fires once per process boot. Default-OFF; this call is a
     # no-op unless the user has explicitly opted in (see telemetry.enabled()).
@@ -461,6 +483,19 @@ async def lifespan(app: FastAPI):
         _log.warning(f"telemetry session_start: {e}")
     yield
     # Shutdown
+    # Stop the inline worker FIRST so any in-flight goal can checkpoint
+    # before db.graceful_shutdown closes the SQLite connection.
+    try:
+        if app.state._worker_shutdown is not None:
+            app.state._worker_shutdown.set()
+        if app.state._worker_task is not None:
+            try:
+                await asyncio.wait_for(app.state._worker_task, timeout=30)
+            except asyncio.TimeoutError:
+                _log.warning("inline worker didn't stop within 30s; cancelling")
+                app.state._worker_task.cancel()
+    except Exception:
+        _log.exception("inline worker shutdown error")
     try:
         telegram_bot.stop()
     except Exception:
