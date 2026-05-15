@@ -1380,3 +1380,204 @@ def get_goal_events(goal_id: str, limit: int = 200) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# ── Plan helpers (Phase 2) ───────────────────────────────────────────────────
+#
+# A goal's plan is JSON in goals.plan with shape:
+#   {
+#     "version": 1,
+#     "subtasks": [{"id": "st_1", "title": "...", "description": "...",
+#                   "status": "pending"|"in_progress"|"completed"|"skipped"|"failed",
+#                   "started_at": float|null, "finished_at": float|null,
+#                   "result_summary": str|null, "dispatched_subagent": str|null,
+#                   "attempts": int}],
+#     "current_index": int,
+#     "created_at": float, "updated_at": float
+#   }
+
+
+_VALID_SUBTASK_STATUSES = {"pending", "in_progress", "completed", "skipped", "failed"}
+
+
+def set_goal_plan(goal_id: str, subtasks: list[dict]) -> dict:
+    """Set or replace a goal's plan. Each input subtask is {title, description}.
+
+    Generates stable IDs `st_1`..`st_N` so the orchestrator can refer to
+    them by id across rounds. Replaces any existing plan (the orchestrator
+    is responsible for not losing track of in-flight work — typically
+    only called once at the start).
+
+    Returns the saved plan dict.
+    """
+    now = time.time()
+    plan = {
+        "version": 1,
+        "subtasks": [
+            {
+                "id": f"st_{i+1}",
+                "title": (st.get("title") or "").strip(),
+                "description": (st.get("description") or "").strip(),
+                "status": "pending",
+                "started_at": None,
+                "finished_at": None,
+                "result_summary": None,
+                "dispatched_subagent": None,
+                "attempts": 0,
+            }
+            for i, st in enumerate(subtasks)
+        ],
+        "current_index": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE goals SET plan=? WHERE id=?",
+        (json.dumps(plan), goal_id),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "plan_set", {"subtasks": len(plan["subtasks"])})
+    return plan
+
+
+def update_subtask(
+    goal_id: str,
+    subtask_id: str,
+    *,
+    status: str | None = None,
+    result_summary: str | None = None,
+    dispatched_subagent: str | None = None,
+    bump_attempts: bool = False,
+) -> dict | None:
+    """Patch one subtask in the goal's plan. Returns the new plan or None.
+
+    Only non-None fields are written. ``status`` must be one of
+    _VALID_SUBTASK_STATUSES. ``bump_attempts`` increments the attempts
+    counter (useful when an LLM retries a failed subagent).
+    """
+    if status and status not in _VALID_SUBTASK_STATUSES:
+        raise ValueError(f"invalid status {status!r}; want one of {_VALID_SUBTASK_STATUSES}")
+    conn = _get_conn()
+    row = conn.execute("SELECT plan FROM goals WHERE id=?", (goal_id,)).fetchone()
+    if not row or not row[0]:
+        return None
+    plan = json.loads(row[0])
+    now = time.time()
+    found = False
+    for st in plan.get("subtasks", []):
+        if st["id"] != subtask_id:
+            continue
+        found = True
+        if status:
+            prev_status = st.get("status")
+            st["status"] = status
+            if status == "in_progress" and not st.get("started_at"):
+                st["started_at"] = now
+            if status in ("completed", "failed", "skipped") and not st.get("finished_at"):
+                st["finished_at"] = now
+            if status == "in_progress" and prev_status != "in_progress":
+                # Roll current_index forward to this subtask so the
+                # orchestrator UI/observability tracks the "active" subtask.
+                plan["current_index"] = plan["subtasks"].index(st)
+        if result_summary is not None:
+            st["result_summary"] = result_summary[:4000]
+        if dispatched_subagent is not None:
+            st["dispatched_subagent"] = dispatched_subagent
+        if bump_attempts:
+            st["attempts"] = int(st.get("attempts") or 0) + 1
+        break
+    if not found:
+        return None
+    plan["updated_at"] = now
+    conn.execute("UPDATE goals SET plan=? WHERE id=?", (json.dumps(plan), goal_id))
+    conn.commit()
+    if status:
+        log_goal_event(goal_id, f"subtask_{status}",
+                       {"subtask_id": subtask_id,
+                        "result_preview": (result_summary or "")[:200]})
+    return plan
+
+
+def get_goal_plan(goal_id: str) -> dict | None:
+    """Fetch only the plan column (cheaper than get_goal when that's all we need)."""
+    conn = _get_conn()
+    row = conn.execute("SELECT plan FROM goals WHERE id=?", (goal_id,)).fetchone()
+    if not row or not row[0]:
+        return None
+    return json.loads(row[0])
+
+
+def goal_plan_is_complete(goal_id: str) -> bool:
+    """True if every subtask reached a terminal status (completed/failed/skipped)."""
+    plan = get_goal_plan(goal_id)
+    if not plan or not plan.get("subtasks"):
+        return False
+    return all(
+        st.get("status") in ("completed", "failed", "skipped")
+        for st in plan["subtasks"]
+    )
+
+
+# ── Goal facts (Phase 2) ─────────────────────────────────────────────────────
+
+
+def fact_save(goal_id: str, key: str, value: str,
+              source_subtask_id: str | None = None) -> None:
+    """Upsert a structured fact for this goal. Keys are unique per goal."""
+    now = time.time()
+    conn = _get_conn()
+    # snake_case-ish keys to keep the orchestrator's prompt tidy. Reject
+    # whitespace + newlines defensively; if the LLM passes garbage we'd
+    # rather error than store unreadable rows.
+    if not key or not key.strip() or "\n" in key:
+        raise ValueError(f"invalid fact key: {key!r}")
+    conn.execute(
+        """INSERT INTO goal_facts (goal_id, key, value, source_subtask_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(goal_id, key) DO UPDATE SET
+               value=excluded.value,
+               source_subtask_id=excluded.source_subtask_id,
+               updated_at=excluded.updated_at""",
+        (goal_id, key.strip(), value, source_subtask_id, now, now),
+    )
+    conn.commit()
+
+
+def fact_get(goal_id: str, keys: list[str] | None = None) -> dict[str, str]:
+    """Return {key: value} for the requested keys, or all keys if None."""
+    conn = _get_conn()
+    if keys:
+        # Build a parameterised IN list — avoid string concat for SQL safety.
+        placeholders = ",".join("?" * len(keys))
+        rows = conn.execute(
+            f"SELECT key, value FROM goal_facts WHERE goal_id=? AND key IN ({placeholders})",
+            (goal_id, *keys),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT key, value FROM goal_facts WHERE goal_id=? ORDER BY key",
+            (goal_id,),
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def fact_list_keys(goal_id: str) -> list[str]:
+    """Just the keys, sorted. Cheap pre-flight before fact_get."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT key FROM goal_facts WHERE goal_id=? ORDER BY key",
+        (goal_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def fact_delete(goal_id: str, key: str) -> bool:
+    """Delete one fact. Returns True if a row was removed."""
+    conn = _get_conn()
+    cur = conn.execute(
+        "DELETE FROM goal_facts WHERE goal_id=? AND key=?",
+        (goal_id, key),
+    )
+    conn.commit()
+    return cur.rowcount > 0
