@@ -2,9 +2,12 @@
 
 import asyncio
 import concurrent.futures
+import logging
 import os
 import threading
 import time
+
+_log = logging.getLogger("castor.browser")
 
 DESCRIPTION = "Control a web browser — navigate, click, fill forms, take screenshots"
 
@@ -468,22 +471,85 @@ def _close_browser():
 _browser_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
+# Error class names that mean "browser session is dead — recoverable by restart".
+# Playwright raises these when the underlying Chrome process crashed, was killed
+# (eg the user externally `pkill`-ed Chrome), or the CDP socket dropped. We do
+# NOT want to surface raw "TargetClosedError" up to the LLM — autonomous agents
+# treat that as a permanent failure and give up. Instead, infrastructure
+# auto-recovers: close stale state, relaunch, retry the operation once.
+_RECOVERABLE_BROWSER_ERRORS = (
+    "TargetClosedError",
+    "BrowserClosedError",
+    "Connection closed",
+    "Target page, context or browser has been closed",
+    "browserContext.newPage",
+)
+
+
+def _looks_like_dead_session(err_str: str) -> bool:
+    """Heuristic: does this error mean 'browser process is dead, can be relaunched'?"""
+    if not err_str:
+        return False
+    return any(marker in err_str for marker in _RECOVERABLE_BROWSER_ERRORS)
+
+
+def _execute_with_recovery(name: str, args: dict) -> str:
+    """Run a browser op. On dead-session errors, auto-close + retry once.
+
+    The autonomy contract: we don't want the LLM to see TargetClosedError and
+    decide the goal is unreachable. The infrastructure should heal itself.
+    Only after a SECOND failure do we surface the error string — that's when
+    something genuinely odd is happening that the LLM should reason about.
+    """
+    result = _execute_impl(name, args)
+    if not _looks_like_dead_session(result):
+        return result
+    # First failure looked like a dead session. Reset state explicitly and try
+    # again. Skip the retry for browser_close itself (no point reopening just
+    # to close) and browser_set_visible (which manages lifecycle on its own).
+    if name in ("browser_close", "browser_set_visible"):
+        return result
+    _log.warning(f"browser tool {name} hit dead-session error; auto-recovering: {result[:140]}")
+    try:
+        _close_browser()
+    except Exception:
+        pass
+    # _ensure_browser is called by _execute_impl on most paths, but call here
+    # explicitly so the retry starts with a fresh, healthy browser.
+    try:
+        _ensure_browser()
+    except Exception as e:
+        return f"Browser recovery failed: {e}. Goal-runtime is now stuck — escalate to user."
+    retry_result = _execute_impl(name, args)
+    if _looks_like_dead_session(retry_result):
+        return (
+            f"Browser session died twice in a row — likely Playwright/Chromium is "
+            f"broken on this host. Original error: {result[:200]}. After auto-recovery "
+            f"retry: {retry_result[:200]}. Consider falling back to http_request or "
+            f"alternative data sources (no browser required)."
+        )
+    return (
+        f"[recovered from dead session — auto-closed stale browser, retried successfully]\n"
+        + retry_result
+    )
+
+
 def execute(name: str, args: dict) -> str:
     """Execute a browser tool - runs in a dedicated thread to avoid asyncio conflicts."""
     global _page, _pages
-    
+
     # Check if we're inside an asyncio event loop
     try:
         loop = asyncio.get_running_loop()
         in_async = loop.is_running()
     except RuntimeError:
         in_async = False
-    
+
     if not in_async:
-        return _execute_impl(name, args)
-    
+        return _execute_with_recovery(name, args)
+
     # Run in a separate thread to avoid sync_playwright inside async loop
-    future = _browser_executor.submit(_execute_impl, name, args)
+    future = _browser_executor.submit(_execute_with_recovery, name, args)
     try:
         return future.result(timeout=30)
     except concurrent.futures.TimeoutError:
