@@ -60,8 +60,20 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
             signal.signal(sig, lambda *_: _shutdown_event.set())  # type: ignore[arg-type]
 
 
-async def _heartbeat_loop(goal_id: str, stop: asyncio.Event) -> None:
-    """Refresh the lease until *stop* is set or the goal is taken over."""
+async def _heartbeat_loop(
+    goal_id: str,
+    stop: asyncio.Event,
+    abort_on_loss: asyncio.Event | None = None,
+) -> None:
+    """Refresh the lease until *stop* is set or the goal is taken over.
+
+    When ``abort_on_loss`` is provided and the lease check finds another
+    worker has claimed the goal (or the user paused/aborted via the API
+    which clears worker_id), we set ``abort_on_loss`` so the parent task
+    can abort the in-flight orchestrator + subagent and bail out cleanly.
+    Without this signal the orchestrator would keep burning rounds for
+    up to several minutes after losing the lease.
+    """
     while not stop.is_set():
         try:
             held = await asyncio.to_thread(
@@ -69,9 +81,11 @@ async def _heartbeat_loop(goal_id: str, stop: asyncio.Event) -> None:
             )
             if not held:
                 _log.warning(
-                    f"goal {goal_id} taken over by another worker; "
+                    f"goal {goal_id} taken over (or paused/aborted by user); "
                     f"this worker will stop processing it"
                 )
+                if abort_on_loss is not None:
+                    abort_on_loss.set()
                 stop.set()
                 return
         except Exception:
@@ -84,21 +98,51 @@ async def _heartbeat_loop(goal_id: str, stop: asyncio.Event) -> None:
 
 
 async def _run_goal_with_heartbeat(goal_id: str, shutdown: asyncio.Event) -> None:
-    """Run one goal, keeping its lease alive with a parallel heartbeat task."""
+    """Run one goal, keeping its lease alive with a parallel heartbeat task.
+
+    The goal can stop for THREE reasons, all funnelled into a single
+    per-goal asyncio.Event (``goal_stop``):
+      1. Global worker shutdown (SIGTERM, server lifespan teardown)
+      2. Heartbeat lost the lease (user paused/aborted via API, OR
+         another worker took over because we hung past lease_expires_at)
+      3. orchestrator.run_orchestrator returned normally
+
+    goal_runner receives the unified ``goal_stop`` as its shutdown_event,
+    so an in-flight subagent's threading.Event bridge fires on any of (1)
+    or (2). Without (2) wired through, a paused-via-UI goal would keep
+    burning rounds until the orchestrator finished naturally.
+    """
+    goal_stop = asyncio.Event()
+
+    async def _fanout_global_shutdown() -> None:
+        try:
+            await shutdown.wait()
+            goal_stop.set()
+        except asyncio.CancelledError:
+            return
+
+    fanout = asyncio.create_task(_fanout_global_shutdown())
     stop_heartbeat = asyncio.Event()
-    heartbeat = asyncio.create_task(_heartbeat_loop(goal_id, stop_heartbeat))
+    heartbeat = asyncio.create_task(
+        _heartbeat_loop(goal_id, stop_heartbeat, abort_on_loss=goal_stop)
+    )
     try:
-        await goal_runner.run(goal_id, shutdown_event=shutdown)
+        await goal_runner.run(goal_id, shutdown_event=goal_stop)
     except asyncio.CancelledError:
         raise
     except Exception:
         _log.exception(f"unhandled error running goal {goal_id}")
     finally:
         stop_heartbeat.set()
+        fanout.cancel()
         try:
             await asyncio.wait_for(heartbeat, timeout=5)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             heartbeat.cancel()
+        try:
+            await fanout
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 async def _poll_loop(once: bool = False) -> None:
