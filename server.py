@@ -2269,6 +2269,18 @@ async def get_goal_events(goal_id: str, limit: int = 200):
     return {"events": db.get_goal_events(goal_id, limit=limit)}
 
 
+@app.get("/api/goals/{goal_id}/facts")
+async def get_goal_facts(goal_id: str):
+    """All key/value facts saved by the orchestrator + subagents.
+
+    Facts survive context compaction and are durable across worker restarts.
+    Returns ``{facts: {key: value, ...}}``.
+    """
+    if not db.get_goal(goal_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"facts": db.fact_get(goal_id)}
+
+
 @app.post("/api/goals/{goal_id}/pause")
 async def pause_goal(goal_id: str):
     """Mark a goal paused. Worker observes on next heartbeat and releases lease.
@@ -2282,6 +2294,32 @@ async def pause_goal(goal_id: str):
         return JSONResponse({"error": f"goal already {g['status']}"}, status_code=409)
     db.mark_goal_paused(goal_id, reason="user_paused")
     return {"id": goal_id, "status": "paused"}
+
+
+@app.post("/api/goals/{goal_id}/resume")
+async def resume_goal(goal_id: str):
+    """Resume a paused goal. Worker's next poll will pick it up.
+
+    Internally this just flips status=paused → pending without clearing
+    the existing checkpoint, so the orchestrator picks up from the same
+    round it paused at.
+    """
+    g = db.get_goal(goal_id)
+    if not g:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if g["status"] != "paused":
+        return JSONResponse(
+            {"error": f"can only resume paused goals (this one is {g['status']})"},
+            status_code=409,
+        )
+    conn = db._get_conn()
+    conn.execute(
+        "UPDATE goals SET status='pending', worker_id=NULL, lease_expires_at=NULL WHERE id=?",
+        (goal_id,),
+    )
+    conn.commit()
+    db.log_goal_event(goal_id, "resumed", {"reason": "user_resumed"})
+    return {"id": goal_id, "status": "pending"}
 
 
 @app.post("/api/goals/{goal_id}/abort")

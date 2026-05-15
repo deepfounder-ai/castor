@@ -1799,6 +1799,11 @@ const I = {
   copy:'M216,32H88A16,16,0,0,0,72,48V72H48A16,16,0,0,0,32,88V216a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V192h24a16,16,0,0,0,16-16V48A16,16,0,0,0,216,32ZM176,216H48V88H176ZM216,176H192V88a16,16,0,0,0-16-16H88V48H216Z',
   info:'M128,24A104,104,0,1,0,232,128,104.2,104.2,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm16-40a8,8,0,0,1-8,8,16,16,0,0,1-16-16V128a8,8,0,0,1,0-16,16,16,0,0,1,16,16v40A8,8,0,0,1,144,176ZM112,84a12,12,0,1,1,12,12A12,12,0,0,1,112,84Z',
   heart:'M178,32c-20.7,0-38.7,8.9-50,23.9C116.7,40.9,98.7,32,78,32A62.1,62.1,0,0,0,16,94c0,70,103.8,126.7,108.2,129a8,8,0,0,0,7.6,0C136.2,220.7,240,164,240,94A62.1,62.1,0,0,0,178,32ZM128,206.8C109.7,196.2,32,147.4,32,94A46.1,46.1,0,0,1,78,48c19.5,0,35.9,10.4,42.7,27.1a8,8,0,0,0,14.6,0C142.1,58.4,158.5,48,178,48a46.1,46.1,0,0,1,46,46C224,147.3,146.3,196.2,128,206.8Z',
+  // Bullseye / target — used for the Goals view nav icon. Concentric
+  // circles convey "aim for an objective" which matches the runtime's
+  // top-level abstraction (a Goal = one user objective the worker drives
+  // to completion).
+  target:'M128,24A104,104,0,1,0,232,128,104.1,104.1,0,0,0,128,24Zm0,192a88,88,0,1,1,88-88A88.1,88.1,0,0,1,128,216Zm0-160a72,72,0,1,0,72,72A72.1,72.1,0,0,0,128,56Zm0,128a56,56,0,1,1,56-56A56.1,56.1,0,0,1,128,184Zm0-96a40,40,0,1,0,40,40A40.1,40.1,0,0,0,128,88Zm0,64a24,24,0,1,1,24-24A24.1,24.1,0,0,1,128,152Z',
   // Side panel — content area with a filled strip on the RIGHT,
   // hollow content area on the LEFT. Used by the `canvas` skill to
   // distinguish "open the right-side canvas panel" from "attach an
@@ -4081,6 +4086,7 @@ function renderCameraPip() {
 function renderRail() {
   const items = [
     { id: 'chat', icon: 'chat', label: 'Threads' },
+    { id: 'goals', icon: 'target', label: 'Goals' },
     { id: 'memory', icon: 'brain', label: 'Memory' },
     { id: 'scheduler', icon: 'clock', label: 'Routines' },
     { id: 'presets', icon: 'package', label: 'Presets' },
@@ -4108,9 +4114,13 @@ function activeThread() { return state.threads.find(t => t.id === state.activeTh
 function renderTopBar() {
   const crumbMap = {
     chat: (activeThread() && activeThread().name) || 'New thread',
+    goals: state.activeGoalId
+      ? (state.goalDetail && state.goalDetail.id) || 'Goal'
+      : 'Goals',
     memory: 'Memory',
     scheduler: 'Scheduler',
     presets: 'Presets',
+    canvases: 'Canvases',
     settings: 'Settings',
   };
   const modelLabel = state.model.model || state.soul.model || 'local';
@@ -7030,6 +7040,7 @@ function needsWideSettings() {
 function renderViewBody() {
   switch (state.view) {
     case 'chat': return renderChatView();
+    case 'goals': return renderGoalsView();
     case 'memory': return renderMemoryView();
     case 'scheduler': return renderSchedulerView();
     case 'presets': return renderPresetsView();
@@ -7083,10 +7094,434 @@ function renderCanvasesView() {
   '</div></div>';
 }
 
+
+// ── Goals view ────────────────────────────────────────────────────────────
+// Live UI for the long-running agent runtime. Goals are durable, worker-
+// executed agent tasks (see docs/GOALS.md). This view has two modes:
+//   - List: every goal, newest first, with status chip + cost + preview
+//   - Detail: one goal — plan, events, facts, result — polled live
+//
+// Polling cadence is intentionally simple: fast (2 s) while running,
+// slow (10 s) otherwise. Stops entirely when the user navigates away.
+
+const GOAL_STATUS_COLORS = {
+  pending: 'var(--fg-3)',
+  running: 'var(--info)',
+  paused:  'var(--warn)',
+  done:    'var(--ok)',
+  failed:  'var(--err)',
+  aborted: 'var(--fg-4)',
+};
+
+function _goalStatusChip(status) {
+  const color = GOAL_STATUS_COLORS[status] || 'var(--fg-3)';
+  return '<span class="chip" style="background:transparent;border:1px solid '
+    + color + ';color:' + color + ';text-transform:uppercase;font-size:10px;'
+    + 'letter-spacing:0.5px;padding:2px 6px;font-weight:600">' + esc(status) + '</span>';
+}
+
+async function loadGoals() {
+  try {
+    const r = await api('/api/goals');
+    state.goals = (r && r.goals) || [];
+  } catch (e) {
+    state.goals = [];
+    toast('Failed to load goals: ' + (e.message || e), 'err');
+  }
+  if (state.view === 'goals') render();
+}
+
+async function loadGoalDetail(goalId, opts) {
+  opts = opts || {};
+  try {
+    const [g, ev, fa] = await Promise.all([
+      api('/api/goals/' + encodeURIComponent(goalId)),
+      api('/api/goals/' + encodeURIComponent(goalId) + '/events?limit=200'),
+      api('/api/goals/' + encodeURIComponent(goalId) + '/facts'),
+    ]);
+    if (g && !g.error) {
+      state.goalDetail = g;
+      state.goalEvents = (ev && ev.events) || [];
+      state.goalFacts = (fa && fa.facts) || {};
+    }
+  } catch (e) {
+    if (!opts.silent) {
+      toast('Failed to load goal: ' + (e.message || e), 'err');
+    }
+  }
+  if (state.view === 'goals' && state.activeGoalId === goalId) {
+    render();
+  }
+}
+
+function startGoalPolling(goalId) {
+  stopGoalPolling();
+  const tick = async () => {
+    if (state.view !== 'goals' || state.activeGoalId !== goalId) {
+      stopGoalPolling();
+      return;
+    }
+    await loadGoalDetail(goalId, { silent: true });
+    const status = (state.goalDetail || {}).status;
+    // Fast cadence while the worker is actively running the goal; slow once
+    // it reaches a terminal/paused state where nothing changes per second.
+    const next = (status === 'running') ? 2000 : 10000;
+    state._goalPollTimer = setTimeout(tick, next);
+  };
+  // Run immediately, then schedule the next tick from the same closure.
+  tick();
+}
+
+function stopGoalPolling() {
+  if (state._goalPollTimer) {
+    clearTimeout(state._goalPollTimer);
+    state._goalPollTimer = null;
+  }
+}
+
+function openGoalDetail(goalId) {
+  state.activeGoalId = goalId;
+  state.goalDetail = null;
+  state.goalEvents = [];
+  state.goalDetailTab = state.goalDetailTab || 'plan';
+  render();
+  startGoalPolling(goalId);
+}
+
+function closeGoalDetail() {
+  stopGoalPolling();
+  state.activeGoalId = null;
+  state.goalDetail = null;
+  state.goalEvents = [];
+  render();
+}
+
+function renderGoalsView() {
+  if (state.activeGoalId) {
+    return renderGoalDetailView();
+  }
+  return renderGoalsListView();
+}
+
+function renderGoalsListView() {
+  const goals = state.goals || [];
+  const empty =
+    '<div style="text-align:center;padding:40px 20px;color:var(--fg-3)">' +
+      '<div style="font-size:14px;margin-bottom:8px">No goals yet.</div>' +
+      '<div style="font-size:12px">Create one via <span class="mono">POST /api/goals</span> ' +
+      'or use the <b>New goal</b> button. The worker daemon picks them up automatically.</div>' +
+    '</div>';
+
+  const row = (g) => {
+    const preview = (g.user_input || '').replace(/\s+/g, ' ').slice(0, 160);
+    const cost = (g.cost_usd != null) ? fmtCost(g.cost_usd) : '—';
+    const created = fmtTime(g.created_at);
+    return '<div class="goal-row" data-goal-open="' + esc(g.id) + '" style="' +
+        'display:grid;grid-template-columns:90px 1fr 80px 80px 80px;gap:12px;' +
+        'padding:10px 14px;border-bottom:1px solid var(--bd-1);align-items:center;' +
+        'cursor:pointer">' +
+      '<div>' + _goalStatusChip(g.status) + '</div>' +
+      '<div><div class="mono" style="font-size:11px;color:var(--fg-4);margin-bottom:2px">' +
+        esc(g.id) + ' · ' + esc(g.source) + '</div>' +
+        '<div style="font-size:13px;color:var(--fg-1)">' + esc(preview) + '</div>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--fg-3);font-family:var(--font-mono)">' + esc(cost) + '</div>' +
+      '<div style="font-size:11px;color:var(--fg-3)">' + esc(created) + '</div>' +
+      '<div style="text-align:right">' +
+        ico('arrow', 12, 'style="color:var(--fg-4);transform:rotate(180deg)"') +
+      '</div>' +
+    '</div>';
+  };
+
+  return '<div class="scroll-col"><div class="inner-wide">' +
+    '<div class="page-hdr"><div class="copy">' +
+      '<div class="eyebrow">GOALS · ' + goals.length + ' total</div>' +
+      '<h1>Long-running goals</h1>' +
+      '<p class="sub">Durable agent tasks that run for hours on the backend worker. ' +
+        'Each goal has its own plan, facts, and event log. ' +
+        '<a href="/static/docs/GOALS.md" target="_blank" style="color:var(--info)">Learn more →</a></p>' +
+    '</div><div class="actions">' +
+      '<button class="btn-primary" data-act="goal-create" style="padding:7px 14px">' +
+        ico('plus', 11) + ' New goal' +
+      '</button>' +
+      '<button class="icon-btn" data-act="goals-refresh" title="Refresh">' +
+        ico('refresh', 14) + '</button>' +
+    '</div></div>' +
+    (goals.length === 0
+      ? empty
+      : '<div style="border:1px solid var(--bd-1);border-radius:8px;overflow:hidden">' +
+          '<div style="display:grid;grid-template-columns:90px 1fr 80px 80px 80px;gap:12px;' +
+            'padding:8px 14px;background:var(--bg-1);font-size:10px;text-transform:uppercase;' +
+            'letter-spacing:0.5px;color:var(--fg-3);font-weight:600;border-bottom:1px solid var(--bd-1)">' +
+            '<div>Status</div><div>Goal</div><div>Cost</div><div>Created</div><div></div>' +
+          '</div>' +
+          goals.map(row).join('') +
+        '</div>') +
+  '</div></div>';
+}
+
+function renderGoalDetailView() {
+  const g = state.goalDetail;
+  if (!g) {
+    return '<div class="scroll-col"><div class="inner-wide">' +
+      '<div style="padding:40px;text-align:center;color:var(--fg-3)">Loading goal…</div>' +
+    '</div></div>';
+  }
+  const tab = state.goalDetailTab || 'plan';
+  const tabBtn = (id, label, count) =>
+    '<button class="tab-btn ' + (tab === id ? 'active' : '') +
+      '" data-goal-tab="' + id + '">' + esc(label) +
+      (count != null ? ' <span class="tab-count">' + count + '</span>' : '') +
+    '</button>';
+
+  const plan = g.plan;
+  const subtaskCount = plan && plan.subtasks ? plan.subtasks.length : 0;
+  const eventCount = (state.goalEvents || []).length;
+
+  return '<div class="scroll-col"><div class="inner-wide">' +
+    // Header
+    '<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px">' +
+      '<button class="icon-btn" data-act="goals-back" title="Back to list">' +
+        ico('arrow', 14) + '</button>' +
+      '<div style="flex:1">' +
+        '<div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">' +
+          _goalStatusChip(g.status) +
+          '<span class="mono" style="font-size:11px;color:var(--fg-4)">' + esc(g.id) + '</span>' +
+          '<span style="font-size:11px;color:var(--fg-4)">·</span>' +
+          '<span style="font-size:11px;color:var(--fg-3)">' + esc(g.source) + '</span>' +
+          (g.cost_usd != null ? '<span style="font-size:11px;color:var(--fg-4)">·</span>' +
+            '<span style="font-size:11px;color:var(--fg-3);font-family:var(--font-mono)">' +
+            esc(fmtCost(g.cost_usd)) + '</span>' : '') +
+        '</div>' +
+        '<div style="font-size:14px;color:var(--fg-1);line-height:1.5">' +
+          esc((g.user_input || '').slice(0, 600)) +
+          ((g.user_input || '').length > 600 ? '…' : '') +
+        '</div>' +
+      '</div>' +
+      _renderGoalActions(g) +
+    '</div>' +
+
+    // Tabs
+    '<div class="tabs" style="margin-bottom:12px;border-bottom:1px solid var(--bd-1)">' +
+      tabBtn('plan', 'Plan', subtaskCount) +
+      tabBtn('events', 'Events', eventCount) +
+      tabBtn('facts', 'Facts') +
+      tabBtn('result', 'Result') +
+    '</div>' +
+
+    // Tab body
+    '<div class="goal-tab-body">' +
+      (tab === 'plan' ? _renderGoalPlanTab(g) :
+       tab === 'events' ? _renderGoalEventsTab() :
+       tab === 'facts' ? _renderGoalFactsTab(g) :
+       tab === 'result' ? _renderGoalResultTab(g) : '') +
+    '</div>' +
+  '</div></div>';
+}
+
+function _renderGoalActions(g) {
+  // Phase 5b will wire these to /pause /abort endpoints. Stub for now.
+  const isTerminal = (g.status === 'done' || g.status === 'failed' || g.status === 'aborted');
+  if (isTerminal) {
+    return '<div style="font-size:11px;color:var(--fg-4)">'
+      + (g.finished_at ? 'Finished ' + esc(fmtTime(g.finished_at)) : '')
+      + '</div>';
+  }
+  return '<div style="display:flex;gap:6px">' +
+    (g.status === 'running'
+      ? '<button class="icon-btn" data-goal-act="pause" data-goal="' + esc(g.id) + '" title="Pause">' +
+          ico('pause', 12) + '</button>'
+      : '<button class="icon-btn" data-goal-act="resume" data-goal="' + esc(g.id) + '" title="Resume">' +
+          ico('play', 12) + '</button>') +
+    '<button class="icon-btn" data-goal-act="abort" data-goal="' + esc(g.id) + '" title="Abort">' +
+      ico('close', 12) + '</button>' +
+  '</div>';
+}
+
+function _renderGoalPlanTab(g) {
+  const plan = g.plan;
+  if (!plan || !plan.subtasks || !plan.subtasks.length) {
+    return '<div style="padding:40px;text-align:center;color:var(--fg-3);font-size:13px">' +
+      'No plan yet. Orchestrator builds it on its first round.' +
+    '</div>';
+  }
+  return '<div>' + plan.subtasks.map((st, i) => {
+    const statusColor = GOAL_STATUS_COLORS[st.status === 'in_progress' ? 'running' : st.status] || 'var(--fg-3)';
+    const statusIcon = (st.status === 'completed') ? 'check'
+                     : (st.status === 'failed')    ? 'close'
+                     : (st.status === 'skipped')   ? 'arrow'
+                     : (st.status === 'in_progress') ? 'play'
+                     : 'clock';
+    return '<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd-1)">' +
+      '<div style="width:24px;height:24px;border-radius:50%;display:flex;align-items:center;' +
+        'justify-content:center;border:1px solid ' + statusColor + ';color:' + statusColor +
+        ';flex-shrink:0;margin-top:1px">' + ico(statusIcon, 11) + '</div>' +
+      '<div style="flex:1">' +
+        '<div style="display:flex;gap:8px;align-items:baseline">' +
+          '<span class="mono" style="font-size:11px;color:var(--fg-4)">' + esc(st.id) + '</span>' +
+          '<span style="font-size:13px;color:var(--fg-1);font-weight:500">' + esc(st.title || '(no title)') + '</span>' +
+          (st.dispatched_subagent
+            ? '<span class="chip" style="background:var(--bg-1);font-size:9px;padding:1px 5px;color:var(--fg-3)">' +
+              esc(st.dispatched_subagent) + '</span>' : '') +
+        '</div>' +
+        (st.description ? '<div style="font-size:12px;color:var(--fg-3);margin-top:3px">' +
+          esc(st.description) + '</div>' : '') +
+        (st.result_summary ? '<div style="font-size:12px;color:var(--fg-2);margin-top:6px;' +
+          'padding:6px 8px;background:var(--bg-1);border-left:2px solid ' + statusColor + ';' +
+          'border-radius:0 4px 4px 0">' + esc(st.result_summary) + '</div>' : '') +
+        (st.attempts > 1 ? '<div style="font-size:10px;color:var(--fg-4);margin-top:4px">' +
+          'attempts: ' + st.attempts + '</div>' : '') +
+      '</div>' +
+    '</div>';
+  }).join('') + '</div>';
+}
+
+function _renderGoalEventsTab() {
+  const events = state.goalEvents || [];
+  if (!events.length) {
+    return '<div style="padding:40px;text-align:center;color:var(--fg-3);font-size:13px">No events.</div>';
+  }
+  // Newest first for tail-like reading.
+  const list = events.slice().reverse();
+  return '<div class="event-log mono" style="font-size:11px;line-height:1.6">' +
+    list.map(e => {
+      const payload = e.payload || {};
+      const payloadStr = Object.keys(payload).length
+        ? ' · ' + Object.entries(payload).map(([k, v]) =>
+            esc(k) + '=' + esc(typeof v === 'string' ? v.slice(0, 80) : JSON.stringify(v).slice(0, 80))
+          ).join(' ')
+        : '';
+      return '<div style="padding:4px 0;border-bottom:1px dashed var(--bd-1)">' +
+        '<span style="color:var(--fg-4)">' + esc(fmtTime(e.timestamp)) + '</span> ' +
+        '<span style="color:var(--info)">' + esc(e.event_type) + '</span>' +
+        '<span style="color:var(--fg-3)">' + payloadStr + '</span>' +
+      '</div>';
+    }).join('') +
+  '</div>';
+}
+
+function _renderGoalFactsTab(g) {
+  const facts = state.goalFacts || {};
+  const keys = Object.keys(facts).sort();
+  if (!keys.length) {
+    return '<div style="padding:40px;text-align:center;color:var(--fg-3);font-size:13px">' +
+      'No facts saved yet. The orchestrator calls <span class="mono">fact_save</span> ' +
+      'to persist findings across subtasks.' +
+    '</div>';
+  }
+  return '<div style="border:1px solid var(--bd-1);border-radius:6px;overflow:hidden">' +
+    keys.map((k) => {
+      const v = facts[k] || '';
+      const long = v.length > 200;
+      return '<div style="display:grid;grid-template-columns:200px 1fr;gap:12px;' +
+          'padding:8px 12px;border-bottom:1px solid var(--bd-1);align-items:start">' +
+        '<div class="mono" style="font-size:11px;color:var(--info);word-break:break-all">' +
+          esc(k) + '</div>' +
+        '<div class="mono" style="font-size:11px;color:var(--fg-1);word-break:break-all;' +
+          'white-space:pre-wrap">' +
+          esc(long ? v.slice(0, 200) + '…' : v) +
+        '</div>' +
+      '</div>';
+    }).join('') +
+  '</div>';
+}
+
+function openCreateGoalModal() {
+  const body =
+    '<div style="font-size:12px;color:var(--fg-3);margin-bottom:14px;padding:10px;' +
+      'background:var(--bg-1);border-radius:6px;border-left:2px solid var(--info)">' +
+      'The <span class="mono">castor-worker</span> daemon will pick up this goal ' +
+      'within a few seconds and run it to completion. Goals survive WebSocket ' +
+      'disconnects, browser refreshes, and worker restarts.' +
+    '</div>' +
+    '<div class="field">' +
+      '<div class="label">Goal description <span style="color:var(--err)">*</span></div>' +
+      '<textarea id="gc-input" rows="6" autofocus ' +
+        'placeholder="Describe what you want done. Examples:&#10;&#10;' +
+        '· Read all .py files under src/ and report any deprecated imports&#10;' +
+        '· Pull every Stripe customer, save active subscriptions as JSON&#10;' +
+        '· Summarise the top 10 arXiv papers on diffusion this week&#10;' +
+        '· Log in to dashboard.example.com and export the last-30-days CSV"></textarea>' +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
+      '<div class="field">' +
+        '<div class="label">Budget (USD, optional)</div>' +
+        '<input type="number" id="gc-budget-usd" class="mono" placeholder="e.g. 5.00" step="0.01" min="0">' +
+      '</div>' +
+      '<div class="field">' +
+        '<div class="label">Wall-clock cap (minutes, optional)</div>' +
+        '<input type="number" id="gc-budget-mins" class="mono" placeholder="e.g. 60" step="1" min="0">' +
+      '</div>' +
+    '</div>';
+  openModal({
+    title: 'New goal',
+    body,
+    actions: [
+      { label: 'Cancel', kind: 'ghost', onClick: () => {} },
+      {
+        label: 'Create',
+        kind: 'primary',
+        busyLabel: 'Creating…',
+        onClick: async () => {
+          const input = (document.getElementById('gc-input').value || '').trim();
+          if (!input) {
+            toast('Goal description is required', 'err');
+            return false;  // keep modal open
+          }
+          const budgetUsd = parseFloat(document.getElementById('gc-budget-usd').value);
+          const budgetMins = parseInt(document.getElementById('gc-budget-mins').value, 10);
+          const payload = {
+            user_input: input,
+            source: 'web',
+          };
+          if (!isNaN(budgetUsd) && budgetUsd > 0) payload.budget_usd = budgetUsd;
+          if (!isNaN(budgetMins) && budgetMins > 0) payload.budget_seconds = budgetMins * 60;
+          try {
+            const r = await api('/api/goals', { method: 'POST', body: payload });
+            if (!r || !r.id) {
+              toast('Failed to create goal', 'err');
+              return false;
+            }
+            toast('Goal queued: ' + r.id, 'ok');
+            // Auto-navigate to detail view so the user can watch progress.
+            await loadGoals();
+            openGoalDetail(r.id);
+          } catch (e) {
+            toast('Failed: ' + (e.message || e), 'err');
+            return false;
+          }
+        },
+      },
+    ],
+  });
+}
+
+function _renderGoalResultTab(g) {
+  if (g.error) {
+    return '<div style="padding:14px;background:rgba(255,80,80,0.08);border:1px solid var(--err);' +
+      'border-radius:6px;color:var(--fg-1)">' +
+      '<div style="font-weight:600;color:var(--err);margin-bottom:6px">Failed</div>' +
+      '<div class="mono" style="font-size:12px;white-space:pre-wrap">' + esc(g.error) + '</div>' +
+    '</div>';
+  }
+  if (!g.result) {
+    return '<div style="padding:40px;text-align:center;color:var(--fg-3);font-size:13px">' +
+      (g.status === 'running' || g.status === 'pending' || g.status === 'paused'
+        ? 'Not finished yet. The final reply appears here once the orchestrator writes its summary message.'
+        : 'No result captured.') +
+    '</div>';
+  }
+  return '<div style="padding:14px;background:var(--bg-1);border-radius:6px;' +
+    'font-size:14px;line-height:1.6;color:var(--fg-1);white-space:pre-wrap">' +
+    esc(g.result) + '</div>';
+}
+
+
 function renderPalette() {
   const q = state.paletteQ || '';
   const items = [
     { group: 'go', label: 'Go to Threads', icon: 'chat', act: () => go('chat'), kbd: ALT_MOD + ' T' },
+    { group: 'go', label: 'Go to Goals', icon: 'target', act: () => go('goals'), kbd: ALT_MOD + ' G' },
     { group: 'go', label: 'Go to Memory', icon: 'brain', act: () => go('memory'), kbd: ALT_MOD + ' M' },
     { group: 'go', label: 'Go to Routines', icon: 'clock', act: () => go('scheduler'), kbd: ALT_MOD + ' S' },
     { group: 'go', label: 'Go to Presets', icon: 'package', act: () => go('presets'), kbd: ALT_MOD + ' P' },
@@ -7263,11 +7698,18 @@ function scrollToBottom(onlyIfAtBottom) {
 function go(view) {
   if (state.view === view) return;
   state.view = view;
+  // Tear down any polling tied to the previous view so we don't keep
+  // hitting /api/goals/{id} after the user navigates away.
+  if (view !== 'goals') {
+    stopGoalPolling();
+    state.activeGoalId = null;
+  }
   render();
   if (view === 'memory') loadMemory();
   if (view === 'scheduler') loadCron();
   if (view === 'presets') { loadPresets(); loadBlogFeed(); }
   if (view === 'canvases') loadCanvasArtifacts();
+  if (view === 'goals') loadGoals();
   if (view === 'settings') openSettingsTab(state.settingsTab);
 }
 
@@ -7727,6 +8169,54 @@ function wireEvents() {
       } catch { toast('Canvas save failed', 'err'); }
     };
   });
+  // ── Goals view event handlers ──
+  // Row click → open detail view + start live polling.
+  document.querySelectorAll('[data-goal-open]').forEach(row => {
+    row.onclick = (e) => {
+      // Don't fire on inner action buttons (none yet in list view, but
+      // future-proof the handler).
+      if (e.target.closest('button')) return;
+      openGoalDetail(row.dataset.goalOpen);
+    };
+  });
+  document.querySelectorAll('[data-act="goals-refresh"]').forEach(b => {
+    b.onclick = () => loadGoals();
+  });
+  document.querySelectorAll('[data-act="goals-back"]').forEach(b => {
+    b.onclick = () => closeGoalDetail();
+  });
+  document.querySelectorAll('[data-goal-tab]').forEach(b => {
+    b.onclick = () => {
+      state.goalDetailTab = b.dataset.goalTab;
+      render();
+    };
+  });
+  document.querySelectorAll('[data-goal-act]').forEach(b => {
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      const id = b.dataset.goal;
+      const act = b.dataset.goalAct;
+      if (!id || !act) return;
+      if (act === 'abort' && !confirm('Abort this goal? This is terminal — cannot be undone.')) return;
+      try {
+        // Phase 5b wires real endpoints; 5a is read-only so these are
+        // best-effort. POST /pause and /abort already exist; /resume
+        // currently flips status=paused → pending via a separate endpoint
+        // (added in Phase 5b).
+        const path = act === 'resume' ? 'resume' : act;
+        await api('/api/goals/' + encodeURIComponent(id) + '/' + path, { method: 'POST' });
+        // Refresh detail to pick up the new status.
+        await loadGoalDetail(id, { silent: true });
+        toast('Goal ' + act + ' requested', 'ok');
+      } catch (err) {
+        toast('Failed to ' + act + ': ' + (err.message || err), 'err');
+      }
+    };
+  });
+  document.querySelectorAll('[data-act="goal-create"]').forEach(b => {
+    b.onclick = () => openCreateGoalModal();
+  });
+
   document.querySelectorAll('[data-act="canvas-open"]').forEach(card => {
     card.onclick = async (e) => {
       // Don't fire when the user clicked the inline delete button —

@@ -153,3 +153,47 @@ def test_abort_goal_marks_aborted(client):
     # Aborted goals are NOT re-claimable.
     import db
     assert db.claim_next_goal("worker_X", lease_sec=60) != gid
+
+
+def test_resume_goal_transitions_paused_to_pending(client):
+    import db
+    gid = client.post("/api/goals", json={"user_input": "x"}).json()["id"]
+    client.post(f"/api/goals/{gid}/pause")
+    r = client.post(f"/api/goals/{gid}/resume")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "pending"
+    g = client.get(f"/api/goals/{gid}").json()
+    assert g["status"] == "pending"
+
+
+def test_resume_only_works_on_paused_goals(client):
+    """Resuming a running/done/aborted goal returns 409."""
+    import db
+    gid = client.post("/api/goals", json={"user_input": "x"}).json()["id"]
+    # Try resuming a pending goal — should 409
+    r = client.post(f"/api/goals/{gid}/resume")
+    assert r.status_code == 409
+
+
+def test_get_goal_facts_empty_returns_empty_dict(client):
+    gid = client.post("/api/goals", json={"user_input": "x"}).json()["id"]
+    r = client.get(f"/api/goals/{gid}/facts")
+    assert r.status_code == 200
+    assert r.json() == {"facts": {}}
+
+
+def test_get_goal_facts_returns_saved_kv(client):
+    import db
+    gid = client.post("/api/goals", json={"user_input": "x"}).json()["id"]
+    db.fact_save(gid, "login_url", "https://example.com")
+    db.fact_save(gid, "count", "47")
+    r = client.get(f"/api/goals/{gid}/facts")
+    assert r.status_code == 200
+    facts = r.json()["facts"]
+    assert facts["login_url"] == "https://example.com"
+    assert facts["count"] == "47"
+
+
+def test_get_goal_facts_404_for_missing_goal(client):
+    r = client.get("/api/goals/g_nope/facts")
+    assert r.status_code == 404
