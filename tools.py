@@ -1,6 +1,7 @@
 """Tool definitions and execution — optimized for small models."""
 
 import base64
+import json
 import math
 import os
 import re
@@ -990,6 +991,89 @@ TOOLS = [
             },
         },
     },
+    # ── Goal-orchestrator tools (Phase 2) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "goal_plan_set",
+            "description": (
+                "Orchestrator only: set or replace the active goal's plan. "
+                "Call this once at the start with a list of focused subtasks."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subtasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "Short imperative phrase, e.g. 'Search LinkedIn for X'"},
+                                "description": {"type": "string", "description": "Self-contained instructions a subagent could follow with no other context"},
+                            },
+                            "required": ["title", "description"],
+                        },
+                    },
+                },
+                "required": ["subtasks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subtask_update",
+            "description": (
+                "Orchestrator only: update one subtask's status. Call after each subtask "
+                "completes (inline or via subagent). Status MUST be one of: completed, failed, skipped."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subtask_id": {"type": "string", "description": "e.g. 'st_1'"},
+                    "status": {"type": "string", "enum": ["in_progress", "completed", "failed", "skipped"]},
+                    "result_summary": {"type": "string", "description": "ONE sentence describing what got done or why it failed"},
+                },
+                "required": ["subtask_id", "status"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fact_save",
+            "description": (
+                "Save a structured fact scoped to the current goal. Facts survive context "
+                "compaction — use this for URLs/IDs/credentials/counts that future subtasks need. "
+                "Keys must be snake_case, descriptive. Overwrites if key already exists."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "snake_case key, no whitespace/newlines"},
+                    "value": {"type": "string"},
+                    "source_subtask_id": {"type": "string", "description": "Optional: which subtask discovered this"},
+                },
+                "required": ["key", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fact_get",
+            "description": (
+                "Retrieve facts saved earlier in this goal. Pass keys=null (or omit) to list ALL keys "
+                "(without values). Pass keys=[\"k1\",\"k2\"] to fetch specific facts with values."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {"type": "array", "items": {"type": "string"}, "description": "Optional: list of keys to fetch"},
+                },
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -1366,6 +1450,110 @@ def _get_all_tools_full() -> list[dict]:
     return all_tools
 
 
+# ── Goal-orchestrator tool impls (Phase 2) ──
+# These tools require a goal_id from the active TurnContext. When called
+# outside a goal turn (e.g. from chat), they return a clear error string
+# instead of mutating arbitrary state.
+
+
+def _require_goal_id() -> "str | None":
+    """Return the active TurnContext.goal_id or None if not in a goal turn."""
+    ctx = _get_turn_ctx()
+    if ctx is None:
+        return None
+    return getattr(ctx, "goal_id", None)
+
+
+def _goal_plan_set_impl(args: dict) -> str:
+    goal_id = _require_goal_id()
+    if not goal_id:
+        return "Error: goal_plan_set requires an active goal — call from inside a goal runner."
+    raw_subtasks = args.get("subtasks") or []
+    if not isinstance(raw_subtasks, list) or not raw_subtasks:
+        return "Error: subtasks must be a non-empty array of {title, description} objects."
+    # Filter out malformed entries; surface what we kept so the LLM sees the result.
+    clean = []
+    for st in raw_subtasks:
+        if isinstance(st, dict) and st.get("title"):
+            clean.append({
+                "title": str(st["title"]).strip(),
+                "description": str(st.get("description") or "").strip(),
+            })
+    if not clean:
+        return "Error: no valid subtasks (each needs a 'title')."
+    plan = db.set_goal_plan(goal_id, clean)
+    titles = ", ".join(f"{st['id']} '{st['title'][:40]}'" for st in plan["subtasks"])
+    return f"Plan set with {len(plan['subtasks'])} subtask(s): {titles}. Next pending: {plan['subtasks'][0]['id']}."
+
+
+def _subtask_update_impl(args: dict) -> str:
+    goal_id = _require_goal_id()
+    if not goal_id:
+        return "Error: subtask_update requires an active goal."
+    subtask_id = (args.get("subtask_id") or "").strip()
+    status = (args.get("status") or "").strip()
+    result_summary = args.get("result_summary")
+    if not subtask_id or not status:
+        return "Error: subtask_id and status are required."
+    try:
+        plan = db.update_subtask(
+            goal_id, subtask_id, status=status, result_summary=result_summary,
+        )
+    except ValueError as e:
+        return f"Error: {e}"
+    if plan is None:
+        return f"Error: no subtask {subtask_id!r} in current plan."
+    # Surface what's next so the LLM can plan its next move from this tool result alone.
+    pending = [st for st in plan["subtasks"] if st["status"] == "pending"]
+    in_progress = [st for st in plan["subtasks"] if st["status"] == "in_progress"]
+    remaining = len(pending) + len(in_progress)
+    if remaining == 0:
+        return f"Subtask {subtask_id} → {status}. All subtasks done — write your final summary message now."
+    next_pending = pending[0]["id"] if pending else (in_progress[0]["id"] if in_progress else None)
+    return f"Subtask {subtask_id} → {status}. {remaining} remaining. Next pending: {next_pending}."
+
+
+def _fact_save_impl(args: dict) -> str:
+    goal_id = _require_goal_id()
+    if not goal_id:
+        return "Error: fact_save requires an active goal."
+    key = args.get("key") or ""
+    value = args.get("value")
+    if value is None:
+        return "Error: value is required."
+    # Coerce non-string values to JSON string so the LLM can pass numbers/objects.
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            value = str(value)
+    try:
+        db.fact_save(goal_id, key, value, source_subtask_id=args.get("source_subtask_id"))
+    except ValueError as e:
+        return f"Error: {e}"
+    return f"Fact saved: {key} = {value[:80]}{'…' if len(value) > 80 else ''}"
+
+
+def _fact_get_impl(args: dict) -> str:
+    goal_id = _require_goal_id()
+    if not goal_id:
+        return "Error: fact_get requires an active goal."
+    keys = args.get("keys")
+    if keys is None:
+        # List mode: keys only, no values.
+        all_keys = db.fact_list_keys(goal_id)
+        if not all_keys:
+            return "No facts saved yet."
+        return "Saved fact keys: " + ", ".join(all_keys) + ". Call fact_get with keys=[...] to read values."
+    if not isinstance(keys, list):
+        return "Error: keys must be an array of strings or null."
+    facts = db.fact_get(goal_id, keys=keys)
+    if not facts:
+        return "No matching facts."
+    lines = [f"{k}: {v}" for k, v in facts.items()]
+    return "\n".join(lines)
+
+
 # ── Tool execution ──
 
 def execute(name: str, args: dict) -> str:
@@ -1696,6 +1884,19 @@ def execute(name: str, args: dict) -> str:
             import tasks
             task_id = tasks.spawn(args["task"])
             return f"Task #{task_id} queued: {args['task'][:60]}"
+
+        # ── Goal-orchestrator tools (Phase 2) ──
+        elif name == "goal_plan_set":
+            return _goal_plan_set_impl(args)
+
+        elif name == "subtask_update":
+            return _subtask_update_impl(args)
+
+        elif name == "fact_save":
+            return _fact_save_impl(args)
+
+        elif name == "fact_get":
+            return _fact_get_impl(args)
 
         elif name == "secret_save":
             return vault.save(args["key"], args["value"])

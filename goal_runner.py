@@ -1,33 +1,31 @@
 """Goal runner — execute one durable goal to completion (or pause/fail).
 
-This is Phase 1 of the long-running agent runtime. It deliberately stays thin:
-it loads/saves checkpoints and runs the EXISTING ``agent.run()`` against the
-goal's user_input. Phase 2 will replace the agent.run() call with a real
-orchestrator that maintains a plan and dispatches subagents.
+Bridges the asyncio worker loop to the synchronous orchestrator. Each call
+to :func:`run` corresponds to one ``goal`` claimed off the queue: load
+the latest checkpoint, invoke the orchestrator inside the default thread
+pool, then mark the goal done/paused/failed based on outcome.
 
-Lifecycle of one goal:
+Phase 1 of this module used a thin wrapper around the chat-style
+``agent.run()``. Phase 2 (this version) delegates to :mod:`orchestrator`
+which:
 
-    1. Worker calls run(goal_id, shutdown_event)
-    2. Load latest checkpoint (None on first claim)
-    3. Build a TurnContext wired with:
-         - abort_event linked to the worker's shutdown_event
-         - on_round_complete callback that saves a checkpoint every
-           CHECKPOINT_EVERY_N_ROUNDS rounds
-         - goal_id so tools can scope state (Phase 3+)
-    4. Call agent.run(user_input, ctx=...) inside a thread pool
-       (agent.run is synchronous; we don't want to block the worker loop)
-    5. On success → mark_goal_done; on shutdown → mark_goal_paused;
-       on exception → mark_goal_failed
+    - uses ``prompts/orchestrator.md`` instead of ``soul.py``
+    - has access only to plan-management + lightweight tools
+    - dispatches heavy work to subagents via ``dispatch_subagent``
+      (Phase 2c)
+
+The goal_runner itself doesn't know or care which orchestrator strategy
+is in use — that's encapsulated in :func:`orchestrator.run_orchestrator`.
 """
 from __future__ import annotations
 
 import asyncio
 import threading
 
-import agent
 import config
 import db
 import logger
+import orchestrator
 from turn_context import TurnContext
 
 _log = logger.get("goal_runner")
@@ -78,18 +76,13 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
     )
 
     try:
-        # agent.run is synchronous — run it in the default executor so this
-        # coroutine doesn't block the worker's poll loop / heartbeat task.
+        # orchestrator.run_orchestrator is synchronous — run it in the default
+        # executor so this coroutine doesn't block the worker's poll loop /
+        # heartbeat task.
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: agent.run(
-                user_input=goal["user_input"],
-                thread_id=goal["thread_id"],
-                source=goal["source"],
-                ctx=ctx,
-                save_user_msg=False,  # goal already persists user_input on goals row
-            ),
+            lambda: orchestrator.run_orchestrator(goal_id=goal_id, ctx=ctx),
         )
     except asyncio.CancelledError:
         # Cooperative cancellation — checkpoint preserved by on_round_complete.
@@ -101,13 +94,13 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
         db.mark_goal_failed(goal_id, error=f"{type(e).__name__}: {e}")
         return
 
-    # Did the shutdown_event fire while the agent was running? If yes the
-    # agent.run() may have returned early after abort — treat as paused.
+    # Did the shutdown_event fire while the orchestrator was running? If yes
+    # the loop may have returned early after abort — treat as paused.
     if shutdown_event.is_set():
         db.mark_goal_paused(goal_id, reason="worker_shutdown")
         return
 
-    reply = getattr(result, "reply", "") or ""
+    reply = (result.get("reply") if isinstance(result, dict) else "") or ""
     db.mark_goal_done(goal_id, result=reply)
 
 
