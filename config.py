@@ -349,6 +349,10 @@ EDITABLE_SETTINGS = {
     "resume_ttl_telegram_sec":  ("setting:resume_ttl_telegram_sec",  int, 86400,  "How long (sec) a Telegram abort stays resumable. Default 24h.", 60, 31536000),
     "resume_ttl_routine_sec":   ("setting:resume_ttl_routine_sec",   int, 300,    "Window (sec) for auto-firing aborted routines on server start. Default 5 min.", 0, 86400),
     "resume_routine_auto":      ("setting:resume_routine_auto",      bool, True,   "Enable/disable routine auto-resume entirely.", None, None),
+    # ── Goal runtime (Phase 1 of long-running agent) ──
+    "checkpoint_round_interval": ("setting:checkpoint_round_interval", int, 3,      "Goal runtime: save a checkpoint every N orchestrator rounds. Lower = safer resume, more DB writes.", 1, 100),
+    "worker_concurrency":        ("setting:worker_concurrency",        int, 1,      "Max goals castor-worker runs concurrently. Default 1 (browser-heavy workloads are serial).", 1, 16),
+    "worker_poll_interval_sec":  ("setting:worker_poll_interval_sec",  int, 5,      "How often castor-worker polls for new goals.", 1, 300),
 }
 
 

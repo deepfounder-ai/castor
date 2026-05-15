@@ -33,6 +33,9 @@ StatusCB = Callable[[str], None]
 ToolCallCB = Callable[[str, str, str], None]
 # list of {tag, text, score, source}
 RecallCB = Callable[[list[dict]], None]
+# (round_num, messages_snapshot) — fired after each round in agent_loop.
+# Used by goal_runner to checkpoint state between rounds.
+RoundCompleteCB = Callable[[int, list[dict]], None]
 
 
 @dataclass
@@ -77,6 +80,15 @@ class TurnContext:
     # it and stores it on the new agent_runs row so analytics can chain
     # the resume back to its original.
     resumed_from_run_id: Optional[int] = None
+
+    # ── Goal runtime binding (Phase 1, set by worker.goal_runner) ──
+    # When non-None this turn is part of a durable Goal; agent_loop calls
+    # ``on_round_complete(round_num, messages)`` after each round so the
+    # runner can persist a checkpoint. ``goal_id`` is the row id in goals;
+    # tools can read it from the active TurnContext to scope state (browser
+    # session, facts, costs) to this goal.
+    goal_id: Optional[str] = None
+    on_round_complete: Optional[RoundCompleteCB] = None
 
     # Convenience emitters. Callers inside agent.py use these instead of
     # guarding "if cb is None" everywhere.
@@ -123,6 +135,16 @@ class TurnContext:
         try:
             cb(memories)
         except Exception:
+            pass
+
+    def emit_round_complete(self, round_num: int, messages: list[dict]) -> None:
+        cb = self.on_round_complete
+        if cb is None:
+            return
+        try:
+            cb(round_num, messages)
+        except Exception:
+            # Checkpointing is best-effort — never break the agent loop.
             pass
 
 

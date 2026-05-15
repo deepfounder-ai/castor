@@ -1,11 +1,13 @@
 """SQLite storage — conversation history, settings, state."""
 
+import gzip
 import shutil
 import sqlite3
 import json
 import re
 import time
 import threading
+import uuid
 from pathlib import Path
 import config
 import logger
@@ -969,3 +971,412 @@ def get_routine_budget(cron_id: int) -> dict | None:
     if not row or row[0] is None:
         return None
     return {"cap": float(row[0]), "period_sec": int(row[1] or 86400)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Goal runtime (Phase 1 of long-running agent architecture)
+#
+#  Three tables:
+#    goals             — durable queue + status machine
+#    goal_checkpoints  — orchestrator state snapshots (resume after crash)
+#    goal_events       — append-only event log for observability
+#
+#  Lease protocol: when a worker claims a goal it sets worker_id +
+#  lease_expires_at. The worker MUST heartbeat (refresh lease_expires_at)
+#  more often than LEASE_DURATION_SEC, or another worker is allowed to
+#  take over. claim_next_goal does this in a single atomic SQL update so
+#  two workers never grab the same goal.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# Terminal statuses — no further work happens after the goal reaches one.
+GOAL_TERMINAL_STATUSES = ("done", "failed", "aborted")
+# Statuses that can be resumed by a worker.
+GOAL_RESUMABLE_STATUSES = ("pending", "running", "paused")
+
+
+def create_goal(
+    *,
+    user_input: str,
+    source: str,
+    thread_id: str | None = None,
+    budget_usd: float | None = None,
+    budget_seconds: int | None = None,
+    meta: dict | None = None,
+) -> str:
+    """Enqueue a new goal. Returns the new goal_id."""
+    goal_id = "g_" + uuid.uuid4().hex[:16]
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO goals (id, thread_id, source, user_input, status,
+                              budget_usd, budget_seconds, created_at, meta)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+        (
+            goal_id,
+            thread_id,
+            source,
+            user_input,
+            budget_usd,
+            budget_seconds,
+            time.time(),
+            json.dumps(meta or {}),
+        ),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "goal_created",
+                   {"source": source, "thread_id": thread_id})
+    return goal_id
+
+
+def get_goal(goal_id: str) -> dict | None:
+    """Fetch a goal row by id. Returns dict or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT id, thread_id, source, user_input, status, plan, result, error,
+                  budget_usd, budget_seconds, cost_usd, started_at, finished_at,
+                  created_at, worker_id, lease_expires_at, meta
+           FROM goals WHERE id=?""",
+        (goal_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "thread_id": row[1],
+        "source": row[2],
+        "user_input": row[3],
+        "status": row[4],
+        "plan": json.loads(row[5]) if row[5] else None,
+        "result": row[6],
+        "error": row[7],
+        "budget_usd": row[8],
+        "budget_seconds": row[9],
+        "cost_usd": float(row[10] or 0.0),
+        "started_at": row[11],
+        "finished_at": row[12],
+        "created_at": row[13],
+        "worker_id": row[14],
+        "lease_expires_at": row[15],
+        "meta": json.loads(row[16]) if row[16] else {},
+    }
+
+
+def list_goals(
+    *,
+    status: str | None = None,
+    thread_id: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List goals filtered by optional status / thread_id, newest first."""
+    conn = _get_conn()
+    where = []
+    params: list = []
+    if status:
+        where.append("status=?")
+        params.append(status)
+    if thread_id:
+        where.append("thread_id=?")
+        params.append(thread_id)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""SELECT id, thread_id, source, user_input, status, started_at,
+                   finished_at, created_at, cost_usd
+            FROM goals {where_sql} ORDER BY created_at DESC LIMIT ?""",
+        params,
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "thread_id": r[1],
+            "source": r[2],
+            "user_input": r[3],
+            "status": r[4],
+            "started_at": r[5],
+            "finished_at": r[6],
+            "created_at": r[7],
+            "cost_usd": float(r[8] or 0.0),
+        }
+        for r in rows
+    ]
+
+
+def claim_next_goal(worker_id: str, lease_sec: int) -> str | None:
+    """Atomically claim the next runnable goal. Returns goal_id or None.
+
+    A goal is claimable if it's:
+      - status='pending', OR
+      - status='running' or 'paused' with expired/missing lease (worker died)
+
+    Uses ``UPDATE ... WHERE id IN (SELECT ... LIMIT 1)`` to keep the read and
+    the claim atomic — SQLite serialises the write, so two workers calling
+    this concurrently can never grab the same row.
+    """
+    conn = _get_conn()
+    now = time.time()
+    new_lease = now + lease_sec
+    # Two-step but inside a single immediate transaction so concurrent claims
+    # serialise: first SELECT the candidate, then UPDATE it by id checking
+    # status hasn't changed. The "BEGIN IMMEDIATE" upgrade is implicit on
+    # the first write under WAL mode but we force it via savepoint to make
+    # the intent obvious.
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        # Another writer holds the lock; treat as "no goal this poll".
+        return None
+    try:
+        row = conn.execute(
+            """SELECT id, status, started_at FROM goals
+               WHERE status='pending'
+                  OR (status IN ('running','paused')
+                      AND (lease_expires_at IS NULL OR lease_expires_at < ?))
+               ORDER BY created_at LIMIT 1""",
+            (now,),
+        ).fetchone()
+        if not row:
+            conn.execute("COMMIT")
+            return None
+        goal_id, prev_status, prev_started = row
+        # Take the lease.
+        conn.execute(
+            """UPDATE goals
+               SET status='running',
+                   worker_id=?,
+                   lease_expires_at=?,
+                   started_at=COALESCE(started_at, ?)
+               WHERE id=?""",
+            (worker_id, new_lease, now, goal_id),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    # Log takeover separately (best-effort, doesn't roll back the claim).
+    if prev_status in ("running", "paused") and prev_started is not None:
+        log_goal_event(goal_id, "worker_lost",
+                       {"new_worker_id": worker_id, "prev_status": prev_status})
+        log_goal_event(goal_id, "resumed",
+                       {"reason": "previous_worker_lease_expired"})
+    return goal_id
+
+
+def heartbeat_goal(goal_id: str, worker_id: str, lease_sec: int) -> bool:
+    """Refresh the lease. Returns True if the lease is still ours.
+
+    If a different worker has taken over (because we hung past the lease),
+    returns False — caller should stop work and abandon the goal.
+    """
+    conn = _get_conn()
+    cur = conn.execute(
+        """UPDATE goals SET lease_expires_at=?
+           WHERE id=? AND worker_id=?""",
+        (time.time() + lease_sec, goal_id, worker_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def release_worker_leases(worker_id: str) -> int:
+    """On worker startup, release any leases this worker_id held in a previous
+    life. Returns the number of goals released.
+
+    A "released" goal goes back to status='paused' so the worker picks it up
+    again via the normal claim path (and the takeover events get logged).
+    Without this, a worker that crashed without cleanup would block its own
+    goals from being re-claimed until lease expiration.
+    """
+    conn = _get_conn()
+    cur = conn.execute(
+        """UPDATE goals SET status='paused', worker_id=NULL, lease_expires_at=NULL
+           WHERE worker_id=? AND status='running'""",
+        (worker_id,),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def mark_goal_done(goal_id: str, *, result: str) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """UPDATE goals SET status='done', result=?, finished_at=?,
+                            worker_id=NULL, lease_expires_at=NULL
+           WHERE id=?""",
+        (result, time.time(), goal_id),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "goal_completed", {"reply_len": len(result or "")})
+
+
+def mark_goal_failed(goal_id: str, *, error: str) -> None:
+    conn = _get_conn()
+    conn.execute(
+        """UPDATE goals SET status='failed', error=?, finished_at=?,
+                            worker_id=NULL, lease_expires_at=NULL
+           WHERE id=?""",
+        (error[:2000], time.time(), goal_id),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "error", {"error": error[:500]})
+
+
+def mark_goal_paused(goal_id: str, *, reason: str) -> None:
+    """Pause a goal. Worker releases the lease so any worker can resume."""
+    conn = _get_conn()
+    conn.execute(
+        """UPDATE goals SET status='paused',
+                            worker_id=NULL, lease_expires_at=NULL
+           WHERE id=?""",
+        (goal_id,),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "paused", {"reason": reason})
+
+
+def mark_goal_aborted(goal_id: str, *, reason: str = "user_aborted") -> None:
+    """Terminal abort — different from paused: won't auto-resume."""
+    conn = _get_conn()
+    conn.execute(
+        """UPDATE goals SET status='aborted', finished_at=?,
+                            worker_id=NULL, lease_expires_at=NULL
+           WHERE id=?""",
+        (time.time(), goal_id),
+    )
+    conn.commit()
+    log_goal_event(goal_id, "aborted", {"reason": reason})
+
+
+# ── Checkpoints ──────────────────────────────────────────────────────────────
+
+# Keep this many checkpoints per goal; older ones are pruned on each save.
+CHECKPOINT_RETENTION = 5
+
+# Hard cap on serialised messages — protects against runaway compaction failures.
+MAX_CHECKPOINT_BLOB_BYTES = 4 * 1024 * 1024  # 4 MB compressed
+
+
+def save_checkpoint(
+    goal_id: str,
+    round_num: int,
+    *,
+    subtask_index: int = -1,
+    messages: list[dict],
+    plan: dict | None = None,
+    facts: dict | None = None,
+) -> None:
+    """Persist orchestrator state. Keeps only the latest CHECKPOINT_RETENTION."""
+    blob = gzip.compress(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+    if len(blob) > MAX_CHECKPOINT_BLOB_BYTES:
+        # Truncate oldest non-system messages to fit; never drop the system prompt.
+        _log.warning(
+            f"checkpoint blob > {MAX_CHECKPOINT_BLOB_BYTES} bytes for goal {goal_id} "
+            f"round {round_num}; truncating to fit"
+        )
+        messages = _truncate_messages_to_fit(messages, MAX_CHECKPOINT_BLOB_BYTES)
+        blob = gzip.compress(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+
+    conn = _get_conn()
+    conn.execute(
+        """INSERT OR REPLACE INTO goal_checkpoints
+           (goal_id, round_num, subtask_index, messages_blob, plan_snapshot,
+            facts_snapshot, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            goal_id,
+            int(round_num),
+            int(subtask_index),
+            blob,
+            json.dumps(plan or {}),
+            json.dumps(facts or {}),
+            time.time(),
+        ),
+    )
+    # Prune: keep only the latest N checkpoints per goal.
+    conn.execute(
+        """DELETE FROM goal_checkpoints
+           WHERE goal_id=? AND id NOT IN (
+               SELECT id FROM goal_checkpoints
+               WHERE goal_id=? ORDER BY round_num DESC LIMIT ?
+           )""",
+        (goal_id, goal_id, CHECKPOINT_RETENTION),
+    )
+    conn.commit()
+
+
+def load_latest_checkpoint(goal_id: str) -> dict | None:
+    """Return latest snapshot or None if there are no checkpoints for this goal."""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT round_num, subtask_index, messages_blob, plan_snapshot,
+                  facts_snapshot, timestamp
+           FROM goal_checkpoints WHERE goal_id=?
+           ORDER BY round_num DESC LIMIT 1""",
+        (goal_id,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        messages = json.loads(gzip.decompress(row[2]).decode("utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        _log.error(f"checkpoint blob corrupt for goal {goal_id}: {e}")
+        return None
+    return {
+        "round_num": int(row[0]),
+        "subtask_index": int(row[1]),
+        "messages": messages,
+        "plan": json.loads(row[3]) if row[3] else {},
+        "facts": json.loads(row[4]) if row[4] else {},
+        "timestamp": float(row[5]),
+    }
+
+
+def _truncate_messages_to_fit(messages: list[dict], byte_limit: int) -> list[dict]:
+    """Drop the oldest non-system messages until the gzipped JSON fits."""
+    # Always keep system prompt (index 0 if present).
+    head = []
+    tail = list(messages)
+    if tail and tail[0].get("role") == "system":
+        head = [tail.pop(0)]
+    while tail:
+        candidate = head + tail
+        size = len(gzip.compress(json.dumps(candidate, ensure_ascii=False).encode("utf-8")))
+        if size <= byte_limit:
+            return candidate
+        tail.pop(0)
+    return head or messages[:1]
+
+
+# ── Event log ────────────────────────────────────────────────────────────────
+
+
+def log_goal_event(goal_id: str, event_type: str, payload: dict | None = None) -> None:
+    """Append a row to goal_events. Never raises — telemetry shouldn't break work."""
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "INSERT INTO goal_events (goal_id, timestamp, event_type, payload) "
+            "VALUES (?, ?, ?, ?)",
+            (goal_id, time.time(), event_type, json.dumps(payload or {})),
+        )
+        conn.commit()
+    except Exception:
+        _log.exception(f"failed to log goal event {event_type} for {goal_id}")
+
+
+def get_goal_events(goal_id: str, limit: int = 200) -> list[dict]:
+    """Return events for a goal, oldest first (for live tailing in UI)."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT timestamp, event_type, payload FROM goal_events
+           WHERE goal_id=? ORDER BY id LIMIT ?""",
+        (goal_id, int(limit)),
+    ).fetchall()
+    return [
+        {
+            "timestamp": float(r[0]),
+            "event_type": r[1],
+            "payload": json.loads(r[2]) if r[2] else {},
+        }
+        for r in rows
+    ]

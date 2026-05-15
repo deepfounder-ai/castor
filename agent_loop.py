@@ -671,6 +671,13 @@ def run_loop(
                 f"stream_ms={stream_ms}, out_tok={turn_output_tokens}"
             )
 
+            # ── Checkpoint hook (Phase 1 of long-running agent runtime) ──
+            # Fire AFTER the log so the round number we report matches what
+            # the goal_runner persists. Goal_runner decides the cadence
+            # (every N rounds) — we just hand it everything.
+            if ctx is not None and ctx.on_round_complete is not None:
+                ctx.emit_round_complete(stats.turns, list(messages))
+
             # ── Process tool calls ──
             if tool_calls_data:
                 # Add assistant message with tool calls. The `arguments`

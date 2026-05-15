@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  castor-worker launchd unit (macOS).
+
+  Installation:
+
+    1. Substitute __PYTHON__ + __REPO__ + __HOME__ below or just run:
+         python scripts/install_worker.py     # generates a personalised plist
+       (script writes the rendered file to ~/Library/LaunchAgents/)
+
+    2. Load:
+         launchctl load ~/Library/LaunchAgents/com.castor.worker.plist
+
+    3. Verify:
+         launchctl list | grep castor.worker
+         tail -f ~/.castor/logs/worker.out.log
+
+  Behaviour:
+    - RunAtLoad: starts immediately on user login.
+    - KeepAlive: launchd restarts the process if it dies.
+    - ThrottleInterval=10s prevents tight restart loops on crash.
+    - SIGTERM (sent by `launchctl stop`) triggers graceful shutdown — the
+      worker checkpoints in-flight goals and exits cleanly.
+-->
+<dict>
+    <key>Label</key>
+    <string>com.castor.worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-m</string>
+        <string>worker</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/.castor/logs/worker.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.castor/logs/worker.err.log</string>
+</dict>
+</plist>

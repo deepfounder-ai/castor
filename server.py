@@ -2217,6 +2217,85 @@ async def toggle_cron(task_id: int, data: dict | None = None):
     return result
 
 
+# ── Goals API (Phase 1 of long-running agent runtime) ──────────────────────
+# Goals are durable, worker-executed agent tasks. Unlike a chat turn (which
+# dies if the WebSocket disconnects), a goal lives in the DB until the
+# castor-worker process finishes it. See:
+# docs/superpowers/plans/2026-05-15-long-running-agent-architecture.md
+
+
+@app.post("/api/goals")
+async def create_goal(data: dict):
+    """Enqueue a new goal for the worker.
+
+    Body: {user_input: str, thread_id?: str, source?: "api"|"web", meta?: dict,
+           budget_usd?: number, budget_seconds?: number}
+    Returns: {id, status: "pending"}
+    """
+    user_input = (data.get("user_input") or "").strip()
+    if not user_input:
+        return JSONResponse({"error": "user_input required"}, status_code=400)
+    goal_id = db.create_goal(
+        user_input=user_input,
+        source=data.get("source") or "api",
+        thread_id=data.get("thread_id"),
+        budget_usd=data.get("budget_usd"),
+        budget_seconds=data.get("budget_seconds"),
+        meta=data.get("meta"),
+    )
+    return {"id": goal_id, "status": "pending"}
+
+
+@app.get("/api/goals")
+async def list_goals(status: str | None = None, thread_id: str | None = None, limit: int = 50):
+    """List goals, newest first. Optional filters: status, thread_id."""
+    return {"goals": db.list_goals(status=status, thread_id=thread_id, limit=limit)}
+
+
+@app.get("/api/goals/{goal_id}")
+async def get_goal(goal_id: str):
+    """Full goal row including plan, result, error, lease info."""
+    g = db.get_goal(goal_id)
+    if not g:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return g
+
+
+@app.get("/api/goals/{goal_id}/events")
+async def get_goal_events(goal_id: str, limit: int = 200):
+    """Event log for the goal — useful for live tailing in UI."""
+    if not db.get_goal(goal_id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"events": db.get_goal_events(goal_id, limit=limit)}
+
+
+@app.post("/api/goals/{goal_id}/pause")
+async def pause_goal(goal_id: str):
+    """Mark a goal paused. Worker observes on next heartbeat and releases lease.
+
+    Paused goals can be re-claimed by any worker via claim_next_goal.
+    """
+    g = db.get_goal(goal_id)
+    if not g:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if g["status"] in db.GOAL_TERMINAL_STATUSES:
+        return JSONResponse({"error": f"goal already {g['status']}"}, status_code=409)
+    db.mark_goal_paused(goal_id, reason="user_paused")
+    return {"id": goal_id, "status": "paused"}
+
+
+@app.post("/api/goals/{goal_id}/abort")
+async def abort_goal(goal_id: str):
+    """Terminal abort. Won't be picked up again."""
+    g = db.get_goal(goal_id)
+    if not g:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if g["status"] in db.GOAL_TERMINAL_STATUSES:
+        return JSONResponse({"error": f"goal already {g['status']}"}, status_code=409)
+    db.mark_goal_aborted(goal_id, reason="user_aborted")
+    return {"id": goal_id, "status": "aborted"}
+
+
 @app.post("/api/cron/{task_id}/run")
 async def run_cron_now(task_id: int):
     """Fire a routine immediately (manual trigger, out-of-schedule).
