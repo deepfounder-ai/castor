@@ -16,6 +16,14 @@ which:
 
 The goal_runner itself doesn't know or care which orchestrator strategy
 is in use — that's encapsulated in :func:`orchestrator.run_orchestrator`.
+
+**Acceptance gate (added 2026-05-16).** After every orchestrator return,
+we run :func:`goal_validators.run_validator` over every subtask's
+``done_condition``. Failures inject a remediation block as a
+``system_note`` and re-enter the orchestrator (up to
+``MAX_GATE_ATTEMPTS`` rounds). Exhaustion → ``mark_goal_failed`` with
+``error="acceptance_gate_exhausted: ..."``. This replaces the old
+auto-skip backstop, which silently masked failed work.
 """
 from __future__ import annotations
 
@@ -24,11 +32,33 @@ import threading
 
 import config
 import db
+import goal_validators
 import logger
 import orchestrator
 from turn_context import TurnContext
 
 _log = logger.get("goal_runner")
+
+
+# Default cap on acceptance-gate re-entries. Overridable via
+# config.get("acceptance_gate_max_attempts"). Three attempts is enough
+# for the model to fix routine issues without burning unbounded budget;
+# the goal is marked ``failed`` after that so a human can intervene.
+MAX_GATE_ATTEMPTS = 3
+
+
+def _gate_max_attempts() -> int:
+    """Resolve the gate cap from config, fall back to module default.
+
+    ``config.get`` raises ``KeyError`` for unregistered settings. The
+    callable is wrapped so a missing/typo'd key never breaks the
+    runner — we just use the module default.
+    """
+    try:
+        v = config.get("acceptance_gate_max_attempts")
+        return max(1, int(v)) if v else MAX_GATE_ATTEMPTS
+    except (KeyError, TypeError, ValueError):
+        return MAX_GATE_ATTEMPTS
 
 
 def _checkpoint_interval() -> int:
@@ -78,24 +108,136 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
         on_round_complete=_make_checkpoint_callback(goal_id, start_round),
     )
 
+    # ── Acceptance-gate loop ──
+    # Each iteration: invoke the orchestrator, then validate every
+    # subtask's done_condition. Failures build a remediation note and
+    # re-enter; once every condition passes, exit the loop and proceed
+    # to mark_goal_done. Exhaustion → mark_goal_failed.
+    max_attempts = _gate_max_attempts()
+    gate_attempt = 0
+    system_notes: list[str] = []
+    final_result: dict | None = None
+
     try:
-        # orchestrator.run_orchestrator is synchronous — run it in the default
-        # executor so this coroutine doesn't block the worker's poll loop /
-        # heartbeat task.
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: orchestrator.run_orchestrator(goal_id=goal_id, ctx=ctx),
-        )
-    except asyncio.CancelledError:
-        # Cooperative cancellation — checkpoint preserved by on_round_complete.
-        _log.info(f"goal {goal_id} cancelled during run; marking paused")
-        db.mark_goal_paused(goal_id, reason="worker_cancelled")
-        raise
-    except Exception as e:
-        _log.exception(f"goal {goal_id} crashed: {e}")
-        db.mark_goal_failed(goal_id, error=f"{type(e).__name__}: {e}")
-        return
+        while True:
+            # Shutdown check on EVERY loop iteration — if it fires mid-gate
+            # retry the goal goes back into the queue as paused, no run.
+            if shutdown_event.is_set():
+                db.mark_goal_paused(goal_id, reason="worker_shutdown")
+                return
+
+            gate_attempt += 1
+            try:
+                final_result = await loop.run_in_executor(
+                    None,
+                    lambda notes=tuple(system_notes): orchestrator.run_orchestrator(
+                        goal_id=goal_id, ctx=ctx, system_notes=list(notes),
+                    ),
+                )
+            except asyncio.CancelledError:
+                # Cooperative cancellation — checkpoint preserved by on_round_complete.
+                _log.info(f"goal {goal_id} cancelled during run; marking paused")
+                db.mark_goal_paused(goal_id, reason="worker_cancelled")
+                raise
+            except Exception as e:
+                _log.exception(f"goal {goal_id} crashed: {e}")
+                db.mark_goal_failed(goal_id, error=f"{type(e).__name__}: {e}")
+                return
+
+            # The orchestrator may have returned because the shutdown fired
+            # mid-round (abort_event propagated). Treat as paused — no point
+            # running the gate when work was interrupted.
+            if shutdown_event.is_set():
+                db.mark_goal_paused(goal_id, reason="worker_shutdown")
+                return
+
+            # Run validators across the current plan.
+            plan = db.get_goal_plan(goal_id) or {}
+            failures: list[tuple[str, str]] = []
+            for st in plan.get("subtasks", []):
+                cond = st.get("done_condition")
+                if not cond:
+                    # Be defensive — older plans / agent-created plans may not
+                    # have a done_condition. The gate skips them; the goal
+                    # can still complete on the orchestrator's say-so.
+                    continue
+                try:
+                    passed, remediation = goal_validators.run_validator(cond)
+                except Exception as e:  # noqa: BLE001 — last-resort guard
+                    # run_validator is contracted not to raise; if it does
+                    # (e.g. stub mid-merge), treat as failure with a
+                    # diagnostic remediation so the orchestrator sees it.
+                    passed = False
+                    remediation = f"validator crashed: {type(e).__name__}: {e}"
+                if not passed:
+                    failures.append((st["id"], remediation))
+                    try:
+                        db.update_subtask(
+                            goal_id, st["id"],
+                            validation_passed=False,
+                            last_validation_failure=remediation,
+                        )
+                    except Exception:
+                        _log.exception(
+                            f"failed to record validation failure on {st['id']}"
+                        )
+                else:
+                    # Mark passed only if it wasn't already (cheap UI flip).
+                    if not st.get("validation_passed"):
+                        try:
+                            db.update_subtask(
+                                goal_id, st["id"],
+                                validation_passed=True,
+                            )
+                        except Exception:
+                            _log.exception(
+                                f"failed to record validation pass on {st['id']}"
+                            )
+
+            if not failures:
+                # All gates passed — exit loop and proceed to mark_done below.
+                break
+
+            # Failures — log + decide whether to retry or give up.
+            try:
+                db.log_goal_event(goal_id, "acceptance_gate_blocked", {
+                    "attempt": gate_attempt,
+                    "failure_count": len(failures),
+                    "failures": [
+                        {"subtask_id": sid, "remediation": rem[:300]}
+                        for sid, rem in failures
+                    ],
+                })
+            except Exception:
+                _log.exception(
+                    f"failed to log acceptance_gate_blocked for {goal_id}"
+                )
+
+            if gate_attempt >= max_attempts:
+                db.mark_goal_failed(
+                    goal_id,
+                    error=(
+                        f"acceptance_gate_exhausted: {len(failures)} "
+                        f"subtask(s) still failing after {max_attempts} attempts"
+                    ),
+                )
+                return
+
+            # Build the remediation note for the next orchestrator round.
+            note_lines = [
+                "ACCEPTANCE GATE: The following subtasks have NOT met their done_condition.",
+                (
+                    "You CANNOT finish the goal until every condition passes. "
+                    "Address each one and re-run subtask_update with "
+                    "status=completed once your work makes the validator pass."
+                ),
+                "",
+            ]
+            for sid, rem in failures:
+                note_lines.append(f"- {sid}: {rem}")
+            system_notes = ["\n".join(note_lines)]
+            # Loop: re-enter the orchestrator with the new notes.
     finally:
         # Always tear down the shutdown-event watcher so it doesn't outlive
         # the goal. Cancel + suppress CancelledError so cleanup never raises.
@@ -106,70 +248,10 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
 
-        # Close the per-goal browser session (frees the Chrome process).
-        # MUST be in finally — on CancelledError/Exception the function
-        # exits via `raise`/`return` above and would otherwise leak the
-        # Chrome process + SingletonLock on the profile dir, breaking the
-        # next resume of this same goal. The user_data_dir on disk stays —
-        # if the user re-creates the goal or it resumes, login cookies /
-        # localStorage are preserved.
-        try:
-            import skills.browser as _bs
-        except ImportError:
-            # Playwright not installed → no browser session existed →
-            # nothing to clean up. Don't even log; not an error.
-            pass
-        else:
-            try:
-                _bs._close_session(goal_id)
-            except Exception:
-                # Best-effort — never block goal completion on browser cleanup.
-                _log.exception(f"failed to close browser session for {goal_id}")
-
-    # Did the shutdown_event fire while the orchestrator was running? If yes
-    # the loop may have returned early after abort — treat as paused.
-    if shutdown_event.is_set():
-        db.mark_goal_paused(goal_id, reason="worker_shutdown")
-        return
-
-    reply = (result.get("reply") if isinstance(result, dict) else "") or ""
-
-    # ── Plan-completion backstop ──
-    # The orchestrator wrote a final reply, which usually means it's done.
-    # But sometimes it stops without explicitly marking every subtask
-    # (we've seen it leave st_2 as `pending` with attempts=7 while writing
-    # a perfectly good summary). Auto-skip any still-pending or in_progress
-    # subtasks with a clear reason so the plan reflects reality.
-    plan = db.get_goal_plan(goal_id)
-    if plan and plan.get("subtasks"):
-        unfinished = [
-            st for st in plan["subtasks"]
-            if st.get("status") in ("pending", "in_progress")
-        ]
-        if unfinished:
-            _log.warning(
-                f"goal {goal_id}: orchestrator finished but {len(unfinished)} "
-                f"subtask(s) still pending/in_progress; auto-skipping"
-            )
-            for st in unfinished:
-                # in_progress → orchestrator was working on it but stopped;
-                # call it "skipped" not "failed" since we don't have a hard
-                # error to report, just incomplete work.
-                try:
-                    db.update_subtask(
-                        goal_id, st["id"],
-                        status="skipped",
-                        result_summary=(
-                            "Auto-skipped: orchestrator wrote a final summary "
-                            "without explicitly closing this subtask. See "
-                            "goal.result for what was accomplished."
-                        ),
-                    )
-                except Exception:
-                    _log.exception(
-                        f"failed to auto-skip {st['id']} on {goal_id}"
-                    )
-
+    # Gate passed — proceed to mark the goal done.
+    reply = (
+        final_result.get("reply") if isinstance(final_result, dict) else ""
+    ) or ""
     db.mark_goal_done(goal_id, result=reply)
 
 
