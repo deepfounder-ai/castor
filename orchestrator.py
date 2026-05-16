@@ -167,6 +167,66 @@ def run_orchestrator(goal_id: str, ctx: TurnContext) -> dict:
     if ctx.on_round_complete is None:
         ctx.on_round_complete = _default_checkpoint_callback(goal_id, start_round)
 
+    # ── Budget enforcement (wall-clock + USD) ──
+    # goals.budget_seconds and goals.budget_usd are USER-set hard caps.
+    # Without these checks the fields are dead storage; a runaway goal
+    # could burn unlimited time / money. Wrap the round-complete callback
+    # so EVERY round we evaluate both — when ANY exceeds, set
+    # ctx.abort_event (same signal a Stop click raises) so the agent loop
+    # exits cleanly and the goal is marked paused. cost_usd is the
+    # cumulative spend recorded across all agent_runs for this goal.
+    budget_seconds = goal.get("budget_seconds")
+    budget_usd = goal.get("budget_usd")
+    started_at = goal.get("started_at") or time.time()
+    have_budget = bool(budget_seconds) or bool(budget_usd)
+    if have_budget and ctx.abort_event is not None:
+        _user_cb = ctx.on_round_complete
+
+        def _budget_aware_cb(round_num: int, msgs: list[dict]) -> None:
+            # Wall-clock check
+            if budget_seconds:
+                elapsed = time.time() - float(started_at)
+                if elapsed >= float(budget_seconds):
+                    _log.warning(
+                        f"[{goal_id}] wall-clock budget exceeded: "
+                        f"{elapsed:.0f}s >= {budget_seconds}s — aborting"
+                    )
+                    db.log_goal_event(goal_id, "budget_exceeded", {
+                        "kind": "wall_clock_seconds",
+                        "elapsed_sec": int(elapsed),
+                        "limit_sec": int(budget_seconds),
+                    })
+                    ctx.abort_event.set()
+            # USD spend check — re-read goals.cost_usd because it's updated
+            # incrementally by finalize_agent_run as subagent + orchestrator
+            # LLM calls complete.
+            if budget_usd:
+                try:
+                    fresh = db.get_goal(goal_id) or {}
+                    spent = float(fresh.get("cost_usd") or 0.0)
+                except Exception:
+                    spent = 0.0
+                if spent >= float(budget_usd):
+                    _log.warning(
+                        f"[{goal_id}] USD budget exceeded: "
+                        f"${spent:.4f} >= ${budget_usd:.4f} — aborting"
+                    )
+                    db.log_goal_event(goal_id, "budget_exceeded", {
+                        "kind": "usd",
+                        "spent_usd": spent,
+                        "limit_usd": float(budget_usd),
+                    })
+                    ctx.abort_event.set()
+            if _user_cb is not None:
+                _user_cb(round_num, msgs)
+
+        ctx.on_round_complete = _budget_aware_cb
+        _log.info(
+            f"[{goal_id}] budgets: "
+            f"wall_clock={budget_seconds}s, usd=${budget_usd} "
+            f"(started at {started_at:.0f})"
+        )
+
     # ── Run the loop ──
     # Cap the orchestrator at a hard turn budget so a runaway plan can't
     # rack up 200+ LLM calls before someone notices. The cap is generous
