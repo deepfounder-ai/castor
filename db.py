@@ -709,15 +709,40 @@ def insert_agent_run(
     scheduled_at: float | None = None,
     resumed_from_run_id: int | None = None,
 ) -> int:
-    """Insert a new run row. Returns the new id."""
+    """Insert a new run row. Returns the new id.
+
+    Side effect: when starting a fresh turn on a thread (NOT a resume run —
+    those are distinguished by ``resumed_from_run_id`` being set), auto-
+    dismiss any prior aborted runs on the same thread. The user has moved
+    on; piling up stale "interrupted" markers spam the resume banner and
+    inflate the count chip in the threads list (we saw it reach 9 during
+    a goal-runtime test session full of server restarts).
+    """
     conn = _get_conn()
     cur = conn.execute(
         "INSERT INTO agent_runs (thread_id, cron_id, source, scheduled_at, "
         " started_at, status, model, provider, resumed_from_run_id) VALUES (?,?,?,?,?,?,?,?,?)",
         (thread_id, cron_id, source, scheduled_at, started_at, status, model, provider, resumed_from_run_id),
     )
+    new_id = int(cur.lastrowid)
+    # Auto-dismiss prior aborted runs on the same thread.
+    # Skip when this IS a resume run (we'd be dismissing the very row we're
+    # resuming from) or when there's no thread_id (CLI / one-shot).
+    if thread_id and resumed_from_run_id is None and status == "running":
+        try:
+            conn.execute(
+                "UPDATE agent_runs "
+                "SET dismissed_at = ? "
+                "WHERE thread_id = ? AND status = 'aborted' "
+                "  AND dismissed_at IS NULL AND id != ?",
+                (started_at, thread_id, new_id),
+            )
+        except Exception:
+            # Auto-dismiss is best-effort — if it fails we still want the
+            # new run inserted so the agent loop can proceed.
+            _log.exception(f"auto-dismiss prior aborts for thread {thread_id} failed")
     conn.commit()
-    return int(cur.lastrowid)
+    return new_id
 
 
 def finalize_agent_run(

@@ -85,6 +85,45 @@ def _emit_recall(memories: list[dict]):
     _get_ctx().emit_recall(memories)
 
 
+# Reply strings that signal "this turn was aborted, not a real answer".
+# Used by _is_duplicate_stop_reply to skip persisting a second one
+# back-to-back in the same thread.
+_STOP_REPLY_MARKERS = ("⏹ Stopped.", "[Stopped]", "[aborted]")
+
+
+def _is_duplicate_stop_reply(reply: str, thread_id: "str | None") -> bool:
+    """True when *reply* is a stop-marker AND the previous assistant
+    message in *thread_id* is also a stop-marker.
+
+    Without this, a single Ctrl-C / shutdown that fires the abort_event
+    via multiple paths (WS disconnect handler + server lifespan teardown,
+    say) produces two identical "⏹ Stopped." rows back-to-back. The
+    user sees a wall of duplicate stops cluttering the chat.
+
+    Cheap LIMIT 1 query; only runs when the reply itself is a stop
+    marker, so non-aborted turns pay nothing.
+    """
+    if not reply or reply not in _STOP_REPLY_MARKERS:
+        return False
+    if not thread_id:
+        # No thread = CLI / one-shot run; just persist whatever, no dedup needed.
+        return False
+    try:
+        # Use the existing db helper to peek at the last assistant message.
+        # Doesn't need to be transactional — worst case we save one extra
+        # stop, which is far less bad than crashing the turn save.
+        row = db.fetchone(
+            "SELECT content FROM messages WHERE thread_id=? AND role='assistant' "
+            "ORDER BY id DESC LIMIT 1",
+            (thread_id,),
+        )
+    except Exception:
+        return False
+    if not row:
+        return False
+    return row[0] in _STOP_REPLY_MARKERS
+
+
 def _resize_image_b64(b64: str, max_area: int = 49152, quality: int = 80) -> str:
     """Resize image to fit within *max_area* pixels and re-encode as JPEG."""
     try:
@@ -1635,7 +1674,14 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
             "prompt_tokens": result.prompt_tokens,
             "tok_per_sec": result.tok_per_sec,
         }
-        db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
+        # Dedup guard: skip persisting an "⏹ Stopped." reply when the previous
+        # assistant message in this thread is ALSO "⏹ Stopped.". Without this,
+        # rapid double-aborts (WS disconnect + server shutdown firing the same
+        # abort_event within the same second) save two identical assistant
+        # rows, which then show up as the duplicate "Stopped./Stopped." pile
+        # the user reported.
+        if not _is_duplicate_stop_reply(result.reply, tid):
+            db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
 
         stats = loop_result["stats"]
         logger.event("turn_complete", duration_ms=turn_ms, rounds=stats.turns,
@@ -2167,7 +2213,8 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
             "prompt_tokens": prompt_tokens,
             "tok_per_sec": tok_per_sec,
         }
-        db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
+        if not _is_duplicate_stop_reply(result.reply, tid):
+            db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
         prev = int(db.kv_get("session_completion_tokens") or "0")
         db.kv_set("session_completion_tokens", str(prev + est_tokens))
         prev = int(db.kv_get("session_turns") or "0")
