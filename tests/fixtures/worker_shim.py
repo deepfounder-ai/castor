@@ -15,7 +15,7 @@ def _install_shim():
 
         scripted_reply = os.environ.get("CASTOR_TEST_FAKE_REPLY", "done")
 
-        def _fake_run_orchestrator(goal_id, ctx):
+        def _fake_run_orchestrator(goal_id, ctx, system_notes=None):
             sys.stderr.write("[shim] fake_run_orchestrator fired for " + str(goal_id) + "\n")
             # Fire the checkpoint callback over a few rounds so checkpoints land.
             if ctx is not None and ctx.on_round_complete is not None:

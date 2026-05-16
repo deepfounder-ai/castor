@@ -112,7 +112,11 @@ def _get_orchestrator_tools() -> list[dict]:
     return result
 
 
-def run_orchestrator(goal_id: str, ctx: TurnContext) -> dict:
+def run_orchestrator(
+    goal_id: str,
+    ctx: TurnContext,
+    system_notes: list[str] | None = None,
+) -> dict:
     """Drive one goal from start (or last checkpoint) to terminal status.
 
     Synchronous — runs inside the worker's thread executor so the worker's
@@ -124,6 +128,27 @@ def run_orchestrator(goal_id: str, ctx: TurnContext) -> dict:
 
     ``ctx`` MUST have ``goal_id`` set so the orchestrator's tools can find
     the active goal.
+
+    ``system_notes`` is an optional list of additional ``{role: system}``
+    messages to inject for THIS invocation only — used by the acceptance
+    gate in :mod:`goal_runner` to feed remediation back into the loop
+    when a subtask's ``done_condition`` failed.
+
+    Placement rule (so the model sees them at the right point in context):
+
+      - **Fresh start** (no checkpoint): notes go AFTER the main system
+        prompt but BEFORE the user input. They read as additional rules
+        the orchestrator must obey from turn 1.
+      - **Resume from checkpoint**: notes go at the END of ``messages``
+        (most recent context). The orchestrator has been running for a
+        while; the gate just told it what's still missing — that needs
+        to be the freshest thing it sees on the next round.
+
+    Notes are ephemeral — they're injected into the in-memory ``messages``
+    list passed to ``run_loop``, never persisted. The next checkpoint
+    saved by the round-complete callback captures whatever ``run_loop``
+    leaves behind, including any new assistant/tool messages produced
+    in response to the notes.
     """
     if not ctx.goal_id:
         raise ValueError("run_orchestrator requires ctx.goal_id")
@@ -131,6 +156,14 @@ def run_orchestrator(goal_id: str, ctx: TurnContext) -> dict:
     goal = db.get_goal(goal_id)
     if not goal:
         raise ValueError(f"goal {goal_id} not found")
+
+    # Normalise / filter notes once so we can pass through the
+    # resume + fresh-start branches symmetrically.
+    note_msgs: list[dict] = [
+        {"role": "system", "content": note}
+        for note in (system_notes or [])
+        if isinstance(note, str) and note.strip()
+    ]
 
     # ── Build initial messages ──
     # Resume from the latest checkpoint when possible. The checkpoint's
@@ -140,15 +173,20 @@ def run_orchestrator(goal_id: str, ctx: TurnContext) -> dict:
     checkpoint = db.load_latest_checkpoint(goal_id)
     start_round = 0
     if checkpoint and checkpoint.get("messages"):
-        messages = checkpoint["messages"]
+        messages = list(checkpoint["messages"])
+        # Resume path: notes are the freshest context — append at the end.
+        if note_msgs:
+            messages.extend(note_msgs)
         start_round = checkpoint["round_num"]
         _log.info(f"[{goal_id}] resuming orchestrator from round {start_round}")
     else:
         system = _load_system_prompt()
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": goal["user_input"]},
-        ]
+        messages = [{"role": "system", "content": system}]
+        # Fresh-start path: notes go between system prompt and user input,
+        # so they read as additional rules from the first turn.
+        if note_msgs:
+            messages.extend(note_msgs)
+        messages.append({"role": "user", "content": goal["user_input"]})
         _log.info(f"[{goal_id}] starting orchestrator fresh")
 
     # ── Provider + tools ──

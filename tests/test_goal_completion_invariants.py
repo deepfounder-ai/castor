@@ -106,15 +106,31 @@ def test_dispatch_subagent_without_plan_still_works(qwe_temp_data_dir, monkeypat
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  goal_runner backstop: auto-skip pending subtasks before marking done
+#  goal_runner: no auto-skip backstop (replaced by acceptance gate 2026-05-16)
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Pre-2026-05-16, goal_runner had an "auto-skip backstop": if the orchestrator
+# returned a final reply but left subtasks pending/in_progress, the runner
+# silently flipped them to ``skipped`` so the plan looked tidy. That was the
+# antipattern that masked the LinkedIn lead-gen failure — broken work got
+# papered over and the goal was marked done.
+#
+# The new architecture replaces the backstop with an acceptance gate (run
+# every subtask's ``done_condition`` validator, re-enter the orchestrator
+# with remediation notes on failure, up to N attempts). The tests below
+# now verify the NEW contract: leftover subtasks without done_conditions
+# are passed through (the gate is defensive — it skips conditionless
+# subtasks rather than blocking) and statuses are preserved verbatim.
+# Full gate behaviour is exercised in tests/test_acceptance_gate.py.
 
 
-def test_goal_runner_skips_pending_subtasks_before_done(qwe_temp_data_dir):
-    """If the orchestrator returns a final reply but the plan still has
-    pending/in_progress subtasks, goal_runner auto-marks them as skipped
-    (with a clear reason) before flipping the goal to done. End state:
-    no inconsistent (done goal, pending subtask) combinations."""
+def test_goal_runner_preserves_subtask_statuses_no_autoskip(qwe_temp_data_dir):
+    """The old auto-skip backstop is GONE. When the orchestrator returns a
+    final reply, the runner no longer mutates pending/in_progress subtasks
+    into ``skipped``. Their original statuses are preserved as-is — if the
+    plan has machine-checkable done_conditions, the acceptance gate handles
+    them; if not (legacy plans built without done_conditions), the runner
+    trusts the orchestrator's say-so and marks the goal done."""
     import asyncio
     import db
     import goal_runner
@@ -132,8 +148,6 @@ def test_goal_runner_skips_pending_subtasks_before_done(qwe_temp_data_dir):
                       result_summary="A done")
     db.update_subtask(goal_id, "st_2", status="in_progress",
                       result_summary="working on B")
-    # Now stub run_orchestrator so goal_runner.run sees a "successful" finish
-    # without us launching a real LLM.
 
     def _fake_orch(**kw):
         return {
@@ -154,23 +168,20 @@ def test_goal_runner_skips_pending_subtasks_before_done(qwe_temp_data_dir):
     assert g["status"] == "done"
     assert "Final summary" in g["result"]
 
-    # Plan: st_1 stays completed, st_2 + st_3 auto-skipped with clear reason
+    # Statuses are preserved verbatim — no auto-skip mutations.
     plan = db.get_goal_plan(goal_id)
     statuses = {st["id"]: st["status"] for st in plan["subtasks"]}
     assert statuses == {
         "st_1": "completed",
-        "st_2": "skipped",
-        "st_3": "skipped",
+        "st_2": "in_progress",
+        "st_3": "pending",
     }
-    # Auto-skip reason is recognisable so users can grep for it later
-    for st in plan["subtasks"]:
-        if st["status"] == "skipped":
-            assert "orchestrator wrote a final summary" in st["result_summary"]
 
 
-def test_goal_runner_preserves_already_terminal_subtasks(qwe_temp_data_dir):
-    """The backstop must NOT touch subtasks that already reached a terminal
-    status (completed/failed/skipped) — only the pending/in_progress ones."""
+def test_goal_runner_preserves_terminal_subtask_summaries(qwe_temp_data_dir):
+    """Already-terminal subtasks (completed/failed/skipped) keep their
+    result_summary exactly as the orchestrator wrote it — the runner never
+    mutates them."""
     import asyncio
     import db
     import goal_runner
@@ -207,13 +218,13 @@ def test_goal_runner_preserves_already_terminal_subtasks(qwe_temp_data_dir):
     # st_2 stays failed with its original summary
     assert by_id["st_2"]["status"] == "failed"
     assert by_id["st_2"]["result_summary"] == "B blocked by captcha"
-    # Only st_3 (was pending) got auto-skipped
-    assert by_id["st_3"]["status"] == "skipped"
+    # st_3 is left alone (no auto-skip)
+    assert by_id["st_3"]["status"] == "pending"
 
 
-def test_goal_runner_complete_plan_no_skip_messages(qwe_temp_data_dir):
-    """When the plan is already complete (orchestrator did mark every subtask),
-    the backstop is a no-op — no spurious skipped entries appear."""
+def test_goal_runner_complete_plan_no_mutations(qwe_temp_data_dir):
+    """When the plan is already complete (orchestrator marked every subtask),
+    the runner is a no-op on the plan — no spurious mutations."""
     import asyncio
     import db
     import goal_runner
