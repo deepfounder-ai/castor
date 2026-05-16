@@ -271,7 +271,16 @@ def test_orchestrator_dispatches_subagent_and_uses_result(qwe_temp_data_dir, mon
     script = [
         # Orch r1
         _tool_call_response("c1", "goal_plan_set",
-                            {"subtasks": [{"title": "Find a URL", "description": "via research subagent"}]}),
+                            {"subtasks": [{
+                                "title": "Find a URL",
+                                "description": "via research subagent",
+                                # Workstream B (acceptance-gate) requires done_condition
+                                # per subtask. Test validator stub always passes.
+                                "done_condition": {
+                                    "kind": "regex_in_output",
+                                    "spec": {"pattern": "https?://"},
+                                },
+                            }]}),
         # Orch r2: dispatch
         _tool_call_response("c2", "dispatch_subagent",
                             {"type": "research", "prompt": "find me a URL", "subtask_id": "st_1"}),
