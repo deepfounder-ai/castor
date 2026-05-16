@@ -248,6 +248,24 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
 
+        # Close the per-goal browser session (frees Chrome + releases the
+        # SingletonLock on the profile dir). MUST be in finally so it runs
+        # on CancelledError, crashes, mark_goal_failed paths too —
+        # otherwise transient goal failures accumulate zombie Chromes.
+        # The user_data_dir on disk stays — if the goal is recreated or
+        # resumed, login cookies / localStorage survive.
+        try:
+            import skills.browser as _bs
+        except ImportError:
+            # Playwright not installed → no browser session ever existed →
+            # nothing to clean up. Not an error.
+            pass
+        else:
+            try:
+                _bs._close_session(goal_id)
+            except Exception:
+                _log.exception(f"failed to close browser session for {goal_id}")
+
     # Gate passed — proceed to mark the goal done.
     reply = (
         final_result.get("reply") if isinstance(final_result, dict) else ""

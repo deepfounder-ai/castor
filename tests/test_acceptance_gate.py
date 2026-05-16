@@ -403,30 +403,44 @@ def test_gate_writes_validation_passed_flag(qwe_temp_data_dir, monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_gate_ignores_subtasks_without_done_condition(
+def test_gate_legacy_callers_without_done_condition_get_default(
     qwe_temp_data_dir, monkeypatch
 ):
-    """The gate is defensive — older plans / agent-created plans that
-    don't have a ``done_condition`` per subtask are passed through. The
-    goal is marked done without the runner blocking."""
+    """Legacy / internal callers that pass plans without an explicit
+    ``done_condition`` get a ``shell_returns_zero {cmd: 'true'}`` default
+    from ``db.set_goal_plan`` (back-compat). The gate runs the validator,
+    it passes, the goal is marked done.
+
+    This documents the post-merge behavior: the LLM-facing
+    ``tools.goal_plan_set`` HARD-REQUIRES done_condition, but the lower-
+    level ``db.set_goal_plan`` accepts plans without it and inserts the
+    safe default so older code paths still flow through cleanly.
+    """
     import db
     import goal_runner
     import goal_validators
     import orchestrator
 
-    # Plan without done_conditions (use the bare set_goal_plan path).
+    # Plan without explicit done_conditions — db.set_goal_plan injects
+    # the always-passing default per subtask.
     goal_id = db.create_goal(user_input="x", source="cli")
     db.set_goal_plan(goal_id, [
         {"title": "A", "description": ""},
         {"title": "B", "description": ""},
     ])
 
-    # Validator would fail loudly if called — but it should not be called.
+    # Confirm the default landed on every subtask.
+    plan = db.get_goal_plan(goal_id)
+    for st in plan["subtasks"]:
+        assert st["done_condition"]["kind"] == "shell_returns_zero"
+
+    # Track how many times the validator is called; stub it to always
+    # return (True, "") so the gate passes on first attempt.
     call_count = {"n": 0}
 
     def _validator(criterion):
         call_count["n"] += 1
-        return False, "should not be called"
+        return True, ""
 
     monkeypatch.setattr(goal_validators, "run_validator", _validator)
     monkeypatch.setattr(orchestrator, "run_orchestrator", lambda **kw: {
@@ -436,8 +450,8 @@ def test_gate_ignores_subtasks_without_done_condition(
 
     _run_goal(goal_runner, goal_id)
 
-    # Validator was never called (no done_conditions to check).
-    assert call_count["n"] == 0
+    # Validator ran for each of the 2 subtasks' default conditions.
+    assert call_count["n"] == 2
     g = db.get_goal(goal_id)
     assert g["status"] == "done"
 

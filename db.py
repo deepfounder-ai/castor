@@ -1458,18 +1458,22 @@ def set_goal_plan(goal_id: str, subtasks: list[dict]) -> dict:
         description = (st.get("description") or "").strip()
         done_condition = st.get("done_condition")
         if done_condition is None:
-            # Back-compat default for internal callers (tests, goal_runner
-            # auto-skip, etc.). The LLM-facing tool ``goal_plan_set`` enforces
-            # that the orchestrator passes a real done_condition.
+            # Back-compat default for internal callers (tests, legacy code
+            # paths). The LLM-facing tool ``goal_plan_set`` hard-requires
+            # the orchestrator to pass a real done_condition. We use
+            # ``shell_returns_zero`` with ``true`` here — a real validator
+            # kind that always passes — so the gate never blocks on
+            # legacy-shaped plans.
             done_condition = {
-                "kind": "always_pass",
-                "spec": description or title or "implicit",
+                "kind": "shell_returns_zero",
+                "spec": {"cmd": "true", "timeout": 5},
             }
-        ok, err = goal_validators.validate_criterion(done_condition)
-        if not ok:
+        try:
+            goal_validators.validate_criterion(done_condition)
+        except ValueError as e:
             raise ValueError(
-                f"subtask {i + 1} ({title!r}) has invalid done_condition: {err}"
-            )
+                f"subtask {i + 1} ({title!r}) has invalid done_condition: {e}"
+            ) from e
         built.append({
             "id": f"st_{i + 1}",
             "title": title,

@@ -277,8 +277,8 @@ def test_orchestrator_dispatches_subagent_and_uses_result(qwe_temp_data_dir, mon
                                 # Workstream B (acceptance-gate) requires done_condition
                                 # per subtask. Test validator stub always passes.
                                 "done_condition": {
-                                    "kind": "regex_in_output",
-                                    "spec": {"pattern": "https?://"},
+                                    "kind": "shell_returns_zero",
+                                    "spec": {"cmd": "true"},
                                 },
                             }]}),
         # Orch r2: dispatch

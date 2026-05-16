@@ -163,24 +163,24 @@ def test_orchestrator_completes_three_subtask_goal_end_to_end(
                         "title": "Find login URL",
                         "description": "Use http_request",
                         "done_condition": {
-                            "kind": "regex_in_output",
-                            "spec": {"pattern": "https?://"},
+                            "kind": "shell_returns_zero",
+                            "spec": {"cmd": "true"},
                         },
                     },
                     {
                         "title": "Save the URL as a fact",
                         "description": "fact_save",
                         "done_condition": {
-                            "kind": "llm_check",
-                            "spec": "Did the agent save a login_url fact?",
+                            "kind": "shell_returns_zero",
+                            "spec": {"cmd": "true"},
                         },
                     },
                     {
                         "title": "Acknowledge done",
                         "description": "subtask_update",
                         "done_condition": {
-                            "kind": "always_pass",
-                            "spec": "ack",
+                            "kind": "shell_returns_zero",
+                            "spec": {"cmd": "true"},
                         },
                     },
                 ],

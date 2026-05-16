@@ -36,13 +36,17 @@ def _patched_validator(monkeypatch, *, run_returns=(True, "")):
     yield
 
 
-def _basic_subtask(title="Search for leads", *, kind="file_exists", spec=None):
+def _basic_subtask(title="Search for leads", *, kind="files_exist", spec=None):
+    # Use real validator kinds (post-merge with workstream A). Tests stub
+    # run_validator anyway — only validate_criterion (schema check) runs
+    # for real here, so the spec just needs to be SHAPE-VALID, not point
+    # at an existing file on disk.
     return {
         "title": title,
         "description": f"{title} (description body)",
         "done_condition": {
             "kind": kind,
-            "spec": spec if spec is not None else {"path": "/tmp/leads.csv"},
+            "spec": spec if spec is not None else {"paths": ["/tmp/leads.csv"]},
         },
     }
 
@@ -58,7 +62,8 @@ def test_set_goal_plan_stores_done_condition_and_new_fields(qwe_temp_data_dir):
     gid = db.create_goal(user_input="x", source="cli")
     plan = db.set_goal_plan(gid, [
         _basic_subtask("A"),
-        _basic_subtask("B", kind="llm_check", spec="Is the leads file populated?"),
+        _basic_subtask("B", kind="regex_in_file",
+                       spec={"path": "leads.csv", "pattern": "row"}),
     ])
     assert len(plan["subtasks"]) == 2
     for st in plan["subtasks"]:
@@ -71,9 +76,8 @@ def test_set_goal_plan_stores_done_condition_and_new_fields(qwe_temp_data_dir):
 
     # Persists the way other helpers see it.
     fetched = db.get_goal_plan(gid)
-    assert fetched["subtasks"][0]["done_condition"]["kind"] == "file_exists"
-    assert fetched["subtasks"][1]["done_condition"]["spec"] == \
-        "Is the leads file populated?"
+    assert fetched["subtasks"][0]["done_condition"]["kind"] == "files_exist"
+    assert fetched["subtasks"][1]["done_condition"]["spec"]["pattern"] == "row"
 
 
 def test_set_goal_plan_rejects_malformed_done_condition(qwe_temp_data_dir, monkeypatch):
@@ -81,10 +85,11 @@ def test_set_goal_plan_rejects_malformed_done_condition(qwe_temp_data_dir, monke
     import db
     import goal_validators
 
-    # Force validate_criterion to fail so we test the gate (not the stub's
-    # always-pass branch). We pass a "bad" criterion and assert it propagates.
+    # Force validate_criterion to fail so we test the gate (not whatever the
+    # real validator would say). Real signature raises ValueError on a bad
+    # criterion — we stub by raising the same exception type.
     def _validator(criterion):
-        return False, "missing 'spec' key (test stub forced)"
+        raise ValueError("missing 'spec' key (test stub forced)")
 
     monkeypatch.setattr(goal_validators, "validate_criterion", _validator)
 
@@ -248,7 +253,7 @@ def test_tool_goal_plan_set_requires_done_condition(qwe_temp_data_dir, monkeypat
     # Missing done_condition on one of two subtasks → hard error, nothing written.
     out = t._goal_plan_set_impl({"subtasks": [
         {"title": "ok one", "description": "...",
-         "done_condition": {"kind": "file_exists", "spec": {"path": "/x"}}},
+         "done_condition": {"kind": "files_exist", "spec": {"paths": ["/x"]}}},
         {"title": "bad one", "description": "..."},   # missing done_condition
     ]})
     assert out.startswith("Error:")
@@ -260,14 +265,14 @@ def test_tool_goal_plan_set_requires_done_condition(qwe_temp_data_dir, monkeypat
     # With done_condition on every entry → succeeds.
     out2 = t._goal_plan_set_impl({"subtasks": [
         {"title": "ok one", "description": "...",
-         "done_condition": {"kind": "file_exists", "spec": {"path": "/x"}}},
+         "done_condition": {"kind": "files_exist", "spec": {"paths": ["/x"]}}},
         {"title": "ok two", "description": "...",
-         "done_condition": {"kind": "llm_check", "spec": "fine?"}},
+         "done_condition": {"kind": "shell_returns_zero", "spec": {"cmd": "true"}}},
     ]})
     assert out2.startswith("Plan set with 2 subtask(s)")
     plan = db.get_goal_plan(gid)
     assert plan is not None
-    assert plan["subtasks"][1]["done_condition"]["kind"] == "llm_check"
+    assert plan["subtasks"][1]["done_condition"]["kind"] == "shell_returns_zero"
 
 
 def test_tool_subtask_update_surfaces_remediation_on_validator_failure(
