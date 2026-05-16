@@ -7645,13 +7645,14 @@ function _renderGoalOutputs(g) {
           'text-decoration:none;display:inline-flex;align-items:center;gap:6px">' +
           ico('external', 12) + 'Open</a>';
     } else if (o.kind === 'report') {
-      // Inline-render markdown body. We have a renderer (renderMessageMarkdown)
-      // used for chat — but it's heavy. For an MVP just escape + preserve
-      // line breaks; a richer render lands later.
+      // Reuse the chat's markdown renderer — same look as assistant
+      // replies. Headings / bold / italic / lists / code / links all
+      // styled identically to chat output, so a "report" output reads
+      // exactly like the goal's final summary.
       body = '<div style="font-size:13px;color:var(--fg-1);line-height:1.55;' +
-             'white-space:pre-wrap;max-height:400px;overflow-y:auto;' +
-             'padding:8px;background:var(--bg-1);border-radius:4px">' +
-             esc(o.value) + '</div>';
+             'max-height:400px;overflow-y:auto;' +
+             'padding:10px 12px;background:var(--bg-1);border-radius:4px">' +
+             renderMarkdownText(o.value) + '</div>';
       actions =
         '<button class="btn-primary" data-output-act="save-to-memory" ' +
           'data-goal="' + esc(g.id) + '" data-output-id="' + o.id + '" ' +
@@ -7705,10 +7706,19 @@ function _renderGoalResultTab(g) {
         : 'No result captured.') +
     '</div>';
   }
+  // Don't duplicate the prose summary if a `kind=report` output already
+  // contains the same content — that's the common case where the
+  // orchestrator attaches its own final summary as a report. Show the
+  // prose block only when there are no reports (i.e. outputs are file/link
+  // only) so the user still gets the narrative.
+  const hasReport = (state.goalOutputs || []).some(o => o.kind === 'report');
+  if (hasReport) {
+    return outputsBlock;
+  }
   return outputsBlock +
     '<div style="padding:14px;background:var(--bg-1);border-radius:6px;' +
-    'font-size:14px;line-height:1.6;color:var(--fg-1);white-space:pre-wrap">' +
-    esc(g.result) + '</div>';
+    'font-size:14px;line-height:1.6;color:var(--fg-1)">' +
+    renderMarkdownText(g.result) + '</div>';
 }
 
 
