@@ -166,14 +166,14 @@ def test_browser_set_visible_restarts_browser_on_mode_change(browser, monkeypatc
     """Flipping headless/visible should close the active session so the
     next browser_open launches with the new mode.
 
-    Post-Phase-3 the close happens per-session (`session.close()`), not via
-    a module-level `_close_browser` shim. We patch the active session's
-    close directly.
+    Post-Phase-3-review: ``_execute_impl`` runs on the session's executor
+    thread, so it calls ``session._close_inline()`` (no re-submission, no
+    deadlock). We patch THAT method.
     """
     mod, _page, _ = browser
     sess = mod._get_active_session()
     close_called = {"n": 0}
-    monkeypatch.setattr(sess, "close", lambda: close_called.__setitem__("n", close_called["n"] + 1))
+    monkeypatch.setattr(sess, "_close_inline", lambda: close_called.__setitem__("n", close_called["n"] + 1))
     # is_alive must return True so the "already in mode + alive" short-circuit
     # is not taken on the no-op repeat call below.
     monkeypatch.setattr(sess, "is_alive", lambda: True)
@@ -189,11 +189,15 @@ def test_browser_set_visible_restarts_browser_on_mode_change(browser, monkeypatc
 
 
 def test_browser_close_invokes_close(browser, monkeypatch):
-    """browser_close should call the active session's close()."""
+    """browser_close should call the active session's _close_inline().
+
+    See note on test_browser_set_visible above for why _close_inline (not
+    .close()) is the right thing to patch.
+    """
     mod, _page, _ = browser
     sess = mod._get_active_session()
     close_called = {"n": 0}
-    monkeypatch.setattr(sess, "close", lambda: close_called.__setitem__("n", close_called["n"] + 1))
+    monkeypatch.setattr(sess, "_close_inline", lambda: close_called.__setitem__("n", close_called["n"] + 1))
     out = mod.execute("browser_close", {})
     assert "closed" in out.lower()
     assert close_called["n"] == 1

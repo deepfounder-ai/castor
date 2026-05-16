@@ -1,6 +1,5 @@
 """Browser control skill — navigate, read, click, fill, screenshot via Playwright."""
 
-import asyncio
 import concurrent.futures
 import logging
 import os
@@ -371,17 +370,31 @@ TOOLS = [
 #   - Chat / cli / telegram (no goal context) share a single "__default__"
 #     session — same UX as before this refactor.
 #
-# Concurrency model: each session has its OWN Playwright instance + lock.
-# The global _browser_executor still serialises Python calls into Playwright
-# (Playwright sync API isn't thread-safe within one instance), but different
-# sessions can have their browsers open simultaneously — different Chrome
-# processes, fully isolated profiles.
+# Concurrency model: each session has its OWN Playwright instance, its own
+# single-thread executor (greenlet-affinity for the sync API), and its own
+# RLock. There is no global executor — different sessions can have their
+# browsers open and operating CONCURRENTLY, each serialised on its own
+# executor thread. Cross-session parallelism is real, not nominal.
 import config
 from pathlib import Path
 
 
 _DEFAULT_SESSION_ID = "__default__"
-_headless_mode = True  # default for fresh sessions; can be flipped per-session
+# Default headless mode applied to NEW sessions only. Existing sessions keep
+# their own `session.headless` (set by browser_set_visible). Sessions are
+# independent — flipping the default doesn't retroactively change live ones.
+_headless_mode = True
+
+# Allowed characters for session_id (e.g. goal_id "g_<hex>", "__default__",
+# test ids like "goal_alpha"). Rejects path-traversal / shell-meta sequences
+# so Path(DATA_DIR)/"browser_sessions"/session_id can't escape the root.
+#
+# First char must be alphanumeric or underscore — this also rejects pure
+# "." / ".." which would match a class containing dots otherwise. Remaining
+# chars allow dots / dashes for things like "g_abc.snap" or "goal-1".
+import re as _re  # local alias to avoid colliding with future top-level `re`
+_SAFE_SESSION_ID = _re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$")
+del _re
 
 
 def _attach_page_listeners(page, session):
@@ -420,10 +433,20 @@ class BrowserSession:
     open pages, per-page logs. Use ``ensure_running()`` to lazily launch
     Chrome with the session's ``user_data_dir`` and ``close()`` to release.
 
-    Thread-safe: ``self.lock`` is held during launch + close so concurrent
-    tool calls on the same session don't double-launch or close mid-op.
-    The global _browser_executor (max_workers=1) further serialises
-    Playwright sync calls.
+    Thread-safety / greenlet-affinity:
+
+    Playwright's sync API uses greenlets that are bound to the thread which
+    called ``sync_playwright().start()``. Calling ANY Playwright method
+    from a different thread raises ``Error: Sync API called from a
+    different thread`` (or worse: deadlocks). So every session owns a
+    dedicated single-thread ``ThreadPoolExecutor``; every Playwright touch
+    (launch, tool calls, close) goes through ``self.run(fn)`` which submits
+    onto that executor. Inside that one worker thread Playwright is happy,
+    and ACROSS sessions different executors mean real cross-session
+    parallelism.
+
+    ``self.lock`` (an RLock) further serialises mutations of ``self.page``
+    / ``self.pages`` so a close-during-launch race can't tear state.
     """
 
     def __init__(self, session_id: str, headless: bool = True):
@@ -439,26 +462,68 @@ class BrowserSession:
         self.pages: list = []
         self.network_log: list = []
         self.console_log: list = []
-        self.lock = threading.Lock()
+        # RLock so close() can be called from inside a method that already
+        # holds the lock (e.g. browser_set_visible needs to flip headless +
+        # close in one atomic step).
+        self.lock = threading.RLock()
+        # Per-session executor. max_workers=1 = single greenlet-affine
+        # thread for this session's entire lifetime. Created lazily so
+        # importing the module doesn't spin up N threads.
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._executor_lock = threading.Lock()
         # The persistent profile directory. Created lazily in ensure_running.
         self.user_data_dir = (
             Path(config.DATA_DIR) / "browser_sessions" / session_id
         )
+
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the per-session executor, creating it on first use.
+
+        Double-checked locking so two threads racing here don't create two
+        executors (would split greenlet affinity and break Playwright).
+        """
+        if self._executor is not None:
+            return self._executor
+        with self._executor_lock:
+            if self._executor is None:
+                self._executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix=f"browser-{self.session_id}",
+                )
+            return self._executor
+
+    def run(self, fn, *, timeout: float | None = 30.0):
+        """Run ``fn()`` on this session's dedicated thread.
+
+        All Playwright calls MUST go through here. Returns whatever ``fn``
+        returns; re-raises any exception ``fn`` raised.
+        """
+        executor = self._get_executor()
+        future = executor.submit(fn)
+        return future.result(timeout=timeout)
 
     def is_alive(self) -> bool:
         if self.browser is None:
             return False
         try:
             # BrowserContext doesn't expose .is_connected(); .pages access
-            # raises if the underlying context is closed.
+            # raises if the underlying context is closed. We're allowed to
+            # read this from any thread because we don't actually invoke a
+            # Playwright RPC — Python just walks the proxy object's local
+            # state. If that's ever wrong on a Playwright upgrade, marshal
+            # through self.run().
             _ = self.browser.pages
             return True
         except Exception:
             return False
 
-    def ensure_running(self) -> None:
-        if self.is_alive():
-            return
+    def _launch_inline(self) -> None:
+        """The actual launch logic — MUST run on the executor thread.
+
+        Public callers should use ``ensure_running()`` which marshals
+        correctly. Internal callers already on the executor (e.g. recovery
+        inside a running tool call) call this directly.
+        """
         with self.lock:
             if self.is_alive():
                 return
@@ -490,7 +555,21 @@ class BrowserSession:
             self.console_log = []
             _attach_page_listeners(self.page, self)
 
-    def close(self) -> None:
+    def ensure_running(self) -> None:
+        """Lazily launch Chrome on the session's executor thread."""
+        if self.is_alive():
+            return
+        # Launch on the executor so Playwright is born on the right thread.
+        # Launch can take 5-10s on cold disks → bump the timeout.
+        self.run(self._launch_inline, timeout=60.0)
+
+    def _close_inline(self) -> None:
+        """The actual close logic — MUST run on the executor thread.
+
+        Public callers should use ``close()`` which marshals correctly.
+        Internal callers already on the executor (e.g. recovery inside a
+        running tool) can call this directly under ``self.lock``.
+        """
         with self.lock:
             try:
                 if self.browser:
@@ -509,13 +588,60 @@ class BrowserSession:
             self.network_log = []
             self.console_log = []
 
+    def close(self) -> None:
+        """Close the browser. Safe to call from any thread.
+
+        Marshals onto the session's executor so Playwright sees the same
+        greenlet-affine thread that launched it. Without this, calling
+        from goal_runner (asyncio loop thread) would raise/hang silently.
+        """
+        # If the executor is gone or browser was never launched, fast path.
+        if self._executor is None and self.browser is None and self.playwright is None:
+            return
+        executor = self._get_executor()
+        try:
+            executor.submit(self._close_inline).result(timeout=10.0)
+        except Exception:
+            # Best-effort close — never raise from teardown.
+            _log.exception(f"BrowserSession({self.session_id}).close failed")
+
+    def shutdown(self) -> None:
+        """Close + tear down the executor itself. Use when discarding the
+        session entirely (e.g. ``_close_session`` after goal completion).
+        """
+        self.close()
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._executor = None
+
 
 # Session registry. _get_session is idempotent / get-or-create.
 _sessions: dict[str, BrowserSession] = {}
 _sessions_registry_lock = threading.Lock()
 
 
+def _validate_session_id(session_id: str) -> None:
+    """Reject session_ids that could escape DATA_DIR/browser_sessions/.
+
+    The default sentinel ``"__default__"`` is whitelisted. Everything else
+    must match the safe-chars regex (alnum + ``._-`` only, 1..64 chars).
+    Raises ValueError so misuse fails loudly rather than silently writing
+    to a surprising location on disk.
+    """
+    if session_id == _DEFAULT_SESSION_ID:
+        return
+    if not isinstance(session_id, str) or not _SAFE_SESSION_ID.match(session_id):
+        raise ValueError(
+            f"unsafe session_id {session_id!r} — must match [A-Za-z0-9_.-]{{1,64}}"
+        )
+
+
 def _get_session(session_id: str) -> BrowserSession:
+    """Get-or-create a BrowserSession. Idempotent. Validates session_id."""
+    _validate_session_id(session_id)
     with _sessions_registry_lock:
         sess = _sessions.get(session_id)
         if sess is None:
@@ -534,12 +660,10 @@ def _get_active_session() -> BrowserSession:
       2. ctx.goal_id — set by tools._set_turn_ctx before each tool dispatch.
       3. fall back to "__default__" (chat / cli / telegram).
     """
-    try:
-        override = getattr(_executor_thread_session, "session_id", None)
-        if override:
-            return _get_session(override)
-    except Exception:
-        pass
+    # getattr-with-default cannot raise; no need to wrap in try/except.
+    override = getattr(_executor_thread_session, "session_id", None)
+    if override:
+        return _get_session(override)
     try:
         # Local import to avoid the tools↔skills circular dependency at
         # module import time.
@@ -555,18 +679,18 @@ def _get_active_session() -> BrowserSession:
 
 
 def _close_session(session_id: str) -> None:
-    """Close + drop a session from the registry. Idempotent."""
+    """Close + drop a session from the registry. Idempotent.
+
+    Safe to call from ANY thread — ``session.shutdown()`` marshals the
+    Playwright close back onto the session's own executor. ``goal_runner``
+    invokes this from the asyncio event loop thread on goal completion;
+    without the marshalling, sync-Playwright would either raise
+    ``Sync API called from a different thread`` or deadlock the close.
+    """
     with _sessions_registry_lock:
         sess = _sessions.pop(session_id, None)
     if sess is not None:
-        sess.close()
-
-
-# Serialize browser launch/close to prevent multiple Chrome windows when
-# concurrent spawn_task workers all try to open the browser at the same time.
-# (Kept module-level for backward-compat with any external caller that
-# imports it; new code uses session.lock.)
-_browser_lock = threading.Lock()
+        sess.shutdown()
 
 
 # Backward-compat shims so any external caller that imported _ensure_browser /
@@ -591,9 +715,6 @@ _page = None
 _pages: list = []
 _network_log: list = []
 _console_log: list = []
-
-
-_browser_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 
 # Error class names that mean "browser session is dead — recoverable by restart".
@@ -625,6 +746,12 @@ def _execute_with_recovery(name: str, args: dict) -> str:
     decide the goal is unreachable. The infrastructure should heal itself.
     Only after a SECOND failure do we surface the error string — that's when
     something genuinely odd is happening that the LLM should reason about.
+
+    IMPORTANT: This function ALWAYS runs on the session's own executor
+    thread (entered via ``execute()`` → ``session.run(...)``). So we MUST
+    NOT call ``session.close()`` / ``session.ensure_running()`` — those
+    re-submit onto the same executor and would deadlock waiting for
+    themselves. Use ``_close_inline`` / inline launch path instead.
     """
     # Capture which session WAS active when the call began, so recovery
     # operates on the SAME session (otherwise a context switch between
@@ -638,11 +765,13 @@ def _execute_with_recovery(name: str, args: dict) -> str:
     _log.warning(f"browser tool {name} hit dead-session error on session "
                  f"{session.session_id!r}; auto-recovering: {result[:140]}")
     try:
-        session.close()
+        # Already on the executor — close without re-submitting.
+        session._close_inline()
     except Exception:
         pass
     try:
-        session.ensure_running()
+        # We're already on the executor — bypass the run() hop.
+        session._launch_inline()
     except Exception as e:
         return f"Browser recovery failed: {e}. Goal-runtime is now stuck — escalate to user."
     retry_result = _execute_impl(name, args)
@@ -660,48 +789,53 @@ def _execute_with_recovery(name: str, args: dict) -> str:
 
 
 def execute(name: str, args: dict) -> str:
-    """Execute a browser tool - runs in a dedicated thread to avoid asyncio conflicts.
+    """Execute a browser tool — always runs on the target session's
+    dedicated executor thread.
 
-    Session resolution happens HERE (in the caller's thread) so the
-    ctx.goal_id stashed in threading.local doesn't get lost when we hop
-    to the _browser_executor thread. We resolve the session_id up-front
-    and stash it on threading.local of the inner thread before delegating
-    to _execute_with_recovery.
+    Two reasons for the executor hop:
+      1. Playwright sync API is greenlet-bound to the thread that created
+         the playwright instance. ``BrowserSession`` lazily launches on
+         its own executor, so subsequent calls MUST land on that same
+         executor.
+      2. We could be called from an asyncio event loop thread; running
+         sync Playwright there would deadlock the loop.
+
+    Resolution: pick the target ``session_id`` in the caller's thread
+    (where ``tools._get_turn_ctx()`` is meaningful), then submit onto the
+    session's executor with that id pinned in ``_executor_thread_session``
+    so ``_get_active_session()`` on the inner thread routes correctly.
     """
     # Resolve the target session in THIS thread — _get_active_session
     # reads tools._get_turn_ctx() which is threading.local.
     target_session_id = _resolve_session_id_from_ctx()
+    session = _get_session(target_session_id)
 
-    # Check if we're inside an asyncio event loop
-    try:
-        loop = asyncio.get_running_loop()
-        in_async = loop.is_running()
-    except RuntimeError:
-        in_async = False
-
-    if not in_async:
-        # Same thread — ctx is already set, just dispatch.
-        return _execute_with_recovery(name, args)
-
-    # Async caller: hop to the executor thread, and propagate the
-    # resolved session_id explicitly so the executor doesn't fall back
-    # to "__default__".
     def _run_with_session():
+        # Pin the session_id on the executor thread so any nested
+        # _get_active_session() call (e.g. inside _execute_impl) routes
+        # back to the SAME session, not the default fallback. Always
+        # reset in finally — leaving a stale id pinned would route the
+        # next tool call to the wrong session if the executor is ever
+        # reused for a different goal (currently impossible — one
+        # executor per session — but defense-in-depth).
+        prev = getattr(_executor_thread_session, "session_id", None)
         _executor_thread_session.session_id = target_session_id
         try:
             return _execute_with_recovery(name, args)
         finally:
-            _executor_thread_session.session_id = None
+            _executor_thread_session.session_id = prev
 
-    future = _browser_executor.submit(_run_with_session)
     try:
-        return future.result(timeout=30)
+        return session.run(_run_with_session, timeout=30.0)
     except concurrent.futures.TimeoutError:
         return "Error: browser operation timed out after 30s"
 
 
-# Thread-local override used by the _browser_executor thread.
-# _get_active_session reads this BEFORE falling back to ctx-lookup.
+# Thread-local override used by the per-session executor worker thread.
+# execute() pins the target session_id on this attribute before submitting
+# to session.run(...); _get_active_session reads it BEFORE falling back to
+# ctx-lookup, so the worker thread routes back to the SAME session even
+# though ctx is per-thread and didn't propagate across the executor hop.
 _executor_thread_session = threading.local()
 
 
@@ -746,19 +880,16 @@ def _execute_impl(name: str, args: dict) -> str:
         if name == "browser_set_visible":
             visible = args.get("visible", True)
             new_mode = not visible  # headless is the opposite of visible
+            # RLock lets us call _close_inline() within the same lock-hold.
             with session.lock:
                 if new_mode == session.headless and session.is_alive():
                     return f"Browser already in {'visible' if visible else 'headless'} mode (reusing existing window)."
                 if new_mode != session.headless:
                     session.headless = new_mode
-                    # Trigger relaunch with new mode on the next call.
-                    # Inside the lock would deadlock (close() acquires it),
-                    # so flag it for after-release.
-                    _need_close = True
-                else:
-                    _need_close = False
-            if _need_close:
-                session.close()
+                    # Already on the executor — use _close_inline (no
+                    # re-submission, no deadlock). RLock keeps close
+                    # atomic with the headless flip.
+                    session._close_inline()
             if visible:
                 try:
                     import telemetry as _tel
@@ -768,11 +899,13 @@ def _execute_impl(name: str, args: dict) -> str:
             return f"Browser set to {'visible' if visible else 'headless'} mode. Next browser_open will {'show' if visible else 'hide'} the window."
 
         if name == "browser_close":
-            session.close()
+            # Already on the executor → inline close, no re-submission.
+            session._close_inline()
             return "Browser closed."
 
-        # All other tools need browser running
-        session.ensure_running()
+        # All other tools need browser running. Inline launch — we're on
+        # the executor already; ensure_running() would re-submit + deadlock.
+        session._launch_inline()
 
         if name == "browser_open":
             url = args.get("url", "")

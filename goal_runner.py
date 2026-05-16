@@ -106,15 +106,25 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    # Close the per-goal browser session (frees the Chrome process). The
-    # user_data_dir on disk stays — if the user re-creates the goal or it
-    # resumes, login cookies / localStorage are preserved.
-    try:
-        import skills.browser as _bs
-        _bs._close_session(goal_id)
-    except Exception:
-        # Best-effort — never block goal completion on browser cleanup.
-        _log.exception(f"failed to close browser session for {goal_id}")
+        # Close the per-goal browser session (frees the Chrome process).
+        # MUST be in finally — on CancelledError/Exception the function
+        # exits via `raise`/`return` above and would otherwise leak the
+        # Chrome process + SingletonLock on the profile dir, breaking the
+        # next resume of this same goal. The user_data_dir on disk stays —
+        # if the user re-creates the goal or it resumes, login cookies /
+        # localStorage are preserved.
+        try:
+            import skills.browser as _bs
+        except ImportError:
+            # Playwright not installed → no browser session existed →
+            # nothing to clean up. Don't even log; not an error.
+            pass
+        else:
+            try:
+                _bs._close_session(goal_id)
+            except Exception:
+                # Best-effort — never block goal completion on browser cleanup.
+                _log.exception(f"failed to close browser session for {goal_id}")
 
     # Did the shutdown_event fire while the orchestrator was running? If yes
     # the loop may have returned early after abort — treat as paused.

@@ -47,20 +47,23 @@ def test_dead_session_markers_recognized():
 
 def _mock_session_methods(browser_mod, monkeypatch, close_calls, ensure_calls,
                          ensure_raises=None):
-    """Patch the active session's close + ensure_running methods.
+    """Patch the active session's *inline* close + launch methods.
 
-    Recovery now operates per-session (Phase 3) — we capture the active
-    session in the same call and patch its methods, so the test sees the
-    SAME session the recovery code targets.
+    Post-Phase-3 review: ``_execute_with_recovery`` runs ON the session's
+    executor thread (entered via ``execute()``→``session.run``). Inside
+    the executor, calling ``session.close()`` / ``session.ensure_running()``
+    would re-submit onto the same executor and deadlock. So the recovery
+    code uses ``session._close_inline`` / ``session._launch_inline``
+    directly. We patch those.
     """
     sess = browser_mod._get_active_session()
-    monkeypatch.setattr(sess, "close", lambda: close_calls.append(True))
+    monkeypatch.setattr(sess, "_close_inline", lambda: close_calls.append(True))
     if ensure_raises:
         def _broken():
             raise ensure_raises
-        monkeypatch.setattr(sess, "ensure_running", _broken)
+        monkeypatch.setattr(sess, "_launch_inline", _broken)
     else:
-        monkeypatch.setattr(sess, "ensure_running", lambda: ensure_calls.append(True))
+        monkeypatch.setattr(sess, "_launch_inline", lambda: ensure_calls.append(True))
     return sess
 
 

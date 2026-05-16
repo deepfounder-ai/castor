@@ -26,6 +26,8 @@ import importlib.util
 import threading
 from pathlib import Path
 
+import pytest
+
 
 def _load_browser():
     spec = importlib.util.spec_from_file_location(
@@ -35,6 +37,38 @@ def _load_browser():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_browser_state():
+    """Clear the production skills.browser module state before and after
+    each test so registry leaks between tests can't cause flakes (or false
+    passes that hide real isolation bugs in the system under test)."""
+    import sys
+    real = sys.modules.get("skills.browser")
+    if real is not None:
+        # Tear down any sessions left from earlier tests, including their
+        # per-session executors, so they don't continue to consume threads.
+        for sid in list(getattr(real, "_sessions", {})):
+            try:
+                real._close_session(sid)
+            except Exception:
+                pass
+        try:
+            real._executor_thread_session.session_id = None
+        except Exception:
+            pass
+    yield
+    if real is not None:
+        for sid in list(getattr(real, "_sessions", {})):
+            try:
+                real._close_session(sid)
+            except Exception:
+                pass
+        try:
+            real._executor_thread_session.session_id = None
+        except Exception:
+            pass
 
 
 def test_sessions_are_isolated_per_goal(qwe_temp_data_dir):
@@ -103,21 +137,80 @@ def test_executor_thread_session_override_wins(qwe_temp_data_dir):
     thread (the way execute() propagates session across the executor
     hop), it takes precedence over ctx lookup. Without this property,
     parallel goals would all collapse to '__default__' inside the
-    browser executor thread."""
+    browser executor thread.
+
+    Critically: this test must actually run the lookup ON A DIFFERENT
+    THREAD from where ctx was set. Otherwise threading.local has the
+    same value on both threads and the test would pass even if the
+    override mechanism were broken.
+    """
     browser = _load_browser()
     import tools as _tools
     from turn_context import TurnContext
 
-    # ctx says goal_a, but explicit override says goal_b.
-    # Override wins because it's the explicit cross-thread propagation.
+    # Caller-thread ctx says goal_a.
     _tools._set_turn_ctx(TurnContext(source="cli", goal_id="goal_a"))
-    try:
+
+    result = {}
+
+    def _on_worker():
+        # Worker thread: ctx is NOT propagated (ContextVar is per-thread
+        # for non-asyncio code; even for asyncio the executor doesn't
+        # copy it without explicit context.run).
+        # Without the override mechanism, _get_active_session would fall
+        # back to __default__ here.
         browser._executor_thread_session.session_id = "goal_b"
-        active = browser._get_active_session()
-        assert active.session_id == "goal_b"
-    finally:
-        browser._executor_thread_session.session_id = None
-        _tools._set_turn_ctx(None)
+        try:
+            result["session_id"] = browser._get_active_session().session_id
+            # Also verify: with no override, the worker thread DOES NOT see
+            # the caller's ctx (proves the override is doing real work).
+            browser._executor_thread_session.session_id = None
+            result["fallback"] = browser._get_active_session().session_id
+        finally:
+            browser._executor_thread_session.session_id = None
+
+    t = threading.Thread(target=_on_worker)
+    t.start()
+    t.join()
+    _tools._set_turn_ctx(None)
+
+    assert result["session_id"] == "goal_b", (
+        "executor-thread override must beat caller-thread ctx"
+    )
+    assert result["fallback"] == "__default__", (
+        "without override, worker thread should fall back to __default__ "
+        "(caller-thread ctx does not auto-propagate)"
+    )
+
+
+def test_get_session_rejects_path_traversal(qwe_temp_data_dir):
+    """A session_id with .. / / null bytes / etc must fail loudly rather
+    than silently writing the profile dir outside DATA_DIR/browser_sessions/.
+    """
+    browser = _load_browser()
+    bad_ids = [
+        "../etc",
+        "..",
+        "foo/bar",
+        "foo\\bar",
+        "foo bar",
+        "foo\x00.txt",
+        "",
+        "a" * 65,  # over the 64-char cap
+    ]
+    for bad in bad_ids:
+        with pytest.raises(ValueError):
+            browser._get_session(bad)
+
+
+def test_get_session_accepts_safe_ids(qwe_temp_data_dir):
+    """Whitelist + default sentinel pass; nothing else."""
+    browser = _load_browser()
+    # Just must not raise:
+    browser._get_session("__default__")
+    browser._get_session("g_abc123")
+    browser._get_session("goal-1")
+    browser._get_session("goal_1.snapshot")
 
 
 def test_resolve_session_id_from_ctx(qwe_temp_data_dir):
@@ -170,3 +263,161 @@ def test_user_data_dir_under_data_dir(qwe_temp_data_dir):
     expected_root = Path(config.DATA_DIR) / "browser_sessions"
     assert str(s.user_data_dir).startswith(str(expected_root))
     assert s.user_data_dir.name == "dirtest"
+
+
+def test_close_runs_on_session_executor_not_caller_thread(qwe_temp_data_dir):
+    """Regression: closing from a different thread than the one that owns
+    Playwright's greenlets either deadlocks or raises 'Sync API called
+    from a different thread'. _close_session must marshal close back to
+    the session's own executor.
+
+    We don't have a real Chrome here — we install fake browser/playwright
+    objects whose close methods assert they run on the executor thread.
+    """
+    browser = _load_browser()
+    sess = browser._get_session("g_thread_check")
+
+    # Force an executor to exist + record its worker thread id.
+    exec_thread_ids: set[int] = set()
+    def _grab():
+        exec_thread_ids.add(threading.get_ident())
+    sess.run(_grab, timeout=5.0)
+
+    closed_on: list[int] = []
+
+    class FakeBrowser:
+        def close(self_inner):
+            closed_on.append(threading.get_ident())
+
+    class FakePlaywright:
+        def stop(self_inner):
+            closed_on.append(threading.get_ident())
+
+    sess.browser = FakeBrowser()
+    sess.playwright = FakePlaywright()
+
+    # Close from the MAIN test thread (not the session's executor thread)
+    # — _close_session must marshal correctly.
+    browser._close_session("g_thread_check")
+
+    # Both fake close + stop ran on the executor thread, NOT on main.
+    assert len(closed_on) == 2
+    main_id = threading.get_ident()
+    for tid in closed_on:
+        assert tid in exec_thread_ids, (
+            f"close ran on tid={tid} but executor owned tid in {exec_thread_ids}"
+        )
+        assert tid != main_id, "close must NOT run on the caller thread"
+
+
+def test_relaunch_after_simulated_crash(monkeypatch, qwe_temp_data_dir):
+    """If the browser process dies (or is killed externally) and is_alive
+    flips to False, the next operation should re-launch — not deadlock,
+    not error out. Simulates by injecting fakes and flipping is_alive."""
+    browser = _load_browser()
+    sess = browser._get_session("g_crashtest")
+
+    launch_calls: list[dict] = []
+
+    class FakeContext:
+        def __init__(self):
+            self.pages = []
+        def new_page(self):
+            return object()
+        def close(self):
+            pass
+
+    class FakeChromium:
+        def launch_persistent_context(self, **kwargs):
+            launch_calls.append(kwargs)
+            return FakeContext()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+        def stop(self):
+            pass
+
+    class _Starter:
+        def start(self):
+            return FakePlaywright()
+
+    # Stub the `from playwright.sync_api import sync_playwright` inside
+    # _launch_inline. types.ModuleType + sys.modules-monkeypatch is the
+    # cleanest way.
+    import sys
+    import types
+    fake_mod = types.ModuleType("playwright.sync_api")
+    fake_mod.sync_playwright = lambda: _Starter()
+    fake_pkg = types.ModuleType("playwright")
+    monkeypatch.setitem(sys.modules, "playwright", fake_pkg)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_mod)
+    # Stub _attach_page_listeners (would call page.on(...) on our fake).
+    monkeypatch.setattr(browser, "_attach_page_listeners", lambda *a, **kw: None)
+
+    sess.ensure_running()
+    assert len(launch_calls) == 1
+    first_browser = sess.browser
+
+    # Simulate external crash: drop the browser handle. is_alive flips
+    # to False, _launch_inline should fire again on the next call.
+    sess.browser = None
+
+    sess.ensure_running()
+    assert len(launch_calls) == 2
+    assert sess.browser is not first_browser
+
+
+def test_session_cleaned_up_on_orchestrator_failure(monkeypatch, qwe_temp_data_dir):
+    """Regression for the goal_runner cleanup-outside-finally bug: when
+    the orchestrator raises, _close_session must STILL run so the
+    Chrome process and its SingletonLock don't leak.
+
+    We don't actually run an orchestrator here — we test the contract:
+    invoking goal_runner.run on a crashing orchestrator must call
+    skills.browser._close_session(goal_id) before returning.
+    """
+    import asyncio
+    import goal_runner
+    import skills.browser as bs
+
+    # Seed a session so we can observe it being closed.
+    bs._get_session("g_crashy")
+    assert "g_crashy" in bs._sessions
+
+    closed: list[str] = []
+    original_close = bs._close_session
+
+    def _track_close(sid):
+        closed.append(sid)
+        original_close(sid)
+
+    monkeypatch.setattr(bs, "_close_session", _track_close)
+
+    # Make orchestrator raise.
+    import orchestrator
+    def _boom(*a, **kw):
+        raise RuntimeError("orchestrator exploded")
+    monkeypatch.setattr(orchestrator, "run_orchestrator", _boom)
+
+    # Minimal db stubs so goal_runner.run doesn't blow up before reaching
+    # the orchestrator call.
+    import db
+    monkeypatch.setattr(db, "get_goal", lambda gid: {
+        "id": gid, "status": "pending", "source": "cli", "user_input": "x",
+    })
+    monkeypatch.setattr(db, "load_latest_checkpoint", lambda gid: None)
+    monkeypatch.setattr(db, "log_goal_event", lambda *a, **kw: None)
+    monkeypatch.setattr(db, "mark_goal_failed", lambda *a, **kw: None)
+    monkeypatch.setattr(db, "mark_goal_paused", lambda *a, **kw: None)
+    monkeypatch.setattr(db, "get_goal_plan", lambda gid: None)
+
+    async def _go():
+        shutdown = asyncio.Event()
+        await goal_runner.run("g_crashy", shutdown)
+
+    asyncio.run(_go())
+
+    assert "g_crashy" in closed, (
+        "goal_runner must call _close_session in its finally block even "
+        "when the orchestrator raises, otherwise Chrome processes leak"
+    )
