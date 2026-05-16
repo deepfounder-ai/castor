@@ -7357,6 +7357,7 @@ function renderGoalDetailView() {
           esc((g.user_input || '').slice(0, 600)) +
           ((g.user_input || '').length > 600 ? '…' : '') +
         '</div>' +
+        _renderGoalLevelDoneConditions(g) +
       '</div>' +
       _renderGoalActions(g) +
     '</div>' +
@@ -7377,6 +7378,39 @@ function renderGoalDetailView() {
        tab === 'result' ? _renderGoalResultTab(g) : '') +
     '</div>' +
   '</div></div>';
+}
+
+// Goal-level done_conditions chip strip — shown in the detail header.
+// These are the user-specified deliverables that must be machine-verified
+// before the goal can be marked done, regardless of how the orchestrator
+// broke the work into subtasks.
+function _renderGoalLevelDoneConditions(g) {
+  const conds = g.done_conditions || [];
+  if (!conds.length) return '';
+  const chips = conds.map((c, i) => {
+    const spec = c.spec || {};
+    let summary = c.kind || '?';
+    if (c.kind === 'files_exist' && Array.isArray(spec.paths)) {
+      summary += ': ' + spec.paths.slice(0, 1).join(', ') +
+        (spec.paths.length > 1 ? ' +' + (spec.paths.length - 1) : '');
+    } else if (c.kind === 'min_count') {
+      summary += ': ' + (spec.glob || '?') + ' ≥ ' + (spec.min || '?');
+    } else if (c.kind === 'regex_in_file') {
+      summary += ': ' + (spec.path || '?') + ' /' + (spec.pattern || '').slice(0, 24) + '/';
+    } else if (c.kind === 'shell_returns_zero') {
+      summary += ': ' + (spec.cmd || '?').slice(0, 50);
+    } else if (c.kind === 'http_200') {
+      summary += ': ' + (spec.url || '?').slice(0, 50);
+    }
+    return '<span style="display:inline-block;font-size:11px;padding:2px 7px;border-radius:3px;' +
+      'background:rgba(100,140,255,0.10);color:var(--info);border:1px solid rgba(100,140,255,0.3);' +
+      'font-family:var(--font-mono);margin-right:4px;margin-top:4px" ' +
+      'title="Goal-level acceptance criterion — gate runs this before mark_done">' +
+      esc(summary) + '</span>';
+  }).join('');
+  return '<div style="margin-top:8px;font-size:11px;color:var(--fg-4)">' +
+    '<span style="color:var(--fg-3)">DONE conditions: </span>' + chips +
+    '</div>';
 }
 
 function _renderGoalActions(g) {

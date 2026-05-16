@@ -301,6 +301,37 @@ obvious cases by running validators on `done_condition`, but the GENERAL
 discipline is: write final claims from what you saw, not what you
 expected.
 
+# Goal-level deliverables override the plan
+
+The user may have attached **goal-level** acceptance criteria, separate
+from the per-subtask done_conditions you write. Goal-level criteria
+protect the user's actual deliverables — independent of how you broke
+the work into subtasks.
+
+If you receive a system_note prefixed with **"ACCEPTANCE GATE — goal-level
+deliverables NOT met"**, your plan does NOT cover what the user asked
+for. Common reason: you planned the work that produces intermediate
+artifacts (per-carrier files, AST dumps, raw scraped data) but skipped
+the subtask that produces the final deliverable (the synthesis report
+the user actually wanted to read).
+
+The fix is NOT to write that deliverable in a final reply with a
+placeholder "I tried, you finish it" — that's exactly the capitulation
+the goal-level gate exists to block. The fix is to:
+
+1. Call `goal_plan_set` AGAIN with the full plan including the missing
+   subtask(s) — keep your existing subtask IDs that are already
+   completed, add the new ones with proper done_conditions targeting
+   the user's deliverable.
+2. Execute those new subtasks (likely as a `code` subagent dispatch if
+   the deliverable is "render a report from saved facts").
+3. Mark them completed once the validator passes.
+
+The goal-level gate runs every cycle. You will keep receiving
+remediation notes until every goal-level condition passes. Capitulating
+in the final reply doesn't end the loop — only producing the actual
+deliverables does.
+
 # Acceptance gate — done_condition per subtask is MANDATORY
 
 When you call `goal_plan_set([...])`, every subtask MUST carry a

@@ -195,18 +195,41 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
                                 f"failed to record validation pass on {st['id']}"
                             )
 
-            if not failures:
-                # All gates passed — exit loop and proceed to mark_done below.
+            # ── Goal-level done_conditions (in addition to per-subtask) ──
+            # These protect the user's stated deliverables — independent of
+            # how the orchestrator chose to break the goal into subtasks.
+            # If the orchestrator omitted a subtask for the final report,
+            # the per-subtask gate can't catch it. Goal-level criteria do.
+            goal_failures: list[tuple[str, str]] = []
+            for i, gc in enumerate(goal.get("done_conditions") or []):
+                try:
+                    passed, remediation = goal_validators.run_validator(gc)
+                except Exception as e:  # noqa: BLE001 — last-resort guard
+                    passed = False
+                    remediation = f"validator crashed: {type(e).__name__}: {e}"
+                if not passed:
+                    # Build a stable "subtask_id"-like label so the remediation
+                    # message is greppable and matches the per-subtask shape.
+                    label = f"goal:cond_{i + 1}"
+                    goal_failures.append((label, remediation))
+
+            if not failures and not goal_failures:
+                # All gates passed (per-subtask AND goal-level) — proceed.
                 break
 
-            # Failures — log + decide whether to retry or give up.
+            # Merge subtask + goal-level failures for the remediation note.
+            all_failures: list[tuple[str, str]] = list(failures) + list(goal_failures)
+
+            # Log the gate-block event with both layers' failures.
             try:
                 db.log_goal_event(goal_id, "acceptance_gate_blocked", {
                     "attempt": gate_attempt,
-                    "failure_count": len(failures),
+                    "failure_count": len(all_failures),
+                    "subtask_failure_count": len(failures),
+                    "goal_failure_count": len(goal_failures),
                     "failures": [
                         {"subtask_id": sid, "remediation": rem[:300]}
-                        for sid, rem in failures
+                        for sid, rem in all_failures
                     ],
                 })
             except Exception:
@@ -218,26 +241,50 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
                 db.mark_goal_failed(
                     goal_id,
                     error=(
-                        f"acceptance_gate_exhausted: {len(failures)} "
-                        f"subtask(s) still failing after {max_attempts} attempts"
+                        f"acceptance_gate_exhausted: "
+                        f"{len(failures)} subtask + {len(goal_failures)} goal-level "
+                        f"condition(s) still failing after {max_attempts} attempts"
                     ),
                 )
                 return
 
             # Build the remediation note for the next orchestrator round.
-            note_lines = [
-                "ACCEPTANCE GATE: The following subtasks have NOT met their done_condition.",
-                (
-                    "You CANNOT finish the goal until every condition passes. "
-                    "Address each one and re-run subtask_update with "
-                    "status=completed once your work makes the validator pass."
-                ),
-                "",
-            ]
-            for sid, rem in failures:
-                note_lines.append(f"- {sid}: {rem}")
+            # Subtask-level and goal-level get different framing so the
+            # orchestrator knows what kind of problem to solve.
+            note_lines: list[str] = []
+            if failures:
+                note_lines.extend([
+                    "ACCEPTANCE GATE — subtask conditions NOT met:",
+                    (
+                        "Address each subtask and re-run subtask_update with "
+                        "status=completed once your work makes the validator pass."
+                    ),
+                ])
+                for sid, rem in failures:
+                    note_lines.append(f"  - {sid}: {rem}")
+            if goal_failures:
+                if note_lines:
+                    note_lines.append("")
+                note_lines.extend([
+                    "ACCEPTANCE GATE — goal-level deliverables NOT met:",
+                    (
+                        "These are the deliverables the user EXPLICITLY asked for. "
+                        "They are MANDATORY — the goal cannot finish without them. "
+                        "If the current plan doesn't cover them, call goal_plan_set "
+                        "again to add the missing subtask(s) with proper done_conditions, "
+                        "then execute. Do NOT write a final reply telling the user "
+                        "to finish manually."
+                    ),
+                ])
+                for label, rem in goal_failures:
+                    note_lines.append(f"  - {label}: {rem}")
             system_notes = ["\n".join(note_lines)]
             # Loop: re-enter the orchestrator with the new notes.
+
+            # Refresh `goal` so any in-flight changes to done_conditions
+            # (e.g. set via REST during the goal's run) take effect on
+            # the next iteration.
+            goal = db.get_goal(goal_id) or goal
     finally:
         # Always tear down the shutdown-event watcher so it doesn't outlive
         # the goal. Cancel + suppress CancelledError so cleanup never raises.

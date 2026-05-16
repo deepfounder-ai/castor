@@ -1028,14 +1028,37 @@ def create_goal(
     budget_usd: float | None = None,
     budget_seconds: int | None = None,
     meta: dict | None = None,
+    done_conditions: list[dict] | None = None,
 ) -> str:
-    """Enqueue a new goal. Returns the new goal_id."""
+    """Enqueue a new goal. Returns the new goal_id.
+
+    ``done_conditions``: optional array of goal-level acceptance criteria
+    (validator dicts matching the goal_validators contract). These run
+    AFTER all subtask done_conditions pass, BEFORE mark_goal_done.
+    See migrations/014_goal_done_conditions.sql for motivation.
+
+    Each criterion is schema-validated via goal_validators.validate_criterion
+    at insertion time, so a bad criterion fails fast (ValueError) rather
+    than silently never running.
+    """
+    # Schema-validate each goal-level criterion before persisting.
+    if done_conditions:
+        import goal_validators
+        for i, c in enumerate(done_conditions):
+            try:
+                goal_validators.validate_criterion(c)
+            except ValueError as e:
+                raise ValueError(
+                    f"goal-level done_condition[{i}] is invalid: {e}"
+                ) from e
+
     goal_id = "g_" + uuid.uuid4().hex[:16]
     conn = _get_conn()
     conn.execute(
         """INSERT INTO goals (id, thread_id, source, user_input, status,
-                              budget_usd, budget_seconds, created_at, meta)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                              budget_usd, budget_seconds, created_at, meta,
+                              done_conditions)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)""",
         (
             goal_id,
             thread_id,
@@ -1045,12 +1068,52 @@ def create_goal(
             budget_seconds,
             time.time(),
             json.dumps(meta or {}),
+            json.dumps(done_conditions) if done_conditions else None,
         ),
     )
     conn.commit()
     log_goal_event(goal_id, "goal_created",
-                   {"source": source, "thread_id": thread_id})
+                   {"source": source, "thread_id": thread_id,
+                    "has_goal_done_conditions": bool(done_conditions)})
     return goal_id
+
+
+def get_goal_done_conditions(goal_id: str) -> list[dict]:
+    """Return the goal-level acceptance criteria list (may be empty)."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT done_conditions FROM goals WHERE id=?", (goal_id,),
+    ).fetchone()
+    if not row or not row[0]:
+        return []
+    try:
+        parsed = json.loads(row[0])
+        return parsed if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def set_goal_done_conditions(goal_id: str, criteria: list[dict]) -> None:
+    """Replace the goal's done_conditions list. Each criterion is
+    schema-validated; ValueError if any malformed (atomic — none land
+    on disk if any rejects)."""
+    if not isinstance(criteria, list):
+        raise ValueError("criteria must be a list")
+    if criteria:
+        import goal_validators
+        for i, c in enumerate(criteria):
+            try:
+                goal_validators.validate_criterion(c)
+            except ValueError as e:
+                raise ValueError(
+                    f"goal-level done_condition[{i}] is invalid: {e}"
+                ) from e
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE goals SET done_conditions=? WHERE id=?",
+        (json.dumps(criteria) if criteria else None, goal_id),
+    )
+    conn.commit()
 
 
 def get_goal(goal_id: str) -> dict | None:
@@ -1059,7 +1122,7 @@ def get_goal(goal_id: str) -> dict | None:
     row = conn.execute(
         """SELECT id, thread_id, source, user_input, status, plan, result, error,
                   budget_usd, budget_seconds, cost_usd, started_at, finished_at,
-                  created_at, worker_id, lease_expires_at, meta
+                  created_at, worker_id, lease_expires_at, meta, done_conditions
            FROM goals WHERE id=?""",
         (goal_id,),
     ).fetchone()
@@ -1083,6 +1146,7 @@ def get_goal(goal_id: str) -> dict | None:
         "worker_id": row[14],
         "lease_expires_at": row[15],
         "meta": json.loads(row[16]) if row[16] else {},
+        "done_conditions": json.loads(row[17]) if row[17] else [],
     }
 
 

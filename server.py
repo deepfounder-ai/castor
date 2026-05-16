@@ -2263,22 +2263,70 @@ async def toggle_cron(task_id: int, data: dict | None = None):
 async def create_goal(data: dict):
     """Enqueue a new goal for the worker.
 
-    Body: {user_input: str, thread_id?: str, source?: "api"|"web", meta?: dict,
-           budget_usd?: number, budget_seconds?: number}
+    Body: {
+      user_input: str,
+      thread_id?: str,
+      source?: "api"|"web",
+      meta?: dict,
+      budget_usd?: number,
+      budget_seconds?: number,
+      done_conditions?: list  // goal-level acceptance criteria (validator dicts).
+                              // Run by goal_runner AFTER subtask-gate passes,
+                              // BEFORE mark_goal_done. Each must match the
+                              // goal_validators contract (5 kinds: files_exist,
+                              // min_count, regex_in_file, shell_returns_zero,
+                              // http_200). Bad shape → 400 with details.
+    }
     Returns: {id, status: "pending"}
     """
     user_input = (data.get("user_input") or "").strip()
     if not user_input:
         return JSONResponse({"error": "user_input required"}, status_code=400)
-    goal_id = db.create_goal(
-        user_input=user_input,
-        source=data.get("source") or "api",
-        thread_id=data.get("thread_id"),
-        budget_usd=data.get("budget_usd"),
-        budget_seconds=data.get("budget_seconds"),
-        meta=data.get("meta"),
-    )
+    done_conditions = data.get("done_conditions")
+    if done_conditions is not None and not isinstance(done_conditions, list):
+        return JSONResponse(
+            {"error": "done_conditions must be a list of {kind, spec} objects"},
+            status_code=400,
+        )
+    try:
+        goal_id = db.create_goal(
+            user_input=user_input,
+            source=data.get("source") or "api",
+            thread_id=data.get("thread_id"),
+            budget_usd=data.get("budget_usd"),
+            budget_seconds=data.get("budget_seconds"),
+            meta=data.get("meta"),
+            done_conditions=done_conditions,
+        )
+    except ValueError as e:
+        # Bad done_conditions schema — surface the validator error verbatim
+        # so the API caller can fix and retry.
+        return JSONResponse({"error": str(e)}, status_code=400)
     return {"id": goal_id, "status": "pending"}
+
+
+@app.post("/api/goals/{goal_id}/done-conditions")
+async def set_goal_done_conditions(goal_id: str, data: dict):
+    """Replace the goal-level done_conditions. Useful for adding criteria
+    to a running goal — the gate-loop will pick them up on its next pass
+    (it re-reads the goal row at the top of each retry).
+
+    Body: {done_conditions: list}  — same shape as POST /api/goals.
+    """
+    g = db.get_goal(goal_id)
+    if not g:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    criteria = data.get("done_conditions")
+    if criteria is None or not isinstance(criteria, list):
+        return JSONResponse(
+            {"error": "done_conditions (list) required"},
+            status_code=400,
+        )
+    try:
+        db.set_goal_done_conditions(goal_id, criteria)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    return {"ok": True, "count": len(criteria)}
 
 
 @app.get("/api/goals")
