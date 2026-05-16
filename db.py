@@ -1426,32 +1426,67 @@ _VALID_SUBTASK_STATUSES = {"pending", "in_progress", "completed", "skipped", "fa
 
 
 def set_goal_plan(goal_id: str, subtasks: list[dict]) -> dict:
-    """Set or replace a goal's plan. Each input subtask is {title, description}.
+    """Set or replace a goal's plan. Each input subtask is {title, description, done_condition}.
 
     Generates stable IDs `st_1`..`st_N` so the orchestrator can refer to
     them by id across rounds. Replaces any existing plan (the orchestrator
     is responsible for not losing track of in-flight work — typically
     only called once at the start).
 
+    Each subtask MAY carry a ``done_condition`` dict matching the
+    ``goal_validators`` contract — see ``docs/specs/2026-05-16-acceptance-gate.md``
+    §1 for the schema. The orchestrator (LLM caller) is expected to supply
+    one per subtask; legacy / internal callers that omit it default to
+    ``{"kind": "always_pass", "spec": ...}`` for back-compat. Each provided
+    criterion is shape-validated via ``goal_validators.validate_criterion``;
+    a malformed criterion raises ``ValueError`` so the bad plan never lands
+    on disk.
+
+    Stored subtasks gain two new bookkeeping fields:
+      - ``validation_passed`` — False until the completion gate accepts it.
+      - ``last_validation_failure`` — None or the remediation string from
+        the most recent failed validator run.
+
     Returns the saved plan dict.
     """
+    import goal_validators  # local import: workstream-A module, may carry deps
+
     now = time.time()
+    built: list[dict] = []
+    for i, st in enumerate(subtasks):
+        title = (st.get("title") or "").strip()
+        description = (st.get("description") or "").strip()
+        done_condition = st.get("done_condition")
+        if done_condition is None:
+            # Back-compat default for internal callers (tests, goal_runner
+            # auto-skip, etc.). The LLM-facing tool ``goal_plan_set`` enforces
+            # that the orchestrator passes a real done_condition.
+            done_condition = {
+                "kind": "always_pass",
+                "spec": description or title or "implicit",
+            }
+        ok, err = goal_validators.validate_criterion(done_condition)
+        if not ok:
+            raise ValueError(
+                f"subtask {i + 1} ({title!r}) has invalid done_condition: {err}"
+            )
+        built.append({
+            "id": f"st_{i + 1}",
+            "title": title,
+            "description": description,
+            "status": "pending",
+            "started_at": None,
+            "finished_at": None,
+            "result_summary": None,
+            "dispatched_subagent": None,
+            "attempts": 0,
+            "done_condition": done_condition,
+            "validation_passed": False,
+            "last_validation_failure": None,
+        })
     plan = {
         "version": 1,
-        "subtasks": [
-            {
-                "id": f"st_{i+1}",
-                "title": (st.get("title") or "").strip(),
-                "description": (st.get("description") or "").strip(),
-                "status": "pending",
-                "started_at": None,
-                "finished_at": None,
-                "result_summary": None,
-                "dispatched_subagent": None,
-                "attempts": 0,
-            }
-            for i, st in enumerate(subtasks)
-        ],
+        "subtasks": built,
         "current_index": 0,
         "created_at": now,
         "updated_at": now,
@@ -1474,12 +1509,33 @@ def update_subtask(
     result_summary: str | None = None,
     dispatched_subagent: str | None = None,
     bump_attempts: bool = False,
+    validation_passed: bool | None = None,
+    last_validation_failure: str | None = None,
 ) -> dict | None:
     """Patch one subtask in the goal's plan. Returns the new plan or None.
 
     Only non-None fields are written. ``status`` must be one of
     _VALID_SUBTASK_STATUSES. ``bump_attempts`` increments the attempts
     counter (useful when an LLM retries a failed subagent).
+
+    **Acceptance gate** (spec `docs/specs/2026-05-16-acceptance-gate.md` §3):
+    when ``status="completed"`` is requested, the subtask's stored
+    ``done_condition`` is run through ``goal_validators.run_validator``.
+
+      - Pass  → status flips to "completed" + ``validation_passed=True``.
+      - Fail  → status is NOT advanced (kept at whatever it was, typically
+                "in_progress"); ``validation_passed=False`` and
+                ``last_validation_failure`` is set to the remediation
+                string; ``attempts`` is bumped. The caller (tool layer)
+                inspects the returned plan to surface the remediation
+                message to the LLM.
+
+    Other status values (``in_progress`` / ``failed`` / ``skipped``) bypass
+    the validator — they don't claim acceptance.
+
+    ``validation_passed`` and ``last_validation_failure`` keyword args let
+    workstream-C's goal_runner write those flags directly without changing
+    status (e.g. recording a probe result between rounds).
     """
     if status and status not in _VALID_SUBTASK_STATUSES:
         raise ValueError(f"invalid status {status!r}; want one of {_VALID_SUBTASK_STATUSES}")
@@ -1490,18 +1546,43 @@ def update_subtask(
     plan = json.loads(row[0])
     now = time.time()
     found = False
+    validation_failed = False
     for st in plan.get("subtasks", []):
         if st["id"] != subtask_id:
             continue
         found = True
-        if status:
+
+        # ── Acceptance gate ──
+        # Only fires when the caller is asking for the completed terminal
+        # status. We run the validator BEFORE mutating status so a failed
+        # validator leaves prior state intact.
+        effective_status = status
+        if status == "completed":
+            import goal_validators  # local import — workstream-A module
+            criterion = st.get("done_condition")
+            passed, remediation = goal_validators.run_validator(criterion)
+            if passed:
+                st["validation_passed"] = True
+                st["last_validation_failure"] = None
+            else:
+                # Hold the prior status; bump attempts so retries don't
+                # spin forever silently.
+                effective_status = None
+                st["validation_passed"] = False
+                st["last_validation_failure"] = (
+                    remediation or "validator returned False with no remediation"
+                )[:4000]
+                st["attempts"] = int(st.get("attempts") or 0) + 1
+                validation_failed = True
+
+        if effective_status:
             prev_status = st.get("status")
-            st["status"] = status
-            if status == "in_progress" and not st.get("started_at"):
+            st["status"] = effective_status
+            if effective_status == "in_progress" and not st.get("started_at"):
                 st["started_at"] = now
-            if status in ("completed", "failed", "skipped") and not st.get("finished_at"):
+            if effective_status in ("completed", "failed", "skipped") and not st.get("finished_at"):
                 st["finished_at"] = now
-            if status == "in_progress" and prev_status != "in_progress":
+            if effective_status == "in_progress" and prev_status != "in_progress":
                 # Roll current_index forward to this subtask so the
                 # orchestrator UI/observability tracks the "active" subtask.
                 plan["current_index"] = plan["subtasks"].index(st)
@@ -1511,13 +1592,30 @@ def update_subtask(
             st["dispatched_subagent"] = dispatched_subagent
         if bump_attempts:
             st["attempts"] = int(st.get("attempts") or 0) + 1
+        # Explicit overrides from goal_runner / external probes — applied
+        # last so they win over anything the gate above wrote. These are
+        # additive: they don't change status on their own.
+        if validation_passed is not None:
+            st["validation_passed"] = bool(validation_passed)
+        if last_validation_failure is not None:
+            st["last_validation_failure"] = (last_validation_failure or "")[:4000] or None
         break
     if not found:
         return None
     plan["updated_at"] = now
     conn.execute("UPDATE goals SET plan=? WHERE id=?", (json.dumps(plan), goal_id))
     conn.commit()
-    if status:
+    # Log the actual outcome — if the validator rejected a completion claim,
+    # surface that as its own event so the timeline shows the gate firing.
+    if status == "completed" and validation_failed:
+        log_goal_event(goal_id, "subtask_validation_failed",
+                       {"subtask_id": subtask_id,
+                        "remediation_preview": (
+                            (last_validation_failure
+                             or st.get("last_validation_failure")
+                             or "")
+                        )[:200]})
+    elif status:
         log_goal_event(goal_id, f"subtask_{status}",
                        {"subtask_id": subtask_id,
                         "result_preview": (result_summary or "")[:200]})

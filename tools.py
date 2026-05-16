@@ -999,7 +999,10 @@ TOOLS = [
             "name": "goal_plan_set",
             "description": (
                 "Orchestrator only: set or replace the active goal's plan. "
-                "Call this once at the start with a list of focused subtasks."
+                "Call this once at the start with a list of focused subtasks. "
+                "EVERY subtask MUST carry a done_condition the validator can "
+                "check at completion time — a subtask can only flip to "
+                "'completed' if its done_condition.run_validator() returns True."
             ),
             "parameters": {
                 "type": "object",
@@ -1011,8 +1014,30 @@ TOOLS = [
                             "properties": {
                                 "title": {"type": "string", "description": "Short imperative phrase, e.g. 'Search LinkedIn for X'"},
                                 "description": {"type": "string", "description": "Self-contained instructions a subagent could follow with no other context"},
+                                "done_condition": {
+                                    "type": "object",
+                                    "description": (
+                                        "Acceptance criterion checked by goal_validators at completion. "
+                                        "Pick the kind that fits the subtask's deliverable. "
+                                        "Examples per kind:\n"
+                                        "  - file_exists  : {kind:'file_exists', spec:{path:'~/.castor/workspace/leads.csv', min_bytes: 100}}\n"
+                                        "  - http_returns : {kind:'http_returns', spec:{url:'https://example.com/api/x', status: 200}}\n"
+                                        "  - regex_in_output : {kind:'regex_in_output', spec:{pattern:'\\\\bDONE\\\\b'}}\n"
+                                        "  - llm_check    : {kind:'llm_check', spec:'Free-text question the validator LLM will answer yes/no'}\n"
+                                    ),
+                                    "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["file_exists", "http_returns", "regex_in_output", "llm_check"],
+                                        },
+                                        "spec": {
+                                            "description": "Kind-specific payload — see kind enum above for shape."
+                                        },
+                                    },
+                                    "required": ["kind", "spec"],
+                                },
                             },
-                            "required": ["title", "description"],
+                            "required": ["title", "description", "done_condition"],
                         },
                     },
                 },
@@ -1026,7 +1051,10 @@ TOOLS = [
             "name": "subtask_update",
             "description": (
                 "Orchestrator only: update one subtask's status. Call after each subtask "
-                "completes (inline or via subagent). Status MUST be one of: completed, failed, skipped."
+                "completes (inline or via subagent). Status MUST be one of: completed, failed, skipped. "
+                "When you request 'completed' the acceptance gate runs the subtask's done_condition: "
+                "if it fails, status STAYS where it was and the tool returns a remediation message "
+                "you must act on before retrying."
             ),
             "parameters": {
                 "type": "object",
@@ -1560,18 +1588,40 @@ def _goal_plan_set_impl(args: dict) -> str:
         return "Error: goal_plan_set requires an active goal — call from inside a goal runner."
     raw_subtasks = args.get("subtasks") or []
     if not isinstance(raw_subtasks, list) or not raw_subtasks:
-        return "Error: subtasks must be a non-empty array of {title, description} objects."
+        return "Error: subtasks must be a non-empty array of {title, description, done_condition} objects."
     # Filter out malformed entries; surface what we kept so the LLM sees the result.
     clean = []
+    missing_dc: list[str] = []
     for st in raw_subtasks:
-        if isinstance(st, dict) and st.get("title"):
-            clean.append({
-                "title": str(st["title"]).strip(),
-                "description": str(st.get("description") or "").strip(),
-            })
+        if not (isinstance(st, dict) and st.get("title")):
+            continue
+        title = str(st["title"]).strip()
+        done_condition = st.get("done_condition")
+        if not isinstance(done_condition, dict):
+            missing_dc.append(title)
+            continue
+        clean.append({
+            "title": title,
+            "description": str(st.get("description") or "").strip(),
+            "done_condition": done_condition,
+        })
+    if missing_dc:
+        # Hard-fail: the orchestrator MUST author a done_condition per subtask.
+        # Listing the offenders lets the LLM patch its next call without
+        # guessing which one was wrong.
+        return (
+            "Error: every subtask requires a done_condition. Missing on: "
+            + ", ".join(repr(t) for t in missing_dc[:5])
+            + (" ..." if len(missing_dc) > 5 else "")
+            + ". Add a done_condition object with kind ∈ "
+              "{file_exists, http_returns, regex_in_output, llm_check} + a spec payload."
+        )
     if not clean:
-        return "Error: no valid subtasks (each needs a 'title')."
-    plan = db.set_goal_plan(goal_id, clean)
+        return "Error: no valid subtasks (each needs a 'title' and 'done_condition')."
+    try:
+        plan = db.set_goal_plan(goal_id, clean)
+    except ValueError as e:
+        return f"Error: {e}"
     titles = ", ".join(f"{st['id']} '{st['title'][:40]}'" for st in plan["subtasks"])
     return f"Plan set with {len(plan['subtasks'])} subtask(s): {titles}. Next pending: {plan['subtasks'][0]['id']}."
 
@@ -1593,6 +1643,25 @@ def _subtask_update_impl(args: dict) -> str:
         return f"Error: {e}"
     if plan is None:
         return f"Error: no subtask {subtask_id!r} in current plan."
+
+    # Acceptance gate: if the caller requested "completed" but the validator
+    # rejected the subtask, db.update_subtask kept the prior status and wrote
+    # ``validation_passed=False`` + ``last_validation_failure``. Surface the
+    # remediation message so the LLM knows what to fix before retrying.
+    updated_st = next(
+        (s for s in plan["subtasks"] if s["id"] == subtask_id), None
+    )
+    if (
+        status == "completed"
+        and updated_st is not None
+        and updated_st.get("validation_passed") is False
+        and updated_st.get("last_validation_failure")
+    ):
+        return (
+            f"Subtask {subtask_id} NOT marked complete: validator failed. "
+            f"Remediation: {updated_st['last_validation_failure']}"
+        )
+
     # Surface what's next so the LLM can plan its next move from this tool result alone.
     pending = [st for st in plan["subtasks"] if st["status"] == "pending"]
     in_progress = [st for st in plan["subtasks"] if st["status"] == "in_progress"]
