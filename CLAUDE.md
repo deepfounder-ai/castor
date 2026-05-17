@@ -37,10 +37,10 @@ python -m worker                             # Goal worker daemon (long-running 
 python -m worker --once                      # Claim one goal, run it, exit (for tests)
 
 # Tests
-pytest tests/                                # All tests (~520 currently)
+pytest tests/                                # All tests (~1140 currently)
 pytest tests/test_integration.py -v          # Integration tests (TestClient + mocked LLM)
 pytest tests/test_turn_context.py -v         # Per-request state isolation
-pytest tests/test_telemetry.py -v            # Privacy contract + consent gates (70 tests)
+pytest tests/test_telemetry.py -v            # Privacy contract + consent gates (74 tests)
 pytest tests/test_blog_feed.py -v            # Blog RSS proxy in Presets view
 pytest tests/test_ws_attachments.py -v       # WS image/document round-trip + reload contract
 pytest tests/test_tools.py::test_blocks_sudo # Single test by nodeid
@@ -87,7 +87,8 @@ When adding new per-turn state: put it on TurnContext, not as a module global.
 
 ### Agent Loop v2 (`agent_loop.py`)
 
-- **No artificial limits**: `max_turns=0`, `max_tool_calls=0`. Only loop detection (2 identical tool+args signatures → `_force_finish`) stops infinite loops.
+- **No artificial limits**: `max_turns=0`, `max_tool_calls=0`. Multi-period loop detection (period 1, 2, or 3 repetitions in the last 6 tool-call signatures → `_force_finish`) stops infinite loops. Helper: `_detect_loop_period(sigs)`.
+- **Execute-level tool whitelist**: `run_loop(allowed_tools=...)` enforces a hard gate at `_run_tool()` — if a tool name isn't in the set, it returns an error string without executing. Subagents and orchestrator both pass their restricted sets through this gate, so even text-extracted tool calls can't escape the whitelist.
 - **Tool result clearing**: before each LLM call, old tool results (keeping last 3 intact) become `[cleared — N chars of <tool_name> output]` stubs. **No bytes of original content preserved** (v0.17.18) — a tool that printed a secret can't leak it back via the cleared stub.
 - **Tool result cap**: individual results capped at 4000 chars.
 - **Text-to-tool extraction**: if model writes `<tool_call>{...}` in prose instead of emitting `delta.tool_calls`, regex extracts and executes. Every extracted call goes through `_pre_dispatch_safety_check` (same gate as native tool calls — shell safety, write_file whitelist).
@@ -135,6 +136,7 @@ When adding new per-turn state: put it on TurnContext, not as a module global.
 - `011_goals_subtasks_checkpoints.sql` — durable goal queue, subtask plan, orchestrator checkpoints + event log.
 - `012_goal_facts.sql` — per-goal structured fact store (key/value scoped by goal_id).
 - `013_goal_outputs.sql` — per-goal deliverables (file/link/report).
+- `014_goal_done_conditions.sql` — per-subtask acceptance criteria (files_exist / min_count / regex_in_file / shell_returns_zero / http_200).
 - `migrations/README.md` — convention: `NNN_snake_case.sql`, transaction-per-file.
 
 `db._apply_migrations()` runs on first connection. Back-compat: if `schema_version` missing AND `messages` table exists, stamp at 1 without re-running baseline. Add a new migration by dropping a file — no code change needed.
@@ -188,7 +190,7 @@ Wire formats (`telemetry.py::_default_sender` dispatches by `telemetry_format`):
 
 Project defaults ship the Countly path pointing at `https://qwelytics.deepfounder.ai/i` with the project's public Countly app key. End-user UI surfaces only Enable/Disable + transparency lists — endpoint / format / app_key are NOT user-editable (operators / forks edit `config.py` defaults).
 
-Consent versioning (`_CURRENT_CONSENT_VERSION` constant in `telemetry.py`, currently `2`): bump when `ALLOWED_EVENTS` shape changes OR default endpoint changes. Old consent → "policy updated, please re-confirm" banner; events queue but don't send until user re-stamps via opt_in. v1→v2 was bumped in v0.18.5 when `thread_created` was added + `SOURCES` widened.
+Consent versioning (`_CURRENT_CONSENT_VERSION` constant in `telemetry.py`, currently `5`): bump when `ALLOWED_EVENTS` shape changes OR default endpoint changes. Old consent → "policy updated, please re-confirm" banner; events queue but don't send until user re-stamps via opt_in. v4→v5 was bumped when `text_extractions` field was added to `turn_complete`.
 
 Adding a new event: edit `ALLOWED_EVENTS` schema + bump `_CURRENT_CONSENT_VERSION`. Audit by grep `telemetry.track_event` — only path into the queue.
 
@@ -245,9 +247,10 @@ Per-routine USD spending caps over a configurable rolling window. Migration `010
 
 **New modules:**
 - **`worker.py`** — standalone daemon (`python -m worker`, or `--once` for tests). Polls `goals` table, claims runnable goals via lease (`worker_id + lease_expires_at`), heartbeats throughout. Intentionally does NOT import `server.py` / FastAPI — can run in minimal containers. Identity: `hostname_pid_uuid6`. Lease 60s, heartbeat 20s.
-- **`goal_runner.py`** — bridges asyncio worker loop to orchestrator. Loads last checkpoint, invokes orchestrator, marks goals done/paused/failed.
+- **`goal_runner.py`** — bridges asyncio worker loop to orchestrator. Loads last checkpoint, invokes orchestrator, marks goals done/paused/failed. **Acceptance gate** (v0.22.1): after every orchestrator return, runs `goal_validators.run_validator()` over each subtask's `done_condition`. Failures inject a remediation `system_note` and re-enter the orchestrator (up to `MAX_GATE_ATTEMPTS=3` rounds). Exhaustion → `mark_goal_failed`.
+- **`goal_validators.py`** — 5 validator kinds: `files_exist`, `min_count`, `regex_in_file`, `shell_returns_zero`, `http_200`. Stdlib only (no requests/httpx). `run_validator()` never raises — all failures become `(False, "<diagnostic>")`.
 - **`orchestrator.py`** — the main LLM for goals. Uses `prompts/orchestrator.md` (NOT `soul.py`). Restricted tool set: `goal_plan_set`, `subtask_update`, `dispatch_subagent`, `fact_save`, `fact_get`, `memory_save`, `memory_search`, `http_request`, basic tools. Manages a linear `subtasks` plan (same model as Claude Code's TodoWrite).
-- **`subagent.py`** — fresh LLM context per subtask. 4 types: `research`, `browser`, `code`, `scraper` — each with a restricted tool whitelist (the load-bearing security boundary). Hard 20-round cap. Only the final result string flows back to the orchestrator (keeps context lean). Dedicated system prompts in `prompts/subagent_*.md`.
+- **`subagent.py`** — fresh LLM context per subtask. 4 types: `research`, `browser`, `code`, `scraper` — each with a restricted tool whitelist (the load-bearing security boundary). Hard 20-round cap. Only the final result string flows back to the orchestrator (keeps context lean). Dedicated system prompts in `prompts/subagent_*.md`. Passes `allowed_tools` to `run_loop()` so even text-extracted tool calls can't escape the whitelist.
 
 **Budget & Events (supporting modules):**
 - **`agent_budget.py`** — `BudgetLimits` dataclass: `max_turns`, `max_tool_calls`, `max_input_tokens`, `max_output_tokens`. Constructed via `BudgetLimits.from_config()`. Used by both interactive turns and goal orchestration.
@@ -260,9 +263,15 @@ Per-routine USD spending caps over a configurable rolling window. Migration `010
 - `goal_outputs` — durable deliverables (kind: file/link/report). Lets UI render Download/Open/Save buttons without parsing prose.
 - `goal_events` — append-only event log for observability.
 
-**Config**: `checkpoint_round_interval` (default 3) in `EDITABLE_SETTINGS`. `max_tool_rounds` (default 0 = unlimited) controls tool call rounds per turn.
+**Config**: `checkpoint_round_interval` (default 3), `worker_concurrency`, `worker_poll_interval_sec`, `worker_inline`, `orchestrator_max_turns`, `subagent_default_max_rounds`, `acceptance_gate_max_attempts` in `EDITABLE_SETTINGS`. `max_tool_rounds` (default 0 = unlimited) controls tool call rounds per turn.
 
 **`spawn_task` still exists** as fire-and-forget short-task tool (<5 min, in-memory). `goal_create` / `dispatch_subagent` are the durable alternatives for hours-long work.
+
+### Skill loader (`skills/__init__.py`)
+
+**Integrity verification** (v0.22.1): user skills at `~/.castor/skills/` are SHA-256 hashed on first load (manifest stored in `skill_hashes.json`). Subsequent loads verify the hash — mismatch → `ImportError` + log.warning. Built-in skills (under `skills/` in repo) are exempt.
+
+**Namespace collision detection**: `get_tools()` tracks `seen_names` — if two active skills define the same tool name, the first wins and a log.warning is emitted for the duplicate.
 
 ### Discovery service (`discovery.py`)
 
@@ -372,7 +381,7 @@ Render pattern: every state change rebuilds innerHTML. Event handlers attached v
 
 ## Tests (`tests/`)
 
-All ~520 tests run in a single pytest process (v0.17.24 — no more sys.modules pollution). Do NOT add `sys.modules[...] = mock_X` at module scope — use `monkeypatch` fixtures (see `tests/conftest.py` for `qwe_temp_data_dir`, `mock_llm`).
+All ~1140 tests run in a single pytest process (v0.17.24 — no more sys.modules pollution). Do NOT add `sys.modules[...] = mock_X` at module scope — use `monkeypatch` fixtures (see `tests/conftest.py` for `qwe_temp_data_dir`, `mock_llm`).
 
 Notable files:
 - `test_integration.py` — TestClient + mocked LLM end-to-end (added to catch v0.17.23-style lazy-import SyntaxErrors)
@@ -391,7 +400,12 @@ Notable files:
 - `test_worker_lifecycle.py` — worker daemon claim/lease/heartbeat
 - `test_goal_plan_facts.py` — goal facts and plan state
 - `test_goals_ui_contracts.py` — goal UI WebSocket event contracts
-- `test_db_protection.py` — schema protection (skill tables must be prefixed)
+- `test_db_protection.py` — schema protection (skill tables must be prefixed) + FTS5 escape sanitization
+- `test_acceptance_gate.py` + `test_acceptance_gate_e2e.py` — 5 validator kinds + gate re-entry loop
+- `test_goal_level_done_conditions.py` — per-subtask done_condition wiring
+- `test_path_safety.py` — symlink resolution + write whitelist enforcement
+- `test_skill_loading.py` — skill integrity hash verification + namespace collision detection
+- `test_loop_detection.py` — multi-period (1/2/3) loop detection helper
 - `conftest.py` — shared fixtures; `scope="session"` TestClient lives here
 
 **JS contract tests live in pytest.** Two exist so far: `test_api_helper_disables_http_cache` (pins `cache:'no-store'`) and `test_reload_path_runs_meta_files_through_splitfiles` (pins live/reload symmetry). Pattern: `Path(...).read_text()` on `static/index.html`, locate a stable anchor string, assert the contract holds in a window after it. Cheap regression guards for JS-side bugs that pytest would otherwise miss entirely.
@@ -427,6 +441,8 @@ CI flake to know about: `tests/test_telemetry_wireup.py::test_tool_error_classif
 | `CASTOR_ALLOW_PRIVATE_URLS` | unset | Set to `1` to bypass SSRF block on `/api/knowledge/url` (dev only). |
 
 Telemetry-related settings live in `EDITABLE_SETTINGS` (not env vars): `telemetry_enabled` (default 0), `telemetry_endpoint` (default `https://qwelytics.deepfounder.ai/i`), `telemetry_format` (`raw` / `countly`, default `countly`), `telemetry_countly_app_key`, `telemetry_anonymous_id`, `telemetry_consent_version`. Operators / forks edit defaults in `config.py`; end-users only see Enable/Disable.
+
+Hardening-related settings (v0.22.1): `routine_dry_run_mock` (int, default 1 — stubs dangerous tools during dry-run validation), `system_task_budget_usd` (float, default 5.0 — USD cap for synthesis/heartbeat tasks), `failure_alert_threshold` (int, default 3 — consecutive routine failures before log.error), `tool_timeout_shell` (int, default 120, range 5–600), `tool_timeout_http` (int, default 5, range 1–60).
 
 ## When adding a feature — quick checklist
 
