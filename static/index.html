@@ -2085,8 +2085,18 @@ const parseMarkdownLite = (text) => {
 // Inline + block markdown → HTML (safe: content is esc()-d first; all style tags are added after)
 const renderMarkdownText = (raw) => {
   if (!raw) return '';
-  let txt = esc(raw);
-  // Protect inline code first (so bold/italic regexes don't eat it)
+  // ── Fenced code blocks FIRST (before esc) ──
+  // Pull ```lang\n...\n``` blocks out of the source BEFORE escaping
+  // and replace with placeholders. Without this, the triple-backtick
+  // delimiters get esc'd to literal characters and the block content
+  // is never recognised. Common in agent output (Python, JSON, SQL).
+  const fences = [];
+  let src = String(raw).replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, body) => {
+    fences.push({ lang: lang || '', body });
+    return '\u0002FENCE' + (fences.length - 1) + '\u0002';
+  });
+  let txt = esc(src);
+  // Protect inline code AFTER fence extraction so the regex doesn't span fence boundaries.
   const codes = [];
   txt = txt.replace(/`([^`\n]+)`/g, (_, c) => {
     codes.push(c);
@@ -2115,6 +2125,25 @@ const renderMarkdownText = (raw) => {
   txt = txt.replace(/\[([^\]]+)\]\(((?:https?:|mailto:|\/)[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;text-decoration-color:var(--accent-line)">$1</a>');
   // Bare URLs
   txt = txt.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent)">$2</a>');
+  // GitHub-style pipe tables. Match a header row + separator + body rows.
+  // Each cell is | x | y |. Simple version: no alignment markers, no
+  // nested markdown inside cells beyond what already ran.
+  txt = txt.replace(
+    /(?:^|\n)([^\n|]*\|[^\n]+\|[^\n]*)\n([^\n|]*\|[ \t:|-]+\|[^\n]*)\n((?:[^\n|]*\|[^\n]+\|[^\n]*\n?)+)/g,
+    (_, headRow, sepRow, bodyBlock) => {
+      const splitRow = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      const head = splitRow(headRow);
+      const bodyRows = bodyBlock.trim().split(/\n/).map(splitRow);
+      const thStyle = 'padding:6px 10px;border-bottom:2px solid var(--line);text-align:left;font-weight:600;color:var(--fg-1);font-size:13px';
+      const tdStyle = 'padding:6px 10px;border-bottom:1px solid var(--line);color:var(--fg-2);font-size:13px;vertical-align:top';
+      const thead = '<thead><tr>' + head.map(c => '<th style="' + thStyle + '">' + c + '</th>').join('') + '</tr></thead>';
+      const tbody = '<tbody>' + bodyRows.map(row =>
+        '<tr>' + row.map(c => '<td style="' + tdStyle + '">' + c + '</td>').join('') + '</tr>'
+      ).join('') + '</tbody>';
+      return '\n<div style="overflow-x:auto;margin:10px 0"><table style="border-collapse:collapse;width:100%;font-family:var(--font-sans)">' +
+        thead + tbody + '</table></div>';
+    }
+  );
   // Lists (simple): group consecutive -/* or digit. items into <ul>/<ol>
   txt = txt.replace(/(?:^|\n)((?:[-*] [^\n]+\n?)+)/g, (_, block) => {
     const items = block.trim().split(/\n/).map(l => l.replace(/^[-*] /, '')).map(x => '<li style="margin:2px 0">' + x + '</li>').join('');
@@ -2130,13 +2159,26 @@ const renderMarkdownText = (raw) => {
     const t = b.trim();
     if (!t) return '';
     // If block already contains block-level element, leave alone (preserve newlines as <br> within)
-    if (/^<(h[1-6]|ul|ol|blockquote|hr|pre)/.test(t)) return t;
+    if (/^<(h[1-6]|ul|ol|blockquote|hr|pre|div|table)/.test(t)) return t;
     return '<p style="margin:0 0 10px;line-height:1.7">' + t.replace(/\n/g, '<br>') + '</p>';
   }).join('\n');
   // Restore inline code
   txt = txt.replace(/\u0001CODE(\d+)\u0001/g, (_, i) =>
     '<code style="font-family:var(--font-mono);font-size:0.92em;background:var(--surface-2);border:1px solid var(--line);padding:1px 5px;border-radius:4px">' + codes[+i] + '</code>'
   );
+  // Restore fenced code blocks. Each becomes a <pre> block with a
+  // language chip on top if a lang was specified after the opening ```.
+  txt = txt.replace(/\u0002FENCE(\d+)\u0002/g, (_, i) => {
+    const f = fences[+i] || { lang: '', body: '' };
+    const langChip = f.lang
+      ? '<div style="font-family:var(--font-mono);font-size:10px;color:var(--fg-4);padding:4px 10px;background:var(--surface-2);border-bottom:1px solid var(--line);letter-spacing:0.05em;text-transform:uppercase">' + esc(f.lang) + '</div>'
+      : '';
+    return '<div style="margin:10px 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#0d0d0d">' +
+      langChip +
+      '<pre style="margin:0;padding:10px 14px;overflow-x:auto;font-family:var(--font-mono);font-size:12px;line-height:1.5;color:var(--fg-1);white-space:pre">' +
+      esc(f.body) + '</pre>' +
+    '</div>';
+  });
   return txt;
 };
 
@@ -7240,23 +7282,34 @@ async function loadGoals() {
 
 async function loadGoalDetail(goalId, opts) {
   opts = opts || {};
-  try {
-    const [g, ev, fa, out] = await Promise.all([
-      api('/api/goals/' + encodeURIComponent(goalId)),
-      api('/api/goals/' + encodeURIComponent(goalId) + '/events?limit=200'),
-      api('/api/goals/' + encodeURIComponent(goalId) + '/facts'),
-      api('/api/goals/' + encodeURIComponent(goalId) + '/outputs'),
-    ]);
-    if (g && !g.error) {
-      state.goalDetail = g;
-      state.goalEvents = (ev && ev.events) || [];
-      state.goalFacts = (fa && fa.facts) || {};
-      state.goalOutputs = (out && out.outputs) || [];
-    }
-  } catch (e) {
-    if (!opts.silent) {
-      toast('Failed to load goal: ' + (e.message || e), 'err');
-    }
+  // Use allSettled instead of Promise.all so a single endpoint failing
+  // (e.g. /events times out, or /facts returns 500 on a goal in a weird
+  // state) doesn't lose the main goal payload. Without this, a failed
+  // goal can render "Loading goal…" forever when ANY sub-endpoint
+  // hiccups, because Promise.all rejects everything on first failure.
+  const results = await Promise.allSettled([
+    api('/api/goals/' + encodeURIComponent(goalId)),
+    api('/api/goals/' + encodeURIComponent(goalId) + '/events?limit=200'),
+    api('/api/goals/' + encodeURIComponent(goalId) + '/facts'),
+    api('/api/goals/' + encodeURIComponent(goalId) + '/outputs'),
+  ]);
+  const [gR, evR, faR, outR] = results;
+
+  // Only update goalDetail when the main /goals/{id} call succeeded; the
+  // others are best-effort and fall back to the prior state.
+  if (gR.status === 'fulfilled' && gR.value && !gR.value.error) {
+    state.goalDetail = gR.value;
+  } else if (gR.status === 'rejected' && !opts.silent) {
+    toast('Failed to load goal: ' + (gR.reason?.message || gR.reason), 'err');
+  }
+  if (evR.status === 'fulfilled' && evR.value) {
+    state.goalEvents = evR.value.events || [];
+  }
+  if (faR.status === 'fulfilled' && faR.value) {
+    state.goalFacts = faR.value.facts || {};
+  }
+  if (outR.status === 'fulfilled' && outR.value) {
+    state.goalOutputs = outR.value.outputs || [];
   }
   if (state.view === 'goals' && state.activeGoalId === goalId) {
     render();
@@ -7407,10 +7460,7 @@ function renderGoalDetailView() {
             '<span style="font-size:11px;color:var(--fg-3);font-family:var(--font-mono)">' +
             esc(fmtCost(g.cost_usd)) + '</span>' : '') +
         '</div>' +
-        '<div style="font-size:14px;color:var(--fg-1);line-height:1.5">' +
-          esc((g.user_input || '').slice(0, 600)) +
-          ((g.user_input || '').length > 600 ? '…' : '') +
-        '</div>' +
+        _renderGoalDescription(g) +
         _renderGoalLevelDoneConditions(g) +
       '</div>' +
       _renderGoalActions(g) +
@@ -7438,6 +7488,37 @@ function renderGoalDetailView() {
 // These are the user-specified deliverables that must be machine-verified
 // before the goal can be marked done, regardless of how the orchestrator
 // broke the work into subtasks.
+// Goal description block with expand/collapse for long task inputs.
+// Long user_input was being silently truncated at 600 chars with "…"
+// which hid the actual ask. Now: show first ~3 lines / 400 chars by
+// default with a "Show more" toggle that reveals the full text.
+// State lives on a DOM data-attribute (data-expanded) so it survives
+// partial re-renders inside the same goal-detail node.
+function _renderGoalDescription(g) {
+  const full = g.user_input || '';
+  const PREVIEW_CHARS = 400;
+  const isLong = full.length > PREVIEW_CHARS;
+  const expanded = state._goalDescExpanded === g.id;
+  const visible = (expanded || !isLong) ? full : full.slice(0, PREVIEW_CHARS);
+  const showToggle = isLong;
+  return (
+    '<div class="goal-desc-block" data-goal-desc="' + esc(g.id) + '" ' +
+      'style="font-size:14px;color:var(--fg-1);line-height:1.5;white-space:pre-wrap;' +
+      'word-break:break-word">' +
+      esc(visible) +
+      (showToggle && !expanded ? '… ' : '') +
+      (showToggle
+        ? '<button data-act="goal-desc-toggle" data-goal="' + esc(g.id) + '" ' +
+          'style="background:transparent;border:0;color:var(--accent);' +
+          'cursor:pointer;font-size:12px;padding:0;margin-left:2px;' +
+          'text-decoration:underline;font-family:inherit">' +
+          (expanded ? 'Show less' : 'Show more (' + full.length + ' chars)') +
+          '</button>'
+        : '') +
+    '</div>'
+  );
+}
+
 function _renderGoalLevelDoneConditions(g) {
   const conds = g.done_conditions || [];
   if (!conds.length) return '';
@@ -9092,6 +9173,17 @@ function wireEvents() {
       btn.textContent = isCollapsed
         ? (btn.dataset.expandedLabel || 'Show less')
         : (btn.dataset.collapsedLabel || 'Show more');
+    };
+  });
+
+  // Goal-detail description expand/collapse for long user_input strings.
+  document.querySelectorAll('[data-act="goal-desc-toggle"]').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const gid = btn.dataset.goal;
+      if (!gid) return;
+      state._goalDescExpanded = (state._goalDescExpanded === gid) ? null : gid;
+      render();
     };
   });
 
