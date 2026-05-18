@@ -289,6 +289,9 @@ EDITABLE_SETTINGS = {
     "synthesis_continuous_enabled":      ("setting:synthesis_continuous_enabled",      int, 1,  "Enable continuous trickle synthesis (0=off, 1=on). When on, the scheduler runs synthesis every N minutes on a small batch — new memory becomes searchable within minutes instead of waiting for the 03:00 nightly batch.", 0, 1),
     "synthesis_continuous_interval_min": ("setting:synthesis_continuous_interval_min", int, 15, "How often the continuous synthesizer fires, in minutes.", 1, 1440),
     "synthesis_continuous_max_per_run":  ("setting:synthesis_continuous_max_per_run",  int, 5,  "Max items per continuous trickle run. Keep small so each pass finishes quickly.", 1, 50),
+    # ── Trajectory recording ──
+    "trajectory_enabled":   ("setting:trajectory_enabled",   int, 0,  "Record every agent run as a JSONL trajectory file under ~/.castor/trajectories/. Useful for audit, debug, and future replay. Disabled by default — opt-in.", 0, 1),
+    "trajectory_keep_days": ("setting:trajectory_keep_days", int, 30, "Auto-delete trajectory files older than N days. 0 = keep forever.", 0, 365),
     "rag_chunk_overlap":    ("setting:rag_chunk_overlap",     int, 100,    "RAG chunk overlap in chars", 0, 500),
     "tz_name":              ("setting:tz_name",               str, "",     "IANA timezone name (e.g. Europe/Moscow, America/New_York). When set, scheduler uses it via zoneinfo and honours DST. Empty = use fixed TZ_OFFSET.", "", ""),
     "fallback_provider":    ("setting:fallback_provider",     str, "",     "Fallback provider for complex tasks (e.g. openrouter)", "", ""),
