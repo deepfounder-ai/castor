@@ -673,12 +673,94 @@ _active_extra_tools: set[str] = set()
 _spicy_duck_on: bool | None = None  # cached per turn
 
 
-def _reset_active_tools():
-    """Reset extra tools between turns."""
+# Thread-state key for persisted tool activations. Once a tool is activated
+# in a thread (via tool_search or `/skill` slash command), it stays active
+# until the thread is reset — this keeps the tools array sent to the LLM
+# stable across turns, which is the prerequisite for Anthropic prompt caching
+# to hit (the tools list is part of the cached prefix).
+_THREAD_ACTIVE_TOOLS_KEY = "thread_active_tools_"
+
+
+def _load_active_tools_for_thread(thread_id: str | None = None) -> None:
+    """Restore the per-thread tool activations from DB into the global set.
+
+    Called at the top of every agent.run turn so the LLM sees the same
+    extended tools as last turn — prerequisite for cache hits.
+
+    Falls back to a clean set on any error so a corrupted KV entry never
+    leaves the agent without core tools.
+    """
     global _spicy_duck_on
     _active_extra_tools.clear()
     _pending_files.clear()
     _spicy_duck_on = None  # re-check on next get_all_tools()
+
+    tid = thread_id
+    if tid is None:
+        try:
+            import threads
+            tid = threads.get_active_id()
+        except Exception:
+            return
+    if not tid:
+        return
+    raw = db.kv_get(_THREAD_ACTIVE_TOOLS_KEY + tid)
+    if not raw:
+        return
+    try:
+        activated = json.loads(raw)
+        if isinstance(activated, list):
+            _active_extra_tools.update(str(t) for t in activated)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+
+def _persist_active_tools(thread_id: str | None = None) -> None:
+    """Write the current ``_active_extra_tools`` set back to DB for this thread."""
+    tid = thread_id
+    if tid is None:
+        try:
+            import threads
+            tid = threads.get_active_id()
+        except Exception:
+            return
+    if not tid:
+        return
+    try:
+        db.kv_set(_THREAD_ACTIVE_TOOLS_KEY + tid,
+                  json.dumps(sorted(_active_extra_tools)))
+    except Exception:
+        pass
+
+
+def _reset_active_tools_for_thread(thread_id: str | None = None) -> None:
+    """Forget every per-thread activation. Used by `/skill reset` slash."""
+    tid = thread_id
+    if tid is None:
+        try:
+            import threads
+            tid = threads.get_active_id()
+        except Exception:
+            return
+    if not tid:
+        return
+    _active_extra_tools.clear()
+    try:
+        db.kv_delete(_THREAD_ACTIVE_TOOLS_KEY + tid)
+    except Exception:
+        pass
+
+
+# Back-compat shim — the chat path used to call this at the start of every
+# turn to wipe the activated set. Now we LOAD instead of wiping so the set
+# persists across turns. Existing callers (agent.run + tests) keep their
+# call sites but get the new behaviour.
+def _reset_active_tools(thread_id: str | None = None):
+    """Compatibility wrapper. Loads persisted activations for the current
+    thread; the legacy "clear on every turn" behaviour is gone — that was
+    the cache-killer this P1.2 work fixes. Existing callers don't need to
+    change."""
+    _load_active_tools_for_thread(thread_id)
 
 
 def get_pending_files() -> list[dict]:
@@ -1548,8 +1630,11 @@ def _do_tool_search(query: str) -> str:
             f"Do NOT call tool_search again. Call the tool directly (e.g., browser_open)."
         )
 
-    # Activate found tools for this turn
+    # Activate found tools and persist for this thread so the tools list
+    # sent to the LLM stays stable on subsequent turns — critical for
+    # Anthropic prompt-cache hits, helpful for any provider's KV cache.
     _active_extra_tools.update(found)
+    _persist_active_tools()
 
     # Return descriptions of activated tools
     all_t = _get_all_tools_full()

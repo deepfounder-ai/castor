@@ -1514,8 +1514,13 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
 
     _log.info(f"turn started | thread={tid or 'active'} | input: {(user_input or '')[:100]}")
 
-    # Reset tool_search activations for new turn
-    tools._reset_active_tools()
+    # Load persisted tool activations for this thread. The legacy behaviour
+    # was to CLEAR every turn — that wiped the LLM's prior tool_search
+    # discoveries and forced re-discovery + a fresh tools-list shape every
+    # turn, which killed Anthropic prompt-cache hits (tools list is part
+    # of the cached prefix). Now activations persist per-thread until the
+    # user explicitly resets via `/skill reset`.
+    tools._load_active_tools_for_thread(tid)
     # Also clear any canvas renders left over from a prior turn (e.g.
     # if the previous turn crashed mid-flight, server.py's drain
     # wouldn't have run). The structure is now thread-bucketed, but
