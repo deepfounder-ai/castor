@@ -10,9 +10,7 @@ What is NOT touched:
 - Binary files (images, compiled)
 """
 
-import re
 import sys
-import os
 from pathlib import Path
 
 DRY_RUN = "--dry-run" in sys.argv
