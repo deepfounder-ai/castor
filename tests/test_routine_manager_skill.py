@@ -622,37 +622,36 @@ class TestResolveIdOrName:
 # ---------------------------------------------------------------------------
 
 class TestToolSearchIndex:
-    @staticmethod
-    def _load_tools_mod(qwe_temp_data_dir):
-        import importlib
-        import sys
-        for m in ("config", "db", "skills", "tools"):
-            if m in sys.modules:
-                importlib.reload(sys.modules[m])
-            else:
-                importlib.import_module(m)
-        return sys.modules["tools"]
+    """Check static registration constants — no module reloading needed.
 
-    def test_routine_keyword_returns_skill_tools(self, qwe_temp_data_dir):
+    _TOOL_SEARCH_INDEX and TOOL_CATEGORIES_BY_NAME are module-level dicts
+    defined at parse time; importing tools once is sufficient and safe for
+    the rest of the test suite (no stale-reference side-effects).
+    """
+
+    @staticmethod
+    def _tools_mod():
+        import tools
+        return tools
+
+    def test_routine_keyword_returns_skill_tools(self):
         """tool_search('routine') must surface routine_manager tools."""
-        tools_mod = self._load_tools_mod(qwe_temp_data_dir)
-        assert "routine" in tools_mod._TOOL_SEARCH_INDEX
-        routine_tools = tools_mod._TOOL_SEARCH_INDEX["routine"]
+        idx = self._tools_mod()._TOOL_SEARCH_INDEX
+        assert "routine" in idx
         for expected in ("routine_list", "routine_create",
                          "routine_update", "routine_pause", "routine_delete"):
-            assert expected in routine_tools, (
+            assert expected in idx["routine"], (
                 f"'{expected}' missing from _TOOL_SEARCH_INDEX['routine']"
             )
 
-    def test_schedule_keyword_includes_routine_tools(self, qwe_temp_data_dir):
-        tools_mod = self._load_tools_mod(qwe_temp_data_dir)
-        sched_tools = tools_mod._TOOL_SEARCH_INDEX.get("schedule", [])
-        assert "routine_list" in sched_tools
-        assert "routine_create" in sched_tools
+    def test_schedule_keyword_includes_routine_tools(self):
+        idx = self._tools_mod()._TOOL_SEARCH_INDEX
+        sched = idx.get("schedule", [])
+        assert "routine_list" in sched
+        assert "routine_create" in sched
 
-    def test_routine_tools_in_tool_categories(self, qwe_temp_data_dir):
-        tools_mod = self._load_tools_mod(qwe_temp_data_dir)
-        cats = tools_mod.TOOL_CATEGORIES_BY_NAME
+    def test_routine_tools_in_tool_categories(self):
+        cats = self._tools_mod().TOOL_CATEGORIES_BY_NAME
         for name in ("routine_list", "routine_create", "routine_update",
                      "routine_pause", "routine_delete"):
             assert name in cats, f"'{name}' missing from TOOL_CATEGORIES_BY_NAME"
