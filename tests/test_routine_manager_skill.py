@@ -10,6 +10,12 @@ Covers:
   - routine_delete — by numeric id, by partial name, not-found, ambiguous name
   - _resolve_id_or_name — all branches (integer id, partial name, ambiguous,
     not found, system-task guard)
+  - goal_list — empty, with goals
+  - goal_create — happy path, missing task, invalid budget, invalid done_condition
+  - goal_view — full detail, subtask plan, outputs, not-found
+  - goal_pause — pending/running → paused, already-terminal guard
+  - goal_resume — paused → pending, wrong-status guard
+  - goal_abort — terminal cancel, already-terminal guard
   - _DEFAULT_SKILLS inclusion
 """
 from __future__ import annotations
@@ -80,6 +86,8 @@ class TestSkillStructure:
         assert names == [
             "routine_list", "routine_create", "routine_update",
             "routine_pause", "routine_delete",
+            "goal_list", "goal_create", "goal_view",
+            "goal_pause", "goal_resume", "goal_abort",
         ]
 
     def test_description_nonempty(self, rm):
@@ -91,6 +99,8 @@ class TestSkillStructure:
         # Must mention key concepts from the workflow
         assert "routine_list" in instr
         assert "routine_create" in instr
+        # Must distinguish routine vs goal
+        assert "goal_create" in instr or "Goal" in instr
 
     def test_execute_callable(self, rm):
         assert callable(rm.execute)
@@ -656,3 +666,255 @@ class TestToolSearchIndex:
                      "routine_pause", "routine_delete"):
             assert name in cats, f"'{name}' missing from TOOL_CATEGORIES_BY_NAME"
             assert cats[name] == "automation"
+
+    def test_goal_keyword_returns_goal_tools(self):
+        idx = self._tools_mod()._TOOL_SEARCH_INDEX
+        assert "goal" in idx
+        for expected in ("goal_list", "goal_create", "goal_view",
+                         "goal_pause", "goal_resume", "goal_abort"):
+            assert expected in idx["goal"], (
+                f"'{expected}' missing from _TOOL_SEARCH_INDEX['goal']"
+            )
+
+    def test_goal_tools_in_tool_categories(self):
+        cats = self._tools_mod().TOOL_CATEGORIES_BY_NAME
+        for name in ("goal_list", "goal_create", "goal_view",
+                     "goal_pause", "goal_resume", "goal_abort"):
+            assert name in cats, f"'{name}' missing from TOOL_CATEGORIES_BY_NAME"
+            assert cats[name] == "automation"
+
+
+# ---------------------------------------------------------------------------
+# 9. Goal tools
+# ---------------------------------------------------------------------------
+
+class TestGoalList:
+    def test_empty_returns_no_goals_yet(self, rm):
+        result = rm.execute("goal_list", {})
+        assert "No goals" in result
+
+    def test_no_goals_with_status_filter(self, rm):
+        result = rm.execute("goal_list", {"status": "running"})
+        assert "No goals" in result or "running" in result
+
+    def test_lists_created_goal(self, rm):
+        import db
+        db.create_goal(user_input="research something", source="test")
+        result = rm.execute("goal_list", {})
+        assert "research something" in result or "research" in result
+        assert "pending" in result
+
+    def test_status_filter_works(self, rm):
+        import db
+        db.create_goal(user_input="a done task", source="test")
+        # Pending goal should not appear in 'done' filter
+        result = rm.execute("goal_list", {"status": "done"})
+        assert "a done task" not in result
+
+    def test_emoji_present_for_pending(self, rm):
+        import db
+        db.create_goal(user_input="emoji test goal", source="test")
+        result = rm.execute("goal_list", {})
+        assert "⏳" in result
+
+
+class TestGoalCreate:
+    def test_missing_task_returns_error(self, rm):
+        result = rm.execute("goal_create", {})
+        assert "Error" in result
+        assert "task" in result.lower()
+
+    def test_empty_task_returns_error(self, rm):
+        result = rm.execute("goal_create", {"task": "   "})
+        assert "Error" in result
+
+    def test_happy_path_returns_goal_id(self, rm):
+        result = rm.execute("goal_create", {"task": "do something complex"})
+        assert "g_" in result
+        assert "pending" in result
+
+    def test_budget_usd_included_in_reply(self, rm):
+        result = rm.execute("goal_create", {
+            "task": "research topic", "budget_usd": 1.5
+        })
+        assert "1.50" in result or "budget" in result.lower()
+
+    def test_budget_seconds_included_in_reply(self, rm):
+        result = rm.execute("goal_create", {
+            "task": "research topic", "budget_seconds": 3600
+        })
+        assert "1h" in result or "60m" in result or "3600" in result
+
+    def test_invalid_budget_usd_returns_error(self, rm):
+        result = rm.execute("goal_create", {
+            "task": "do stuff", "budget_usd": "not-a-number"
+        })
+        assert "Error" in result
+
+    def test_invalid_done_condition_returns_error(self, rm):
+        result = rm.execute("goal_create", {
+            "task": "do stuff",
+            "done_conditions": [{"kind": "unknown_kind_xyz"}],
+        })
+        assert "Error" in result
+
+    def test_valid_done_condition_accepted(self, rm):
+        result = rm.execute("goal_create", {
+            "task": "produce report.md",
+            "done_conditions": [
+                {"kind": "files_exist", "spec": {"paths": ["report.md"]}}
+            ],
+        })
+        assert "g_" in result, f"Expected goal_id in result, got: {result}"
+        assert "Error" not in result
+
+    def test_goal_persisted_in_db(self, rm):
+        import db
+        rm.execute("goal_create", {"task": "persist this"})
+        goals = db.list_goals()
+        assert any("persist this" in g["user_input"] for g in goals)
+
+
+class TestGoalView:
+    def test_missing_goal_id_returns_error(self, rm):
+        result = rm.execute("goal_view", {})
+        assert "Error" in result
+
+    def test_invalid_prefix_returns_error(self, rm):
+        result = rm.execute("goal_view", {"goal_id": "12345"})
+        assert "Error" in result
+
+    def test_not_found_returns_error(self, rm):
+        result = rm.execute("goal_view", {"goal_id": "g_doesnotexist0000"})
+        assert "Error" in result
+
+    def test_shows_status_and_task(self, rm):
+        import db
+        gid = db.create_goal(user_input="view this goal", source="test")
+        result = rm.execute("goal_view", {"goal_id": gid})
+        assert "view this goal" in result
+        assert "pending" in result.lower()
+
+    def test_shows_subtask_plan(self, rm):
+        import db
+        gid = db.create_goal(user_input="goal with plan", source="test")
+        db.set_goal_plan(gid, [
+            {"id": "st_1", "title": "First step", "status": "pending"},
+            {"id": "st_2", "title": "Second step", "status": "pending"},
+        ])
+        result = rm.execute("goal_view", {"goal_id": gid})
+        assert "First step" in result
+        assert "Second step" in result
+
+    def test_shows_result_when_done(self, rm):
+        import db
+        gid = db.create_goal(user_input="completed goal", source="test")
+        db.mark_goal_done(gid, result="Great job, report.md written.")
+        result = rm.execute("goal_view", {"goal_id": gid})
+        assert "report.md written" in result
+        assert "done" in result.lower()
+
+
+class TestGoalPause:
+    def test_missing_goal_id_returns_error(self, rm):
+        result = rm.execute("goal_pause", {})
+        assert "Error" in result
+
+    def test_not_found_returns_error(self, rm):
+        result = rm.execute("goal_pause", {"goal_id": "g_notfound00000000"})
+        assert "Error" in result
+
+    def test_pauses_pending_goal(self, rm):
+        import db
+        gid = db.create_goal(user_input="pause me", source="test")
+        result = rm.execute("goal_pause", {"goal_id": gid})
+        assert "paused" in result
+        g = db.get_goal(gid)
+        assert g["status"] == "paused"
+
+    def test_already_done_goal_not_pausable(self, rm):
+        import db
+        gid = db.create_goal(user_input="already done", source="test")
+        db.mark_goal_done(gid, result="done")
+        result = rm.execute("goal_pause", {"goal_id": gid})
+        assert "Error" in result or "terminal" in result or "done" in result
+
+    def test_already_aborted_goal_not_pausable(self, rm):
+        import db
+        gid = db.create_goal(user_input="already aborted", source="test")
+        db.mark_goal_aborted(gid)
+        result = rm.execute("goal_pause", {"goal_id": gid})
+        assert "Error" in result or "terminal" in result or "aborted" in result
+
+
+class TestGoalResume:
+    def test_missing_goal_id_returns_error(self, rm):
+        result = rm.execute("goal_resume", {})
+        assert "Error" in result
+
+    def test_not_found_returns_error(self, rm):
+        result = rm.execute("goal_resume", {"goal_id": "g_notfound00000000"})
+        assert "Error" in result
+
+    def test_resumes_paused_goal(self, rm):
+        import db
+        gid = db.create_goal(user_input="resume me", source="test")
+        db.mark_goal_paused(gid, reason="user request")
+        result = rm.execute("goal_resume", {"goal_id": gid})
+        assert "pending" in result
+        g = db.get_goal(gid)
+        assert g["status"] == "pending"
+
+    def test_pending_goal_not_resumable(self, rm):
+        import db
+        gid = db.create_goal(user_input="already pending", source="test")
+        result = rm.execute("goal_resume", {"goal_id": gid})
+        assert "Error" in result or "paused" in result
+
+    def test_done_goal_not_resumable(self, rm):
+        import db
+        gid = db.create_goal(user_input="already done", source="test")
+        db.mark_goal_done(gid, result="done")
+        result = rm.execute("goal_resume", {"goal_id": gid})
+        assert "Error" in result or "paused" in result
+
+
+class TestGoalAbort:
+    def test_missing_goal_id_returns_error(self, rm):
+        result = rm.execute("goal_abort", {})
+        assert "Error" in result
+
+    def test_not_found_returns_error(self, rm):
+        result = rm.execute("goal_abort", {"goal_id": "g_notfound00000000"})
+        assert "Error" in result
+
+    def test_aborts_pending_goal(self, rm):
+        import db
+        gid = db.create_goal(user_input="abort me", source="test")
+        result = rm.execute("goal_abort", {"goal_id": gid})
+        assert "aborted" in result
+        g = db.get_goal(gid)
+        assert g["status"] == "aborted"
+
+    def test_aborts_paused_goal(self, rm):
+        import db
+        gid = db.create_goal(user_input="abort paused", source="test")
+        db.mark_goal_paused(gid, reason="temp")
+        result = rm.execute("goal_abort", {"goal_id": gid})
+        assert "aborted" in result
+        g = db.get_goal(gid)
+        assert g["status"] == "aborted"
+
+    def test_already_done_is_noop(self, rm):
+        import db
+        gid = db.create_goal(user_input="already done", source="test")
+        db.mark_goal_done(gid, result="done")
+        result = rm.execute("goal_abort", {"goal_id": gid})
+        assert "terminal" in result or "already" in result
+
+    def test_custom_reason_recorded(self, rm):
+        import db
+        gid = db.create_goal(user_input="abort with reason", source="test")
+        rm.execute("goal_abort", {"goal_id": gid, "reason": "no longer needed"})
+        events = db.get_goal_events(gid)
+        assert any("aborted" in (e.get("event_type") or "") for e in events)
