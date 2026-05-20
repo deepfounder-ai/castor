@@ -55,6 +55,12 @@ def fresh_server(qwe_temp_data_dir, monkeypatch):
     """Reload server so we get a fresh `_feed_cache` per test."""
     import importlib
     import sys
+    import pricing as _pricing
+    # Prevent the pricing background refresher from calling urllib.request.urlopen
+    # during the test. Without this, the refresher thread (started when server loads)
+    # immediately calls refresh_pricing() — which is intercepted by mock_urlopen and
+    # inflates its call count from 1 to 2, breaking test_endpoint_returns_items_on_first_call.
+    monkeypatch.setattr(_pricing, "refresh_pricing", lambda force=False: True)
     if "server" in sys.modules:
         importlib.reload(sys.modules["server"])
     import server
