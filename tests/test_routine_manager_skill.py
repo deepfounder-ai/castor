@@ -528,7 +528,8 @@ class TestRoutineDelete:
 
 class TestResolveIdOrName:
     def _insert(self, name="Resolve test", system=False):
-        import db, time
+        import db
+        import time
         conn = db._get_conn()
         conn.execute(
             "INSERT INTO scheduled_tasks (name, task, schedule, next_run, repeat) "
@@ -589,7 +590,8 @@ class TestResolveIdOrName:
         assert "multiple" in err.lower() or "specific" in err.lower()
 
     def test_resolve_system_task_blocked(self, rm, qwe_temp_data_dir):
-        import db, time
+        import db
+        import time
         db.kv_get("_init")
         conn = db._get_conn()
         conn.execute(
