@@ -24,6 +24,14 @@ def _goals_api_env():
     (tmp_root / ".migrated_v2").write_text("test skip\n")
     (tmp_root / ".migrated_from_qwe_qwe").write_text("test skip\n")
     _reload_core()
+    # Disable the inline goal worker BEFORE the TestClient lifespan boots.
+    # Otherwise the worker spawns inside the FastAPI app, polls SQLite for
+    # `pending` goals, and claims them within milliseconds of creation —
+    # which races with these HTTP tests that assert ``status == "pending"``
+    # right after `POST /api/goals`. Disabling here means `test_get_goal_
+    # returns_full_row` observes the row in its just-created state.
+    import db as _db
+    _db.kv_set("setting:worker_inline", "0")
     try:
         yield tmp_root
     finally:
