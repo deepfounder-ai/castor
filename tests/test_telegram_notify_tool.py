@@ -20,6 +20,15 @@ def fresh_tools(qwe_temp_data_dir, monkeypatch):
             importlib.reload(sys.modules[m])
         else:
             importlib.import_module(m)
+    # Explicitly trigger DB initialisation so that kv_set/kv_get calls in
+    # test bodies never hit "no such table: kv".  _apply_migrations() is
+    # lazy — it runs on the first _get_conn() call after a reload.  Without
+    # this, test-ordering differences between Python 3.11 and 3.12 on CI
+    # can leave _migrated=False long enough for the first kv_set to race
+    # ahead of the migration.  kv_get with a sentinel key is a no-op that
+    # safely provokes the migration before any test body runs.
+    import db as _db
+    _db.kv_get("_fresh_tools_init")
     return sys.modules["tools"]
 
 

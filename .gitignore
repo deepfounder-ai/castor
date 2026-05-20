@@ -42,5 +42,6 @@ skills/
 !skills/canvas.py
 !skills/skill_import.py
 !skills/skill_export.py
+!skills/routine_manager.py
 .claude/
 CLAUDE.md
