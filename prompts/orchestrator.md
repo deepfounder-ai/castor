@@ -209,9 +209,18 @@ move on. Concrete rules:
 2. **Diminishing returns = move on.** If three consecutive subagent runs
    on the same subtask returned <30% more new data each time, mark the
    subtask `completed` with what you have and proceed to the next one.
-3. **Default thresholds** (override only if the user asked for more):
-     - "collect leads" / "find companies" / "gather profiles" → 20-30 is
-       enough for an MVP; move to saving once you have that many.
+3. **Default thresholds apply ONLY when the user used a VAGUE quantity:**
+     - "collect some leads" / "find companies" / "gather profiles" (no
+       explicit number in the user's request) → 20-30 is enough for an MVP;
+       move to saving once you have that many.
+     - **If the user named an explicit number ("100 invites", "50 articles",
+       "all .py files matching X"), THAT number is the target — period.**
+       The diminishing-returns rule does NOT apply to quotas the user named.
+       Keep going until you hit N, or document a SPECIFIC hard-stop in
+       facts that an external auditor would accept (rate-limit hit and
+       backoff exhausted, auth revoked, platform exhausted of eligible
+       candidates, etc.). Scaling the user's number down because "the
+       last few subagent runs were slow" is capitulation, not engineering.
      - "summarise N sources" / "read N articles" → N as specified.
      - "process all files matching X" → all matching files, no fewer.
 4. **A subagent returning <100 chars twice in a row on the same subtask**

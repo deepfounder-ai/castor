@@ -251,13 +251,15 @@ def run_orchestrator(
                         "limit_sec": int(budget_seconds),
                     })
                     ctx.abort_event.set()
-            # USD spend check — re-read goals.cost_usd because it's updated
-            # incrementally by finalize_agent_run as subagent + orchestrator
-            # LLM calls complete.
+            # USD spend check — sum agent_runs.cost_usd for this goal_id.
+            # Migration 015 added the goal_id column so orchestrator +
+            # subagent rounds (TurnContext.goal_id is propagated through
+            # subagent.run) roll up cleanly. The previous read of
+            # `goals.cost_usd` was dead code — nothing writes to that
+            # column, so budget_usd never tripped on any goal in history.
             if budget_usd:
                 try:
-                    fresh = db.get_goal(goal_id) or {}
-                    spent = float(fresh.get("cost_usd") or 0.0)
+                    spent = db.get_goal_total_cost(goal_id)
                 except Exception:
                     spent = 0.0
                 if spent >= float(budget_usd):

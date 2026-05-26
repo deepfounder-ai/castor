@@ -104,3 +104,84 @@ def test_get_period_totals_filters_by_source(qwe_temp_data_dir):
     assert t_all["total_input_tokens"] == 350
     assert "by_source" in t_all
     assert t_all["by_source"]["synthesis"]["input_tokens"] == 50
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Migration 015: goal_id column on agent_runs + get_goal_total_cost helper.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_insert_agent_run_persists_goal_id(qwe_temp_data_dir):
+    """insert_agent_run accepts goal_id and writes it to the new column."""
+    import db
+    rid = db.insert_agent_run(
+        thread_id="t1", source="orchestrator", started_at=1000.0,
+        goal_id="g_test123",
+    )
+    row = db._get_conn().execute(
+        "SELECT goal_id FROM agent_runs WHERE id=?", (rid,),
+    ).fetchone()
+    assert row[0] == "g_test123"
+
+
+def test_insert_agent_run_goal_id_default_null(qwe_temp_data_dir):
+    """Non-goal runs (CLI, scheduler, web chat) keep goal_id NULL."""
+    import db
+    rid = db.insert_agent_run(thread_id="t1", source="web", started_at=1000.0)
+    row = db._get_conn().execute(
+        "SELECT goal_id FROM agent_runs WHERE id=?", (rid,),
+    ).fetchone()
+    assert row[0] is None
+
+
+def test_get_goal_total_cost_sums_priced_runs(qwe_temp_data_dir):
+    """get_goal_total_cost sums cost_usd across all runs tagged with this goal."""
+    import db
+    # Two runs tagged with the goal — should sum
+    r1 = db.insert_agent_run(
+        thread_id="t1", source="orchestrator", started_at=1000.0,
+        goal_id="g_alpha",
+    )
+    db.finalize_agent_run(r1, finished_at=1001.0, duration_ms=1000,
+                          status="ok", cost_usd=0.40)
+    r2 = db.insert_agent_run(
+        thread_id="t1", source="subagent_browser", started_at=1100.0,
+        goal_id="g_alpha",
+    )
+    db.finalize_agent_run(r2, finished_at=1101.0, duration_ms=1000,
+                          status="ok", cost_usd=1.50)
+    # An unrelated run on a different goal — must NOT count
+    r3 = db.insert_agent_run(
+        thread_id="t2", source="orchestrator", started_at=1200.0,
+        goal_id="g_beta",
+    )
+    db.finalize_agent_run(r3, finished_at=1201.0, duration_ms=1000,
+                          status="ok", cost_usd=99.0)
+    # A non-goal run — must NOT count
+    r4 = db.insert_agent_run(
+        thread_id="t1", source="web", started_at=1300.0,
+    )
+    db.finalize_agent_run(r4, finished_at=1301.0, duration_ms=1000,
+                          status="ok", cost_usd=2.0)
+
+    total = db.get_goal_total_cost("g_alpha")
+    assert total == pytest.approx(1.90, rel=1e-6)
+
+
+def test_get_goal_total_cost_unknown_goal_returns_zero(qwe_temp_data_dir):
+    """An unknown goal_id sums to 0.0 (NULL→0 by COALESCE)."""
+    import db
+    assert db.get_goal_total_cost("g_doesnotexist") == 0.0
+
+
+def test_get_goal_total_cost_null_costs_treated_as_zero(qwe_temp_data_dir):
+    """Runs with NULL cost_usd (unpriced models) sum to 0, never trip the cap."""
+    import db
+    rid = db.insert_agent_run(
+        thread_id="t1", source="orchestrator", started_at=1000.0,
+        goal_id="g_local_model",
+    )
+    db.finalize_agent_run(rid, finished_at=1001.0, duration_ms=1000,
+                          status="ok", cost_usd=None)
+    # Sum of a single NULL → 0.0 by COALESCE
+    assert db.get_goal_total_cost("g_local_model") == 0.0

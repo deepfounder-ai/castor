@@ -95,7 +95,15 @@ def test_wall_clock_budget_aborts_orchestrator(qwe_temp_data_dir, monkeypatch):
 
 
 def test_usd_budget_aborts_orchestrator(qwe_temp_data_dir, monkeypatch):
-    """A goal with budget_usd=0.001 stops when cost_usd creeps above the cap."""
+    """A goal with budget_usd=0.001 stops when summed agent_runs.cost_usd
+    crosses the cap.
+
+    Pre-migration-015: this test wrote ``goals.cost_usd`` directly to fake
+    the spend. That column was never actually populated by the runtime —
+    the budget check was reading dead storage. The fix sums agent_runs
+    rows tied to the goal via the new ``goal_id`` column, so the test
+    now inserts a real agent_run with cost_usd > budget.
+    """
     import db
     import orchestrator
     from turn_context import TurnContext
@@ -107,10 +115,21 @@ def test_usd_budget_aborts_orchestrator(qwe_temp_data_dir, monkeypatch):
     )
     conn = db._get_conn()
     conn.execute(
-        "UPDATE goals SET started_at=?, cost_usd=? WHERE id=?",
-        (time.time(), 0.01, goal_id),
+        "UPDATE goals SET started_at=? WHERE id=?",
+        (time.time(), goal_id),
     )
     conn.commit()
+    # Insert a priced agent_run tagged with the goal_id — this is what
+    # subagent + orchestrator rounds do in production. The budget check
+    # sums these, not the (always-zero) goals.cost_usd column.
+    run_id = db.insert_agent_run(
+        thread_id="t_dummy", source="orchestrator", started_at=time.time(),
+        goal_id=goal_id,
+    )
+    db.finalize_agent_run(
+        run_id, finished_at=time.time(), duration_ms=10,
+        status="ok", cost_usd=0.01,
+    )
 
     ctx = TurnContext(
         source="cli", goal_id=goal_id,
@@ -118,7 +137,7 @@ def test_usd_budget_aborts_orchestrator(qwe_temp_data_dir, monkeypatch):
     )
     orchestrator.run_orchestrator(goal_id, ctx=ctx)
 
-    # cost_usd (0.01) >> budget (0.001) so first round-callback aborts
+    # summed cost (0.01) >> budget (0.001) so first round-callback aborts
     assert ctx.abort_event.is_set()
     types = [e["event_type"] for e in db.get_goal_events(goal_id)]
     assert "budget_exceeded" in types

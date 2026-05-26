@@ -471,6 +471,9 @@ def run_loop(
             model=model,
             provider=_provider,
             resumed_from_run_id=(ctx.resumed_from_run_id if ctx else None),
+            # goal_id ties orchestrator + subagent runs back to the goal so
+            # budget_usd enforcement (orchestrator.py) can sum the spend.
+            goal_id=(ctx.goal_id if ctx else None),
         )
     except Exception as _ins_err:
         _log.warning(f"agent_runs INSERT failed (analytics disabled for this run): {_ins_err}")

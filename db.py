@@ -721,6 +721,7 @@ def insert_agent_run(
     provider: str | None = None,
     scheduled_at: float | None = None,
     resumed_from_run_id: int | None = None,
+    goal_id: str | None = None,
 ) -> int:
     """Insert a new run row. Returns the new id.
 
@@ -730,12 +731,18 @@ def insert_agent_run(
     on; piling up stale "interrupted" markers spam the resume banner and
     inflate the count chip in the threads list (we saw it reach 9 during
     a goal-runtime test session full of server restarts).
+
+    ``goal_id`` ties this run to a long-running goal so the orchestrator's
+    USD budget check can sum agent_runs by goal_id (migration 015). NULL
+    for non-goal runs (CLI / Telegram / Web chat / scheduler).
     """
     conn = _get_conn()
     cur = conn.execute(
         "INSERT INTO agent_runs (thread_id, cron_id, source, scheduled_at, "
-        " started_at, status, model, provider, resumed_from_run_id) VALUES (?,?,?,?,?,?,?,?,?)",
-        (thread_id, cron_id, source, scheduled_at, started_at, status, model, provider, resumed_from_run_id),
+        " started_at, status, model, provider, resumed_from_run_id, goal_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (thread_id, cron_id, source, scheduled_at, started_at, status, model,
+         provider, resumed_from_run_id, goal_id),
     )
     new_id = int(cur.lastrowid)
     # Auto-dismiss prior aborted runs on the same thread.
@@ -854,6 +861,25 @@ def get_thread_totals(thread_id: str) -> dict:
         "cost_usd": cost_usd,
         "run_count": run_count,
     }
+
+
+def get_goal_total_cost(goal_id: str) -> float:
+    """Sum agent_runs.cost_usd for the given goal_id.
+
+    Used by orchestrator.py's budget_usd enforcement loop. Returns 0.0 if
+    no priced runs exist yet (NULL cost rows treated as 0 — local/unknown-
+    price models simply can't trip the cap, by design).
+
+    This replaces the broken read of ``goals.cost_usd`` (which was never
+    written to). Migration 015 added the goal_id column on agent_runs so
+    subagent + orchestrator rounds tagged via ctx.goal_id roll up cleanly.
+    """
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0) FROM agent_runs WHERE goal_id=?",
+        (goal_id,),
+    ).fetchone()
+    return float(row[0] or 0.0)
 
 
 def get_period_totals(
