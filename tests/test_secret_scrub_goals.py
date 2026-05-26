@@ -67,6 +67,33 @@ def test_scrub_text_redacts_inline_credential():
     assert "sk_live_xyz" not in out
 
 
+def test_scrub_text_redacts_natural_language_form():
+    """Catches the dispatch-prompt pattern that leaked in goal4:
+    'Fill in the password field (#password) with: Qwerty446148044'.
+    The keyword and value are separated by descriptive words, not by
+    a direct ``:`` or ``=``."""
+    import secret_scrub
+    out, hit = secret_scrub.scrub_text(
+        "3. Fill in the password field (#password) with: Qwerty446148044\n4. Click"
+    )
+    assert hit is True
+    assert "Qwerty446148044" not in out
+
+
+def test_scrub_text_natural_language_doesnt_eat_innocent_text():
+    """Long unrelated text with the word 'password' in it shouldn't trip
+    the natural-language matcher — keep filler short."""
+    import secret_scrub
+    benign = (
+        "The password reset flow is documented in section 4. The user "
+        "is shown a banner. The implementation uses bcrypt."
+    )
+    out, _ = secret_scrub.scrub_text(benign)
+    # No value was named so nothing to redact; sentence stays intact.
+    assert "password reset flow" in out
+    assert "bcrypt" in out
+
+
 def test_scrub_text_idempotent():
     import secret_scrub
     s1, _ = secret_scrub.scrub_text("password: hunter2")
@@ -189,6 +216,70 @@ def test_db_save_checkpoint_scrubs_facts_snapshot(qwe_temp_data_dir):
     facts_str = json.dumps(cp.get("facts") or {})
     assert "Qwerty446148044" not in facts_str
     assert "Buenos Aires" in facts_str  # innocent fact preserved
+
+
+def test_db_save_checkpoint_scrubs_tool_call_arguments(qwe_temp_data_dir):
+    """The real leak in g_56532b01eb544616 was here: the orchestrator's
+    ``fact_save({"key": "linkedin_password", "value": "Qwerty446148044"})``
+    tool call had the password in the JSON-encoded ``arguments`` string
+    on the assistant message, NOT in ``content``. Checkpoint must scrub
+    that path too.
+    """
+    import db
+    import json as _json
+    goal_id = db.create_goal(user_input="t", source="cli")
+    db.save_checkpoint(
+        goal_id, round_num=1,
+        messages=[
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_xyz",
+                    "type": "function",
+                    "function": {
+                        "name": "fact_save",
+                        "arguments": _json.dumps({
+                            "key": "linkedin_password",
+                            "value": "Qwerty446148044",
+                        }),
+                    },
+                }],
+            },
+        ],
+    )
+    cp = db.load_latest_checkpoint(goal_id)
+    serialised = _json.dumps(cp["messages"])
+    assert "Qwerty446148044" not in serialised, (
+        "password leaked through tool_calls[].function.arguments"
+    )
+    assert "REDACTED" in serialised
+
+
+def test_db_save_checkpoint_tool_call_args_fallback_to_text_scrub(qwe_temp_data_dir):
+    """When tool_call arguments aren't valid JSON (rare provider quirk),
+    fallback text scrub still redacts known patterns."""
+    import db
+    import json as _json
+    goal_id = db.create_goal(user_input="t", source="cli")
+    db.save_checkpoint(
+        goal_id, round_num=1,
+        messages=[{
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call_x",
+                "type": "function",
+                "function": {
+                    "name": "shell",
+                    "arguments": "not valid json sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                },
+            }],
+        }],
+    )
+    cp = db.load_latest_checkpoint(goal_id)
+    serialised = _json.dumps(cp["messages"])
+    assert "sk-ant-api03" not in serialised
+    assert "REDACTED" in serialised
 
 
 def test_db_save_checkpoint_multimodal_content_scrubbed(qwe_temp_data_dir):

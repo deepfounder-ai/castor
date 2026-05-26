@@ -70,6 +70,26 @@ _INLINE_CRED_RE = re.compile(
     r"([^\s\"',;)\]}>]+)",
 )
 
+# Natural-language form: "password ... with: hunter2", "credential ... is
+# X", "use password X". Catches the dispatch-prompt pattern that leaked
+# in g_56532b01eb544616 ("Fill in the password field (#password) with:
+# Qwerty446148044"). The keyword and value can have 0-40 chars of filler
+# between them so prose like "fill in the password field with:" still
+# triggers, but a long unrelated paragraph that happens to mention
+# "password" does not.
+_NL_CRED_RE = re.compile(
+    r"(?i)\b("
+    r"password|passwd|pwd|api[_ -]?key|secret|access[_ -]?token|"
+    r"authorization|credential"
+    r")\b"
+    r"[^\n]{0,40}?"      # short filler — same line only
+    r"\b(?:with|is|=|:)\s*"
+    # Value: non-whitespace, no quotes, no JSON delimiters, no `:`/`=`/`/`
+    # so the value capture starts AFTER the separator instead of swallowing
+    # it (regression caught in test_scrub_text_redacts_natural_language_form).
+    r"([^\s\"',;)\]}>:=/]+)",
+)
+
 # Key-name heuristic — when a (key, value) pair has a key that *names*
 # itself as a secret, the value is treated as a secret no matter what
 # shape it has. Cases like the LinkedIn one in v0.23.x:
@@ -126,6 +146,22 @@ def scrub_text(text: str) -> tuple[str, bool]:
         if new_text != scrubbed:
             hit = True
             scrubbed = new_text
+
+    # Natural-language form (catches "password field with: <value>",
+    # "credential is X", etc.). Runs LAST so the more specific patterns
+    # above get first crack at the text.
+    def _nl_sub(m: re.Match[str]) -> str:
+        if m.group(2).startswith("[REDACTED"):
+            return m.group(0)
+        # Replace only the value, keep the surrounding context.
+        full = m.group(0)
+        val = m.group(2)
+        return full[: full.rfind(val)] + "[REDACTED]"
+
+    new_text, n = _NL_CRED_RE.subn(_nl_sub, scrubbed)
+    if n and new_text != scrubbed:
+        hit = True
+        scrubbed = new_text
 
     return scrubbed, hit
 

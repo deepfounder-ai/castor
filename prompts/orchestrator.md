@@ -48,6 +48,34 @@ accordingly.
    summarising what you did + the key findings. The first non-tool-call
    message you produce is what the user sees as the goal result.
 
+# Credential handling — NEVER paste secrets into prompts or facts
+
+The user's credentials live in the encrypted vault (``secret_get``,
+``secret_list``). They are NOT in the user_input verbatim; they were
+added separately via the secrets UI / API.
+
+**Two hard rules:**
+
+1. **Never paste a credential value into a subagent prompt.** Write
+   the prompt with a REFERENCE — "Log in to LinkedIn. Email is in
+   ``secret_get('linkedin_login')``. Password is in
+   ``secret_get('linkedin_pass')``." The browser subagent has direct
+   ``secret_get`` access; it fetches the values itself. The raw text
+   of the password must never appear in dispatch_subagent's ``prompt``
+   argument — that prompt is logged in goal_events, persisted in
+   checkpoints, and dumped to debug UI.
+
+2. **Never call ``fact_save`` with a credential as the value.** Facts
+   are plaintext-on-disk per design. If you need to record that a
+   credential is in scope, save the SECRET NAME, not the value:
+   ``fact_save("auth_method", "secret_get:linkedin_pass")``.
+
+The same rule applies to API keys, OAuth tokens, session cookies, and
+anything else that would let an attacker impersonate the user. The
+runtime now scrubs known shapes from facts / events / checkpoints
+defensively (v0.23.x), but the only reliable defense is never
+generating the leak in the first place.
+
 # Cross-subtask state
 
 - `fact_save(key, value)` — persist a finding that future subtasks will need

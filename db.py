@@ -1420,6 +1420,56 @@ def save_checkpoint(
                     else:
                         new_parts.append(part)
                 msg = {**msg, "content": new_parts}
+            # tool_calls[].function.arguments — this is where fact_save
+            # arguments live (JSON-encoded). The LinkedIn leak in
+            # g_56532b01eb544616 was here: ``fact_save({"key":
+            # "linkedin_password", "value": "Qwerty446148044"})`` — the
+            # password sat in the arguments string, not in content.
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                new_calls = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        new_calls.append(tc); continue
+                    fn = tc.get("function")
+                    if not isinstance(fn, dict):
+                        new_calls.append(tc); continue
+                    args_str = fn.get("arguments")
+                    fn_name = fn.get("name", "")
+                    if isinstance(args_str, str):
+                        try:
+                            args = json.loads(args_str)
+                        except (json.JSONDecodeError, ValueError):
+                            # Fallback: best-effort text scrub when not
+                            # parseable JSON (some providers send raw
+                            # text arguments).
+                            sa, _ = secret_scrub.scrub_text(args_str)
+                            fn = {**fn, "arguments": sa}
+                        else:
+                            if isinstance(args, dict):
+                                new_args = dict(args)
+                                # Structural special-case: fact_save's
+                                # ``{"key": "linkedin_password", "value":
+                                # "..."}`` shape. The ``value`` field
+                                # holds the secret; the ``key`` field
+                                # names it. Run scrub_fact with the
+                                # NAME from the ``key`` arg, not the
+                                # literal "value" param name.
+                                if fn_name == "fact_save" and isinstance(args.get("key"), str):
+                                    val = args.get("value")
+                                    if isinstance(val, str):
+                                        sv, _ = secret_scrub.scrub_fact(args["key"], val)
+                                        new_args["value"] = sv
+                                for k, v in args.items():
+                                    if k in ("key", "value") and fn_name == "fact_save":
+                                        continue  # already handled above
+                                    if isinstance(v, str):
+                                        sv, _ = secret_scrub.scrub_fact(k, v)
+                                        new_args[k] = sv
+                                fn = {**fn, "arguments": json.dumps(new_args)}
+                    tc = {**tc, "function": fn}
+                    new_calls.append(tc)
+                msg = {**msg, "tool_calls": new_calls}
         safe_messages.append(msg)
     safe_facts = {}
     for k, v in (facts or {}).items():

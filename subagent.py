@@ -66,6 +66,12 @@ SUBAGENT_TOOLS: dict[str, set[str]] = {
         "browser_screenshot", "browser_back", "browser_forward",
         "browser_reload",
         "fact_save", "fact_get",
+        # Direct vault access (v0.23.x) — closes the leak where the
+        # orchestrator fetched ``secret_get('linkedin_pass')`` itself
+        # and then PASTED the plaintext into the dispatch_subagent
+        # prompt. Now the subagent fetches the credential locally; the
+        # raw value never enters orchestrator messages or events.
+        "secret_get", "secret_list",
     },
     "scraper": {
         "browser_open", "browser_snapshot", "browser_eval",
