@@ -1156,7 +1156,15 @@ def set_goal_done_conditions(goal_id: str, criteria: list[dict]) -> None:
 
 
 def get_goal(goal_id: str) -> dict | None:
-    """Fetch a goal row by id. Returns dict or None."""
+    """Fetch a goal row by id. Returns dict or None.
+
+    ``cost_usd`` is computed live from ``agent_runs`` (sum over rows
+    with this goal_id) since the ``goals.cost_usd`` column is dead
+    storage — orchestrator + subagent rounds tag agent_runs but
+    nothing ever writes back to ``goals.cost_usd``. Migration 015
+    added the ``agent_runs.goal_id`` link that makes this query
+    accurate.
+    """
     conn = _get_conn()
     row = conn.execute(
         """SELECT id, thread_id, source, user_input, status, plan, result, error,
@@ -1178,7 +1186,7 @@ def get_goal(goal_id: str) -> dict | None:
         "error": row[7],
         "budget_usd": row[8],
         "budget_seconds": row[9],
-        "cost_usd": float(row[10] or 0.0),
+        "cost_usd": get_goal_total_cost(goal_id),
         "started_at": row[11],
         "finished_at": row[12],
         "created_at": row[13],
@@ -1207,10 +1215,19 @@ def list_goals(
         params.append(thread_id)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     params.append(int(limit))
+    # Single LEFT JOIN over agent_runs.goal_id avoids N+1 queries when
+    # the list endpoint backs the Goals UI. ``goals.cost_usd`` is dead
+    # storage (never written); the truth lives in agent_runs and
+    # rolls up via the goal_id FK added in migration 015.
     rows = conn.execute(
-        f"""SELECT id, thread_id, source, user_input, status, started_at,
-                   finished_at, created_at, cost_usd
-            FROM goals {where_sql} ORDER BY created_at DESC LIMIT ?""",
+        f"""SELECT g.id, g.thread_id, g.source, g.user_input, g.status,
+                   g.started_at, g.finished_at, g.created_at,
+                   COALESCE(SUM(a.cost_usd), 0.0) AS cost_usd_sum
+            FROM goals g
+            LEFT JOIN agent_runs a ON a.goal_id = g.id
+            {where_sql.replace('status=', 'g.status=').replace('thread_id=', 'g.thread_id=')}
+            GROUP BY g.id
+            ORDER BY g.created_at DESC LIMIT ?""",
         params,
     ).fetchall()
     return [

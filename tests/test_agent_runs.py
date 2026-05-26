@@ -185,3 +185,51 @@ def test_get_goal_total_cost_null_costs_treated_as_zero(qwe_temp_data_dir):
                           status="ok", cost_usd=None)
     # Sum of a single NULL → 0.0 by COALESCE
     assert db.get_goal_total_cost("g_local_model") == 0.0
+
+
+def test_get_goal_includes_live_cost_from_agent_runs(qwe_temp_data_dir):
+    """db.get_goal returns the live agent_runs sum, NOT the dead
+    goals.cost_usd column (which nothing in the runtime ever writes to).
+    Regression for the Goals UI showing $0 for every row."""
+    import db
+    goal_id = db.create_goal(user_input="x", source="cli")
+    r1 = db.insert_agent_run(
+        thread_id="t1", source="orchestrator", started_at=1000.0,
+        goal_id=goal_id,
+    )
+    db.finalize_agent_run(r1, finished_at=1001.0, duration_ms=1000,
+                          status="ok", cost_usd=1.25)
+    r2 = db.insert_agent_run(
+        thread_id="t1", source="subagent_browser", started_at=1100.0,
+        goal_id=goal_id,
+    )
+    db.finalize_agent_run(r2, finished_at=1101.0, duration_ms=1000,
+                          status="ok", cost_usd=0.75)
+    g = db.get_goal(goal_id)
+    assert g["cost_usd"] == pytest.approx(2.00, rel=1e-6)
+
+
+def test_list_goals_returns_live_cost_per_row(qwe_temp_data_dir):
+    """db.list_goals uses a LEFT JOIN to roll up costs; each row's
+    cost_usd is the sum of its agent_runs, not the dead column."""
+    import db
+    g1 = db.create_goal(user_input="alpha", source="cli")
+    g2 = db.create_goal(user_input="beta", source="cli")
+    r1 = db.insert_agent_run(
+        thread_id="t1", source="orch", started_at=1000.0, goal_id=g1,
+    )
+    db.finalize_agent_run(r1, finished_at=1001.0, duration_ms=10,
+                          status="ok", cost_usd=2.50)
+    r2 = db.insert_agent_run(
+        thread_id="t2", source="orch", started_at=1100.0, goal_id=g2,
+    )
+    db.finalize_agent_run(r2, finished_at=1101.0, duration_ms=10,
+                          status="ok", cost_usd=0.05)
+    # Unrelated non-goal run — must NOT leak into either total
+    r3 = db.insert_agent_run(thread_id="t3", source="web", started_at=1200.0)
+    db.finalize_agent_run(r3, finished_at=1201.0, duration_ms=10,
+                          status="ok", cost_usd=10.0)
+
+    listed = {g["id"]: g["cost_usd"] for g in db.list_goals()}
+    assert listed[g1] == pytest.approx(2.50, rel=1e-6)
+    assert listed[g2] == pytest.approx(0.05, rel=1e-6)
