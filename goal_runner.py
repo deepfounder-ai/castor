@@ -48,6 +48,50 @@ _log = logger.get("goal_runner")
 MAX_GATE_ATTEMPTS = 3
 
 
+def _classify_provider_error(exc: Exception) -> str | None:
+    """Return a short ``provider_*`` reason if ``exc`` looks transient.
+
+    A goal that crashes because the LLM provider rejected the request
+    (402 out of credits, 429 rate limit, 5xx upstream blip) should be
+    marked ``paused`` so the user can top up / wait and resume from
+    the latest checkpoint — NOT ``failed``, which is the terminal
+    state for "the work itself didn't work."
+
+    We pattern-match on:
+      1. ``status_code`` attribute (openai / anthropic SDKs expose it)
+      2. The numeric code embedded in the string repr (covers the
+         OpenRouter-via-openai-compat case where the SDK wraps the
+         upstream response and the user-facing error is a string
+         like ``APIStatusError: Error code: 402 - {...}``).
+
+    Returns one of ``provider_billing_exhausted`` / ``provider_rate_limited``
+    / ``provider_unavailable`` / ``None`` (not a provider error).
+    """
+    import re as _re
+    status: int | None = None
+    for attr in ("status_code", "code", "status", "http_status"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, int):
+            status = v
+            break
+        if isinstance(v, str) and v.isdigit():
+            status = int(v)
+            break
+    if status is None:
+        m = _re.search(r"Error code:\s*(\d{3})\b", str(exc))
+        if m:
+            status = int(m.group(1))
+    if status is None:
+        return None
+    if status == 402:
+        return "provider_billing_exhausted"
+    if status == 429:
+        return "provider_rate_limited"
+    if 500 <= status <= 599:
+        return "provider_unavailable"
+    return None
+
+
 def _gate_max_attempts() -> int:
     """Resolve the gate cap from config, fall back to module default.
 
@@ -150,6 +194,21 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
                 db.mark_goal_paused(goal_id, reason="worker_cancelled")
                 raise
             except Exception as e:
+                # Provider-side transient failures (out of credits, rate
+                # limited, upstream 5xx) are NOT goal failures — user can
+                # top up / wait and resume from the latest checkpoint. We
+                # observed g_56532b01eb544616 fail at 5/7 subtasks because
+                # OpenRouter returned 402 (balance exhausted) inside an
+                # LLM round, and the bare Exception catch marked the goal
+                # as ``failed`` (terminal). Now we classify and pause.
+                kind = _classify_provider_error(e)
+                if kind:
+                    _log.warning(
+                        f"goal {goal_id} hit transient provider error ({kind}); "
+                        f"pausing for resume: {e}"
+                    )
+                    db.mark_goal_paused(goal_id, reason=kind)
+                    return
                 _log.exception(f"goal {goal_id} crashed: {e}")
                 db.mark_goal_failed(goal_id, error=f"{type(e).__name__}: {e}")
                 return
