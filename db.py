@@ -1393,16 +1393,50 @@ def save_checkpoint(
     plan: dict | None = None,
     facts: dict | None = None,
 ) -> None:
-    """Persist orchestrator state. Keeps only the latest CHECKPOINT_RETENTION."""
-    blob = gzip.compress(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+    """Persist orchestrator state. Keeps only the latest CHECKPOINT_RETENTION.
+
+    Each message's ``content`` is scrubbed for secrets before gzip
+    (v0.23.x). The leak in g_56532b01eb544616 happened because the first
+    login subagent's prompt embedded the plaintext credentials — every
+    subsequent checkpoint then carried the same gzipped blob with the
+    password in it. Scrubbing here ensures resumed runs (and audit dumps
+    of the messages_blob) don't perpetuate the leak.
+    """
+    import secret_scrub
+    safe_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, str):
+                safe_content, _ = secret_scrub.scrub_text(content)
+                msg = {**msg, "content": safe_content}
+            elif isinstance(content, list):
+                # Multimodal content blocks (image_url + text parts).
+                new_parts = []
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        scrubbed_text, _ = secret_scrub.scrub_text(part["text"])
+                        new_parts.append({**part, "text": scrubbed_text})
+                    else:
+                        new_parts.append(part)
+                msg = {**msg, "content": new_parts}
+        safe_messages.append(msg)
+    safe_facts = {}
+    for k, v in (facts or {}).items():
+        if isinstance(v, str):
+            sv, _ = secret_scrub.scrub_fact(k, v)
+            safe_facts[k] = sv
+        else:
+            safe_facts[k] = v
+    blob = gzip.compress(json.dumps(safe_messages, ensure_ascii=False).encode("utf-8"))
     if len(blob) > MAX_CHECKPOINT_BLOB_BYTES:
         # Truncate oldest non-system messages to fit; never drop the system prompt.
         _log.warning(
             f"checkpoint blob > {MAX_CHECKPOINT_BLOB_BYTES} bytes for goal {goal_id} "
             f"round {round_num}; truncating to fit"
         )
-        messages = _truncate_messages_to_fit(messages, MAX_CHECKPOINT_BLOB_BYTES)
-        blob = gzip.compress(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+        safe_messages = _truncate_messages_to_fit(safe_messages, MAX_CHECKPOINT_BLOB_BYTES)
+        blob = gzip.compress(json.dumps(safe_messages, ensure_ascii=False).encode("utf-8"))
 
     conn = _get_conn()
     conn.execute(
@@ -1416,7 +1450,7 @@ def save_checkpoint(
             int(subtask_index),
             blob,
             json.dumps(plan or {}),
-            json.dumps(facts or {}),
+            json.dumps(safe_facts),
             time.time(),
         ),
     )
@@ -1479,13 +1513,24 @@ def _truncate_messages_to_fit(messages: list[dict], byte_limit: int) -> list[dic
 
 
 def log_goal_event(goal_id: str, event_type: str, payload: dict | None = None) -> None:
-    """Append a row to goal_events. Never raises — telemetry shouldn't break work."""
+    """Append a row to goal_events. Never raises — telemetry shouldn't break work.
+
+    Payload is scrubbed for secrets (v0.23.x): the JSON-serialised body
+    passes through :func:`secret_scrub.scrub_text` so API keys / JWTs /
+    plain passwords in subagent prompts and remediation messages don't
+    persist to disk. The orchestrator's ``subagent_dispatched`` event
+    used to carry the full prompt with credentials inlined — that's
+    where the leak in g_56532b01eb544616 originated.
+    """
     try:
+        import secret_scrub
+        raw_json = json.dumps(payload or {})
+        safe_json, _ = secret_scrub.scrub_text(raw_json)
         conn = _get_conn()
         conn.execute(
             "INSERT INTO goal_events (goal_id, timestamp, event_type, payload) "
             "VALUES (?, ?, ?, ?)",
-            (goal_id, time.time(), event_type, json.dumps(payload or {})),
+            (goal_id, time.time(), event_type, safe_json),
         )
         conn.commit()
     except Exception:
@@ -1775,7 +1820,22 @@ def goal_plan_is_complete(goal_id: str) -> bool:
 
 def fact_save(goal_id: str, key: str, value: str,
               source_subtask_id: str | None = None) -> None:
-    """Upsert a structured fact for this goal. Keys are unique per goal."""
+    """Upsert a structured fact for this goal. Keys are unique per goal.
+
+    Secrets are scrubbed BEFORE insert (v0.23.x):
+      * If the key name self-identifies as a secret
+        (``password``, ``api_key``, ``access_token``, ``private_key`` ...)
+        the value is fully replaced with ``[REDACTED:keyed_as_secret]``.
+      * Otherwise the value runs through the shared
+        :func:`secret_scrub.scrub_text` pattern set so embedded API keys
+        / JWTs / dotenv lines get redacted before they hit disk.
+
+    The model can still see / re-derive a credential via the encrypted
+    ``secrets`` table (``secret_get`` skill) — but it cannot leak one
+    through ``goal_facts`` plaintext. Closes the gap that exposed
+    ``linkedin_password`` in g_56532b01eb544616.
+    """
+    import secret_scrub
     now = time.time()
     conn = _get_conn()
     # snake_case-ish keys to keep the orchestrator's prompt tidy. Reject
@@ -1783,6 +1843,7 @@ def fact_save(goal_id: str, key: str, value: str,
     # rather error than store unreadable rows.
     if not key or not key.strip() or "\n" in key:
         raise ValueError(f"invalid fact key: {key!r}")
+    safe_value, _scrubbed = secret_scrub.scrub_fact(key, value if value is not None else "")
     conn.execute(
         """INSERT INTO goal_facts (goal_id, key, value, source_subtask_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?)
@@ -1790,7 +1851,7 @@ def fact_save(goal_id: str, key: str, value: str,
                value=excluded.value,
                source_subtask_id=excluded.source_subtask_id,
                updated_at=excluded.updated_at""",
-        (goal_id, key.strip(), value, source_subtask_id, now, now),
+        (goal_id, key.strip(), safe_value, source_subtask_id, now, now),
     )
     conn.commit()
 
