@@ -203,11 +203,24 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
                 # as ``failed`` (terminal). Now we classify and pause.
                 kind = _classify_provider_error(e)
                 if kind:
+                    # Per-kind backoff so the worker doesn't reclaim the
+                    # paused goal 5s later and re-burn the same 402 in a
+                    # tight loop. The user (or operator) sees the goal
+                    # as ``paused`` with a ``retry_after_sec`` in the
+                    # event log and can either wait for the cooldown
+                    # to expire or top up / fix the issue + manually
+                    # resume sooner.
+                    _PROVIDER_BACKOFF = {
+                        "provider_billing_exhausted": 300,  # 5 min — give user time to top up
+                        "provider_rate_limited": 60,        # window typically resets in ~60s
+                        "provider_unavailable": 30,         # 5xx blips usually short
+                    }
+                    backoff = _PROVIDER_BACKOFF.get(kind, 60)
                     _log.warning(
                         f"goal {goal_id} hit transient provider error ({kind}); "
-                        f"pausing for resume: {e}"
+                        f"pausing for {backoff}s before retry: {e}"
                     )
-                    db.mark_goal_paused(goal_id, reason=kind)
+                    db.mark_goal_paused(goal_id, reason=kind, retry_after_sec=backoff)
                     return
                 _log.exception(f"goal {goal_id} crashed: {e}")
                 db.mark_goal_failed(goal_id, error=f"{type(e).__name__}: {e}")

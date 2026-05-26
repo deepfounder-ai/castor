@@ -1366,17 +1366,46 @@ def mark_goal_failed(goal_id: str, *, error: str) -> None:
     log_goal_event(goal_id, "error", {"error": error[:500]})
 
 
-def mark_goal_paused(goal_id: str, *, reason: str) -> None:
-    """Pause a goal. Worker releases the lease so any worker can resume."""
+def mark_goal_paused(
+    goal_id: str, *, reason: str, retry_after_sec: int | None = None,
+) -> None:
+    """Pause a goal. Worker releases the lease so any worker can resume.
+
+    ``retry_after_sec``: when set, the goal is invisible to
+    ``claim_next_goal`` until that many seconds elapse. Implemented by
+    setting ``lease_expires_at`` to the deadline — the claim query
+    already filters paused rows by ``lease_expires_at IS NULL OR < now``,
+    so a future deadline acts as a hold-off. Semantic mild abuse
+    (``lease_expires_at`` originally meant "current worker's lease
+    deadline"), but for status='paused' there's no worker so the column
+    is otherwise unused, and reusing it avoids a schema migration.
+
+    Without backoff, transient provider failures (402 OpenRouter out of
+    credits, 429 rate limit) cause a thrash loop: pause → reclaim 5s
+    later → 402 again → pause → reclaim → ... The backoff buys the
+    user time to top up / lets the rate-limit window expire.
+    """
     conn = _get_conn()
-    conn.execute(
-        """UPDATE goals SET status='paused',
-                            worker_id=NULL, lease_expires_at=NULL
-           WHERE id=?""",
-        (goal_id,),
-    )
+    if retry_after_sec and retry_after_sec > 0:
+        deadline = time.time() + float(retry_after_sec)
+        conn.execute(
+            """UPDATE goals SET status='paused',
+                                worker_id=NULL, lease_expires_at=?
+               WHERE id=?""",
+            (deadline, goal_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE goals SET status='paused',
+                                worker_id=NULL, lease_expires_at=NULL
+               WHERE id=?""",
+            (goal_id,),
+        )
     conn.commit()
-    log_goal_event(goal_id, "paused", {"reason": reason})
+    payload = {"reason": reason}
+    if retry_after_sec:
+        payload["retry_after_sec"] = int(retry_after_sec)
+    log_goal_event(goal_id, "paused", payload)
 
 
 def mark_goal_aborted(goal_id: str, *, reason: str = "user_aborted") -> None:

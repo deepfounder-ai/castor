@@ -131,3 +131,83 @@ def test_goal_failed_on_real_runtime_error(qwe_temp_data_dir, monkeypatch):
     g = db.get_goal(goal_id)
     assert g["status"] == "failed"
     assert "RuntimeError" in (g.get("error") or "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backoff: paused goals are NOT immediately re-claimable after a
+# transient provider failure.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_pause_with_backoff_blocks_immediate_reclaim(qwe_temp_data_dir):
+    """A goal paused with retry_after_sec is invisible to claim_next_goal
+    until the cooldown elapses. Without this, a worker on a 5s poll
+    cycle re-claims and re-burns the same 402 in an infinite tight loop."""
+    import db
+    goal_id = db.create_goal(user_input="t", source="cli")
+    # Pause with 300s cooldown (the production billing-exhausted value).
+    db.mark_goal_paused(goal_id, reason="provider_billing_exhausted",
+                         retry_after_sec=300)
+    # Immediate claim attempt — should return None (or another goal, not THIS one).
+    claimed = db.claim_next_goal("worker_test", lease_sec=60)
+    assert claimed != goal_id, (
+        "paused-with-backoff goal must NOT be claimable during cooldown"
+    )
+
+
+def test_pause_without_backoff_immediately_reclaimable(qwe_temp_data_dir):
+    """The pre-existing pause path (worker_shutdown, user pause) has no
+    backoff — the goal is reclaimable immediately, same as before."""
+    import db
+    goal_id = db.create_goal(user_input="t", source="cli")
+    db.mark_goal_paused(goal_id, reason="worker_shutdown")
+    claimed = db.claim_next_goal("worker_test", lease_sec=60)
+    assert claimed == goal_id
+
+
+def test_pause_backoff_expires(qwe_temp_data_dir):
+    """After the cooldown elapses (simulated by rewriting lease_expires_at
+    to the past), the goal becomes claimable again."""
+    import db
+    import time
+    goal_id = db.create_goal(user_input="t", source="cli")
+    db.mark_goal_paused(goal_id, reason="provider_rate_limited",
+                         retry_after_sec=60)
+    # Time-travel: backdate the deadline so the cooldown has already passed.
+    db._get_conn().execute(
+        "UPDATE goals SET lease_expires_at=? WHERE id=?",
+        (time.time() - 1, goal_id),
+    )
+    db._get_conn().commit()
+    claimed = db.claim_next_goal("worker_test", lease_sec=60)
+    assert claimed == goal_id
+
+
+def test_provider_402_pause_sets_300s_backoff(qwe_temp_data_dir, monkeypatch):
+    """End-to-end: 402 from orchestrator → paused with 300s cooldown."""
+    import db
+    import orchestrator
+    import time
+
+    def _fake_orch(**kw):
+        raise _MockSDKError("Error code: 402", status_code=402)
+
+    monkeypatch.setattr(orchestrator, "run_orchestrator", _fake_orch)
+    goal_id = db.create_goal(user_input="t", source="cli")
+
+    async def _go():
+        await goal_runner.run(goal_id, asyncio.Event())
+    asyncio.run(_go())
+
+    g = db.get_goal(goal_id)
+    assert g["status"] == "paused"
+    # lease_expires_at should be ~ now+300 (give it 10s wiggle room for
+    # the test execution duration).
+    deadline = db._get_conn().execute(
+        "SELECT lease_expires_at FROM goals WHERE id=?", (goal_id,),
+    ).fetchone()[0]
+    now = time.time()
+    assert deadline is not None
+    assert 285 <= (deadline - now) <= 305, (
+        f"expected ~300s cooldown, got {deadline - now:.0f}s"
+    )
