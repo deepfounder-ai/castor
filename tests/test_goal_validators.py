@@ -108,6 +108,41 @@ def test_files_exist_absolute_path(workspace, tmp_path):
     assert passed is True
 
 
+def test_files_exist_tilde_path_expands_home(workspace, tmp_path, monkeypatch):
+    """Tilde-prefixed paths must expand $HOME before the absolute check.
+
+    Regression for the goal that wrote ``~/.castor/workspace/foo.txt`` —
+    pre-fix, ``_resolve`` left ``~`` unexpanded, treated the path as
+    relative, and prepended <workspace_root>, producing the bogus
+    ``<workspace>/~/.castor/...`` lookup. With ``$HOME=tmp_path`` we get
+    a real on-disk file at ``tmp_path/myreport.txt`` that the validator
+    must find via the tilde form.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "myreport.txt").write_text("ok")
+    crit = {
+        "kind": "files_exist",
+        "spec": {"paths": ["~/myreport.txt"]},
+    }
+    passed, _ = goal_validators.run_validator(crit)
+    assert passed is True
+
+
+def test_regex_in_file_tilde_path_expands_home(workspace, tmp_path, monkeypatch):
+    """Same tilde-expansion pin for ``regex_in_file``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "log.txt").write_text("Total invites sent: 106\n")
+    crit = {
+        "kind": "regex_in_file",
+        "spec": {
+            "path": "~/log.txt",
+            "pattern": r"Total invites sent:\s+10[0-9]",
+        },
+    }
+    passed, remediation = goal_validators.run_validator(crit)
+    assert passed is True, remediation
+
+
 def test_files_exist_empty_paths_is_malformed(workspace):
     with pytest.raises(ValueError):
         goal_validators.validate_criterion(

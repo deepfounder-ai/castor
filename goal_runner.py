@@ -179,6 +179,12 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
 
             failures: list[tuple[str, str]] = []
             for st in subtasks:
+                # Skipped subtasks are intentionally not done (e.g. the
+                # orchestrator exceeded the target early and skipped a
+                # remaining batch).  Don't let their unfulfilled
+                # done_condition block the gate.
+                if st.get("status") == "skipped":
+                    continue
                 cond = st.get("done_condition")
                 if not cond:
                     # Be defensive — older plans / agent-created plans may not

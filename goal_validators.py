@@ -62,8 +62,17 @@ def _workspace_root() -> Path:
 
 
 def _resolve(rel_or_abs: str) -> Path:
-    """Resolve a path argument: absolute → as-is, relative → workspace-anchored."""
-    p = Path(rel_or_abs)
+    """Resolve a path argument: absolute → as-is, relative → workspace-anchored.
+
+    Expands ``~`` BEFORE the absolute-vs-relative check.  Without this,
+    a perfectly normal done_condition like
+    ``{"path": "~/.castor/workspace/foo.txt"}`` would look up
+    ``<workspace>/~/.castor/workspace/foo.txt`` (because ``~/...`` is not
+    an absolute Path) — a path that never exists, so every regex/files
+    check would falsely fail with "file does not exist."  Mirrors the
+    correct pattern in ``tools._resolve_path``.
+    """
+    p = Path(rel_or_abs).expanduser()
     if p.is_absolute():
         return p
     return _workspace_root() / p

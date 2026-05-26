@@ -220,3 +220,84 @@ def test_empty_plan_with_goal_level_done_conditions_still_runs_gate(
     assert "acceptance_gate_exhausted" in (g.get("error") or ""), (
         f"should be gate exhaustion, not empty-plan; got {g.get('error')!r}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Fix 4: skipped subtasks must not block the acceptance gate
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_skipped_subtask_does_not_block_gate(qwe_temp_data_dir, monkeypatch):
+    """Orchestrator marks a subtask 'skipped' (e.g. target exceeded early).
+    The gate must ignore its unfulfilled done_condition — otherwise a
+    goal that completed its objective is rejected because a redundant
+    batch wasn't executed (observed: g_f625be68c733482c, 106 invites
+    sent but gate failed on the skipped batch 6)."""
+    import db
+    import goal_runner
+    import orchestrator
+
+    goal_id = db.create_goal(user_input="send 100 invites", source="cli")
+    # Create plan with 3 subtasks: 2 completed, 1 skipped.
+    db.set_goal_plan(goal_id, [
+        {
+            "title": "Batch 1",
+            "description": "Send 50 invites",
+            "done_condition": {
+                "kind": "shell_returns_zero",
+                "spec": {"cmd": "true"},
+            },
+        },
+        {
+            "title": "Batch 2",
+            "description": "Send 60 invites",
+            "done_condition": {
+                "kind": "shell_returns_zero",
+                "spec": {"cmd": "true"},
+            },
+        },
+        {
+            "title": "Batch 3 (redundant)",
+            "description": "Not needed — target exceeded",
+            "done_condition": {
+                "kind": "shell_returns_zero",
+                "spec": {"cmd": "false"},  # would FAIL if checked
+            },
+        },
+    ])
+    db.update_subtask(goal_id, "st_1", status="completed",
+                      result_summary="50 sent")
+    db.update_subtask(goal_id, "st_2", status="completed",
+                      result_summary="60 sent, target exceeded")
+    db.update_subtask(goal_id, "st_3", status="skipped",
+                      result_summary="Not needed")
+
+    call_count = 0
+
+    def _fake_orch(*, goal_id, ctx, system_notes=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        return {
+            "reply": "All done, 110 invites sent.",
+            "rounds": 1,
+            "tools_used": [],
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+
+    monkeypatch.setattr(orchestrator, "run_orchestrator", _fake_orch)
+
+    async def _go():
+        shutdown = asyncio.Event()
+        await goal_runner.run(goal_id, shutdown)
+
+    asyncio.run(_go())
+
+    g = db.get_goal(goal_id)
+    assert g["status"] == "done", (
+        f"goal should be done (skipped subtask must not block gate); "
+        f"got {g['status']!r}, error={g.get('error')!r}"
+    )
+    # Orchestrator only called once — gate passes on first attempt.
+    assert call_count == 1
