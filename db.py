@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 import config
 import logger
+import secret_scrub
 
 _log = logger.get("db")
 
@@ -1448,7 +1449,6 @@ def save_checkpoint(
     password in it. Scrubbing here ensures resumed runs (and audit dumps
     of the messages_blob) don't perpetuate the leak.
     """
-    import secret_scrub
     safe_messages = []
     for msg in messages:
         if isinstance(msg, dict):
@@ -1619,7 +1619,6 @@ def log_goal_event(goal_id: str, event_type: str, payload: dict | None = None) -
     where the leak in g_56532b01eb544616 originated.
     """
     try:
-        import secret_scrub
         raw_json = json.dumps(payload or {})
         safe_json, _ = secret_scrub.scrub_text(raw_json)
         conn = _get_conn()
@@ -1809,16 +1808,16 @@ def update_subtask(
         effective_status = status
         if status == "completed":
             import goal_validators  # local import — workstream-A module
-            import config as _config  # local — avoid module-load circular
             criterion = st.get("done_condition")
             # Per-goal workspace anchor — symmetric with goal_runner's
             # gate. Without this the validator looks at the SHARED
             # workspace while the orchestrator's writes landed under
             # workspace/goals/<gid>/, so every "completed" call would
             # be rejected ("file does not exist") even when the work
-            # was actually done.
+            # was actually done. ``config`` is imported at module top —
+            # no alias rebind needed (CLAUDE.md anti-pattern).
             try:
-                ws_root = _config.goal_workspace(goal_id)
+                ws_root = config.goal_workspace(goal_id)
             except Exception:
                 ws_root = None
             passed, remediation = goal_validators.run_validator(
@@ -1931,7 +1930,6 @@ def fact_save(goal_id: str, key: str, value: str,
     through ``goal_facts`` plaintext. Closes the gap that exposed
     ``linkedin_password`` in g_56532b01eb544616.
     """
-    import secret_scrub
     now = time.time()
     conn = _get_conn()
     # snake_case-ish keys to keep the orchestrator's prompt tidy. Reject
@@ -2015,6 +2013,16 @@ def attach_goal_output(
     Validation is light here (kind whitelist, non-empty title/value); the
     orchestrator-side tool wrapper does the heavier per-kind checks
     (path-traversal guard for files, scheme check for links).
+
+    Secret scrubbing (v0.23.x): the ``value`` field for ``kind=report``
+    is free-form markdown (up to 200 KB) and ``kind=link`` carries a
+    URL — both can embed credentials a careless orchestrator drop into
+    the deliverable.  Parallel to the scrub layer added to
+    ``fact_save`` / ``log_goal_event`` / ``save_checkpoint``; without
+    it ``goal_outputs`` becomes the unprotected fourth storage path.
+    File paths (``kind=file``) also pass through (paths rarely embed
+    secrets, but a query-string with an API token would be caught).
+    Title is also scrubbed defensively.
     """
     if kind not in GOAL_OUTPUT_KINDS:
         raise ValueError(f"invalid output kind {kind!r}; want one of {GOAL_OUTPUT_KINDS}")
@@ -2022,11 +2030,13 @@ def attach_goal_output(
         raise ValueError("output title cannot be empty")
     if not value or not value.strip():
         raise ValueError("output value cannot be empty")
+    safe_value, _ = secret_scrub.scrub_text(value)
+    safe_title, _ = secret_scrub.scrub_text(title.strip())
     conn = _get_conn()
     cur = conn.execute(
         """INSERT INTO goal_outputs (goal_id, kind, title, value, meta, created_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (goal_id, kind, title.strip(), value, json.dumps(meta or {}), time.time()),
+        (goal_id, kind, safe_title, safe_value, json.dumps(meta or {}), time.time()),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -2137,9 +2147,8 @@ def auto_attach_workspace_outputs(
     Never raises — best-effort. Logs and continues on filesystem errors.
     """
     import os
-    import config as _config
 
-    root = workspace_root or os.path.join(_config.DATA_DIR, "workspace")
+    root = workspace_root or os.path.join(config.DATA_DIR, "workspace")
     if not os.path.isdir(root):
         return []
 

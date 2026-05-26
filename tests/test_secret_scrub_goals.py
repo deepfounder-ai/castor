@@ -282,6 +282,47 @@ def test_db_save_checkpoint_tool_call_args_fallback_to_text_scrub(qwe_temp_data_
     assert "REDACTED" in serialised
 
 
+def test_db_attach_goal_output_scrubs_report_value(qwe_temp_data_dir):
+    """``goal_outputs.value`` is the 4th storage path the orchestrator can
+    leak through (after facts/events/checkpoints). A ``kind=report`` blob
+    is free-form markdown — a careless orchestrator can drop an API key
+    in the synthesis report; scrub it on insert."""
+    import db
+    goal_id = db.create_goal(user_input="t", source="cli")
+    out_id = db.attach_goal_output(
+        goal_id,
+        kind="report",
+        title="Drayage research summary",
+        value=(
+            "# Findings\n\n"
+            "Spent sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA on the synthesis pass.\n"
+            "Total 100 invites sent."
+        ),
+    )
+    outs = db.get_goal_outputs(goal_id)
+    match = next(o for o in outs if o["id"] == out_id)
+    assert "sk-ant-api03" not in match["value"]
+    assert "[REDACTED:anthropic_key]" in match["value"]
+    # Innocent prose preserved
+    assert "100 invites sent" in match["value"]
+
+
+def test_db_attach_goal_output_scrubs_link_with_token(qwe_temp_data_dir):
+    """A ``kind=link`` URL with an API token in the query string still
+    leaks unless we scrub. Test with an openai-key shape embedded."""
+    import db
+    goal_id = db.create_goal(user_input="t", source="cli")
+    db.attach_goal_output(
+        goal_id, kind="link", title="API result",
+        value="https://example.com/?api_key=sk-proj-AAAAAAAAAAAAAAAAAAAA&q=test",
+    )
+    outs = db.get_goal_outputs(goal_id)
+    stored = outs[-1]["value"]
+    # Note: scrub_text catches the sk-proj-... shape via the generic sk-
+    # OpenAI pattern. The URL prefix is preserved.
+    assert "sk-proj-AAAAAAAAAAAAAAAAAAAA" not in stored
+
+
 def test_db_save_checkpoint_multimodal_content_scrubbed(qwe_temp_data_dir):
     """Multimodal content (list of {type, text/image_url} parts) — text scrubbed."""
     import db
