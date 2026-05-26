@@ -43,6 +43,30 @@ USER_SKILLS_DIR = DATA_DIR / "skills"
 USER_SKILLS_DIR.mkdir(exist_ok=True)
 WORKSPACE_DIR = DATA_DIR / "workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
+# Per-goal workspaces live under workspace/goals/<goal_id>/. Created lazily
+# by goal_runner.run on first goal claim; survive after the goal terminates
+# so users can audit artifacts and so goal_outputs paths stay valid.
+GOAL_WORKSPACES_DIR = WORKSPACE_DIR / "goals"
+GOAL_WORKSPACES_DIR.mkdir(exist_ok=True)
+
+
+def goal_workspace(goal_id: str) -> Path:
+    """Return ``~/.castor/workspace/goals/<goal_id>/``, creating it if missing.
+
+    Each goal runs in its own workspace dir so the orchestrator doesn't
+    inherit hundreds of stale files from prior goals (the failure mode
+    observed in g_1043a97d08d342ce and g_bd9d9285ad8b4548 — the model
+    burned 60-80 LLM rounds shell-inspecting prior goals' CSVs/screenshots
+    before writing a single byte of its own work).
+
+    Non-goal sources (CLI, Telegram, Web chat, scheduler) keep using the
+    flat ``WORKSPACE_DIR`` — only goal contexts redirect here.
+    """
+    if not goal_id:
+        raise ValueError("goal_id must be non-empty")
+    d = GOAL_WORKSPACES_DIR / goal_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 PRESETS_DIR = DATA_DIR / "presets"
 PRESETS_DIR.mkdir(exist_ok=True)
 

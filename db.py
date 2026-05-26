@@ -1668,8 +1668,21 @@ def update_subtask(
         effective_status = status
         if status == "completed":
             import goal_validators  # local import — workstream-A module
+            import config as _config  # local — avoid module-load circular
             criterion = st.get("done_condition")
-            passed, remediation = goal_validators.run_validator(criterion)
+            # Per-goal workspace anchor — symmetric with goal_runner's
+            # gate. Without this the validator looks at the SHARED
+            # workspace while the orchestrator's writes landed under
+            # workspace/goals/<gid>/, so every "completed" call would
+            # be rejected ("file does not exist") even when the work
+            # was actually done.
+            try:
+                ws_root = _config.goal_workspace(goal_id)
+            except Exception:
+                ws_root = None
+            passed, remediation = goal_validators.run_validator(
+                criterion, workspace_root=ws_root,
+            )
             if passed:
                 st["validation_passed"] = True
                 st["last_validation_failure"] = None

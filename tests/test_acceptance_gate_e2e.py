@@ -41,17 +41,18 @@ import orchestrator
 
 
 def test_e2e_first_attempt_fails_second_attempt_passes(qwe_temp_data_dir, monkeypatch):
-    workspace = Path(config.DATA_DIR) / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-    report_path = workspace / "report.md"
-    if report_path.exists():
-        report_path.unlink()
-
     # ── Goal with one subtask carrying a real regex_in_file done_condition ──
     goal_id = db.create_goal(
         user_input="Write docs/report.md with a Findings section",
         source="cli",
     )
+    # Per-goal workspace — what goal_runner sets ctx.workspace_root to, and
+    # what the validator looks at. The fake orchestrator below writes
+    # report.md HERE, not in the shared workspace.
+    goal_workspace = config.goal_workspace(goal_id)
+    report_path = goal_workspace / "report.md"
+    if report_path.exists():
+        report_path.unlink()
     db.set_goal_plan(goal_id, [{
         "title": "Author report.md with the Findings section",
         "description": "Write workspace/report.md including a '## Findings' heading",

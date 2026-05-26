@@ -32,7 +32,7 @@ def _patched_validator(monkeypatch, *, run_returns=(True, "")):
     deterministic without depending on workstream-A's real implementation."""
     import goal_validators
 
-    monkeypatch.setattr(goal_validators, "run_validator", lambda c: run_returns)
+    monkeypatch.setattr(goal_validators, "run_validator", lambda c, workspace_root=None: run_returns)
     yield
 
 
@@ -176,7 +176,7 @@ def test_update_subtask_non_completed_bypasses_validator(qwe_temp_data_dir,
 
     calls = []
 
-    def _watcher(criterion):
+    def _watcher(criterion, workspace_root=None):
         calls.append(criterion)
         return (False, "should never run")
 
@@ -289,7 +289,7 @@ def test_tool_subtask_update_surfaces_remediation_on_validator_failure(
 
     monkeypatch.setattr(
         goal_validators, "run_validator",
-        lambda c: (False, "expected leads.csv to exist; got nothing"),
+        lambda c, workspace_root=None: (False, "expected leads.csv to exist; got nothing"),
     )
 
     out = t._subtask_update_impl({

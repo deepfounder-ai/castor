@@ -198,6 +198,27 @@ def run_orchestrator(
     else:
         system = _load_system_prompt()
         messages = [{"role": "system", "content": system}]
+        # Per-goal workspace anchor — inject as a system note so the model
+        # knows where its files land. Without this it'll write
+        # "~/.castor/workspace/foo" and assume that's where it goes;
+        # tools.py rewrites the path under the hood, but telling the model
+        # explicitly avoids confused shell-poking of the SHARED workspace.
+        ws_root = getattr(ctx, "workspace_root", None)
+        if ws_root:
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"WORKSPACE: This goal has a dedicated workspace at "
+                    f"{ws_root}\n\n"
+                    f"This dir starts EMPTY. Past goals' artifacts are NOT "
+                    f"visible here — do NOT shell `ls ~/.castor/workspace/`, "
+                    f"do NOT `cat` files from prior runs. Any relative path "
+                    f"you write resolves under this dir. If you write "
+                    f"`~/.castor/workspace/foo.csv` it lands here too. "
+                    f"Build your plan from the user_input alone; the only "
+                    f"files in scope are the ones you create this turn."
+                ),
+            })
         # Fresh-start path: notes go between system prompt and user input,
         # so they read as additional rules from the first turn.
         if note_msgs:

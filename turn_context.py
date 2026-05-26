@@ -90,6 +90,15 @@ class TurnContext:
     goal_id: Optional[str] = None
     on_round_complete: Optional[RoundCompleteCB] = None
 
+    # ── Workspace isolation (set by goal_runner.run when goal_id is set) ──
+    # Anchor for relative file paths AND rewrite target for any path
+    # pointing at the shared ``WORKSPACE_DIR`` root. When the orchestrator
+    # writes ``~/.castor/workspace/foo.csv`` from inside a goal, that
+    # silently lands at ``~/.castor/workspace/goals/<gid>/foo.csv`` instead.
+    # Without this every goal sees every prior goal's files and the model
+    # spends turns shell-inspecting them instead of working.
+    workspace_root: Optional[str] = None
+
     # Convenience emitters. Callers inside agent.py use these instead of
     # guarding "if cb is None" everywhere.
     def emit_content(self, text: str) -> None:

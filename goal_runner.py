@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 
 import config
 import db
@@ -101,11 +102,19 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
     # "Task pending ... wait_for=<Future pending>" until interpreter exit).
     abort_event, _watcher_task = _bridge_shutdown_to_threading(shutdown_event)
 
+    # Per-goal workspace dir. Without this each goal sees every artifact
+    # the previous goals left behind in the shared workspace — the model
+    # spends turns shell-inspecting prior CSV/screenshots before doing any
+    # real work (observed in g_bd9d9285ad8b4548: 60+ shell rounds with no
+    # write_file or dispatch_subagent before the gate timed out).
+    goal_workspace_path = str(config.goal_workspace(goal_id))
+
     ctx = TurnContext(
         source=goal["source"],
         abort_event=abort_event,
         goal_id=goal_id,
         on_round_complete=_make_checkpoint_callback(goal_id, start_round),
+        workspace_root=goal_workspace_path,
     )
 
     # ── Acceptance-gate loop ──
@@ -192,7 +201,9 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
                     # can still complete on the orchestrator's say-so.
                     continue
                 try:
-                    passed, remediation = goal_validators.run_validator(cond)
+                    passed, remediation = goal_validators.run_validator(
+                        cond, workspace_root=Path(goal_workspace_path),
+                    )
                 except Exception as e:  # noqa: BLE001 — last-resort guard
                     # run_validator is contracted not to raise; if it does
                     # (e.g. stub mid-merge), treat as failure with a
@@ -232,7 +243,9 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
             goal_failures: list[tuple[str, str]] = []
             for i, gc in enumerate(goal.get("done_conditions") or []):
                 try:
-                    passed, remediation = goal_validators.run_validator(gc)
+                    passed, remediation = goal_validators.run_validator(
+                        gc, workspace_root=Path(goal_workspace_path),
+                    )
                 except Exception as e:  # noqa: BLE001 — last-resort guard
                     passed = False
                     remediation = f"validator crashed: {type(e).__name__}: {e}"
@@ -349,7 +362,12 @@ async def run(goal_id: str, shutdown_event: asyncio.Event) -> None:
         # partial progress is visible in the UI even when the orchestrator
         # capitulated mid-goal. Dedups vs already-attached outputs.
         try:
-            new_ids = db.auto_attach_workspace_outputs(goal_id)
+            # Scan the goal's own workspace subdir so the attach finds only
+            # files THIS goal produced — the shared workspace would re-attach
+            # every prior goal's leftover .csv / .md / .png.
+            new_ids = db.auto_attach_workspace_outputs(
+                goal_id, workspace_root=goal_workspace_path,
+            )
             if new_ids:
                 _log.info(
                     f"auto-attached {len(new_ids)} workspace file(s) "

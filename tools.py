@@ -199,12 +199,46 @@ def _integrity_block_reason(p: Path) -> str | None:
     return None
 
 
+def _active_workspace() -> Path:
+    """Workspace anchor for the current call.
+
+    If running inside a goal context (``TurnContext.workspace_root`` set by
+    goal_runner), use that — keeps each goal's writes isolated under
+    ``~/.castor/workspace/goals/<gid>/``. Otherwise the global flat
+    ``WORKSPACE_DIR`` for CLI / Telegram / Web chat / scheduler.
+
+    Note: the thread-local fallback (``_get_turn_ctx``) covers blocking
+    tools (shell, http_request) that don't have access to the asyncio
+    ContextVar. Both paths return the same TurnContext for the active
+    request, just via different transports.
+    """
+    try:
+        ctx = _get_turn_ctx()
+    except Exception:
+        ctx = None
+    if ctx is None:
+        try:
+            import turn_context as _tc
+            ctx = _tc.get_current()
+        except Exception:
+            ctx = None
+    root = getattr(ctx, "workspace_root", None) if ctx is not None else None
+    if root:
+        return Path(root)
+    return WORKSPACE
+
+
 def _resolve_path(raw: str, for_write: bool = False) -> Path:
     """Resolve a file path for agent operations.
 
     - Git Bash paths (/c/Users/...) -> C:/Users/... on Windows
-    - Relative paths -> workspace (~/.castor/workspace/)
+    - Relative paths -> workspace (per-goal when inside a goal, else flat)
     - ~ expands to home
+    - Paths that explicitly target the SHARED workspace from inside a goal
+      (e.g. ``~/.castor/workspace/foo.csv`` while goal_id is set) are
+      transparently rewritten to land under the goal's workspace dir —
+      otherwise a model used to writing ``~/.castor/workspace/...`` would
+      bypass per-goal isolation.
     - For writes: only allow workspace, data dir, and cwd (whitelist)
     - For writes: additionally block paths that would irreversibly damage
       castor itself (DB, vault, memory store, source tree, .git).
@@ -215,8 +249,21 @@ def _resolve_path(raw: str, for_write: bool = False) -> Path:
         if drive.isalpha():
             raw = f"{drive}:{raw[2:]}"
     p = Path(raw).expanduser()
+    ws = _active_workspace()
     if not p.is_absolute():
-        p = WORKSPACE / p
+        p = ws / p
+    elif ws != WORKSPACE:
+        # Inside a goal context: any path that begins at the SHARED
+        # workspace root gets re-rooted to the goal's dir. This catches
+        # the orchestrator writing the conventional ``~/.castor/workspace/
+        # leads.csv`` and turning it into ``.../goals/<gid>/leads.csv``.
+        try:
+            rel = p.relative_to(WORKSPACE)
+            # Don't double-prefix if already under the goal subtree.
+            if not str(rel).startswith("goals/"):
+                p = ws / rel
+        except ValueError:
+            pass  # absolute path outside the shared workspace — leave it
     pre_resolve = p
     p = p.resolve()
     # Observability: log when path traverses a symlink (defence-in-depth).
@@ -2216,7 +2263,13 @@ def execute(name: str, args: dict) -> str:
                 return block_reason
             _shell_default = config.get("tool_timeout_shell") if hasattr(config, "get") else 120
             t = min(args.get("timeout", _shell_default), 300)
-            cwd = str(WORKSPACE)
+            # Per-goal isolation: shell runs in the goal's own workspace dir
+            # so `ls`, `cat`, and friends see ONLY this goal's files. The
+            # shared workspace (with hundreds of prior-goal CSV / screenshot
+            # leftovers) is invisible — that's the whole point of the
+            # per-goal dir; otherwise the model burns turns on `cat
+            # linkedin_invites_log.txt` from some 2-week-old goal.
+            cwd = str(_active_workspace())
 
             env = os.environ.copy()
             venv = os.environ.get("VIRTUAL_ENV")

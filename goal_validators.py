@@ -61,7 +61,7 @@ def _workspace_root() -> Path:
     return data_dir / "workspace"
 
 
-def _resolve(rel_or_abs: str) -> Path:
+def _resolve(rel_or_abs: str, workspace_root: Path | None = None) -> Path:
     """Resolve a path argument: absolute → as-is, relative → workspace-anchored.
 
     Expands ``~`` BEFORE the absolute-vs-relative check.  Without this,
@@ -71,11 +71,28 @@ def _resolve(rel_or_abs: str) -> Path:
     an absolute Path) — a path that never exists, so every regex/files
     check would falsely fail with "file does not exist."  Mirrors the
     correct pattern in ``tools._resolve_path``.
+
+    ``workspace_root`` (set by ``goal_runner`` when running per-goal) overrides
+    the shared workspace anchor AND rewrites any path that explicitly targets
+    the shared root — same logic as ``tools._resolve_path`` so the validator
+    and the writer agree on where the file actually landed.
     """
     p = Path(rel_or_abs).expanduser()
+    shared = _workspace_root()
     if p.is_absolute():
+        # Rewrite shared-root paths into the goal's workspace when we're
+        # validating a per-goal criterion. The writer (tools._resolve_path)
+        # applied the same rewrite — keeps the two sides symmetric.
+        if workspace_root is not None and workspace_root != shared:
+            try:
+                rel = p.relative_to(shared)
+                if not str(rel).startswith("goals/"):
+                    return workspace_root / rel
+            except ValueError:
+                pass
         return p
-    return _workspace_root() / p
+    anchor = workspace_root if workspace_root is not None else shared
+    return anchor / p
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,10 +177,17 @@ def validate_criterion(criterion: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def run_validator(criterion: dict) -> tuple[bool, str]:
+def run_validator(
+    criterion: dict, workspace_root: Path | None = None
+) -> tuple[bool, str]:
     """Execute `criterion` and return (passed, remediation).
 
     NEVER raises. Failures are returned as (False, "<diagnostic>").
+
+    ``workspace_root`` overrides the shared workspace anchor. Set by
+    ``goal_runner`` so per-goal validators look under
+    ``~/.castor/workspace/goals/<gid>/`` instead of the flat shared dir.
+    Defaults to None (shared workspace) for back-compat callers and tests.
     """
     # Defensive — caller is expected to have schema-checked first, but
     # we don't want to crash the gate if they didn't.
@@ -179,13 +203,13 @@ def run_validator(criterion: dict) -> tuple[bool, str]:
 
     try:
         if kind == "files_exist":
-            return _run_files_exist(spec)
+            return _run_files_exist(spec, workspace_root)
         if kind == "min_count":
-            return _run_min_count(spec)
+            return _run_min_count(spec, workspace_root)
         if kind == "regex_in_file":
-            return _run_regex_in_file(spec)
+            return _run_regex_in_file(spec, workspace_root)
         if kind == "shell_returns_zero":
-            return _run_shell_returns_zero(spec)
+            return _run_shell_returns_zero(spec, workspace_root)
         if kind == "http_200":
             return _run_http_200(spec)
     except Exception as e:  # noqa: BLE001 — top-level shield, never propagate
@@ -198,12 +222,14 @@ def run_validator(criterion: dict) -> tuple[bool, str]:
 # ── Per-kind runners ────────────────────────────────────────────────────────
 
 
-def _run_files_exist(spec: dict) -> tuple[bool, str]:
+def _run_files_exist(
+    spec: dict, workspace_root: Path | None = None
+) -> tuple[bool, str]:
     paths = spec["paths"]
     missing: list[str] = []
     for raw in paths:
         try:
-            resolved = _resolve(raw)
+            resolved = _resolve(raw, workspace_root)
             if not resolved.exists():
                 missing.append(raw)
         except OSError as e:
@@ -224,12 +250,16 @@ def _run_files_exist(spec: dict) -> tuple[bool, str]:
     )
 
 
-def _run_min_count(spec: dict) -> tuple[bool, str]:
+def _run_min_count(
+    spec: dict, workspace_root: Path | None = None
+) -> tuple[bool, str]:
     pattern = spec["glob"]
     minimum = spec["min"]
 
-    # Anchor relative globs at the workspace; absolute globs go straight through.
-    abs_pattern = pattern if os.path.isabs(pattern) else str(_workspace_root() / pattern)
+    # Anchor relative globs at the (per-goal or shared) workspace; absolute
+    # globs go straight through.
+    anchor = workspace_root if workspace_root is not None else _workspace_root()
+    abs_pattern = pattern if os.path.isabs(pattern) else str(anchor / pattern)
     try:
         matches = _glob.glob(abs_pattern, recursive=True)
     except OSError as e:
@@ -250,10 +280,12 @@ def _run_min_count(spec: dict) -> tuple[bool, str]:
     )
 
 
-def _run_regex_in_file(spec: dict) -> tuple[bool, str]:
+def _run_regex_in_file(
+    spec: dict, workspace_root: Path | None = None
+) -> tuple[bool, str]:
     path = spec["path"]
     pattern = spec["pattern"]
-    resolved = _resolve(path)
+    resolved = _resolve(path, workspace_root)
 
     if not resolved.exists():
         return (
@@ -294,7 +326,9 @@ def _run_regex_in_file(spec: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def _run_shell_returns_zero(spec: dict) -> tuple[bool, str]:
+def _run_shell_returns_zero(
+    spec: dict, workspace_root: Path | None = None
+) -> tuple[bool, str]:
     cmd = spec["cmd"]
     raw_timeout = spec.get("timeout", _SHELL_TIMEOUT_DEFAULT)
     try:
@@ -306,7 +340,7 @@ def _run_shell_returns_zero(spec: dict) -> tuple[bool, str]:
     if timeout > _SHELL_TIMEOUT_MAX:
         timeout = float(_SHELL_TIMEOUT_MAX)
 
-    cwd = _workspace_root()
+    cwd = workspace_root if workspace_root is not None else _workspace_root()
     # Ensure cwd exists so subprocess.run doesn't blow up on a fresh install.
     try:
         cwd.mkdir(parents=True, exist_ok=True)

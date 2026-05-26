@@ -137,7 +137,7 @@ def test_gate_passes_first_attempt_marks_goal_done(
     capture = _patch_update_subtask_capture(db, monkeypatch)
 
     monkeypatch.setattr(goal_validators, "run_validator",
-                        lambda c: (True, ""))
+                        lambda c, workspace_root=None: (True, ""))
     orch_calls: list = []
 
     def _fake_orch(**kw):
@@ -199,7 +199,7 @@ def test_gate_recovers_on_second_attempt(qwe_temp_data_dir, monkeypatch):
 
     monkeypatch.setattr(orchestrator, "run_orchestrator", _fake_orch)
 
-    def _validator(criterion):
+    def _validator(criterion, workspace_root=None):
         # Fails on first orch run, passes after the second.
         if invocations["orch"] >= 2:
             return True, ""
@@ -269,7 +269,7 @@ def test_gate_exhausts_attempts_marks_goal_failed(
 
     monkeypatch.setattr(
         goal_validators, "run_validator",
-        lambda c: (False, "stuck: file missing"),
+        lambda c, workspace_root=None: (False, "stuck: file missing"),
     )
 
     orch_count = {"n": 0}
@@ -317,7 +317,7 @@ def test_gate_logs_event_per_block(qwe_temp_data_dir, monkeypatch):
 
     monkeypatch.setattr(
         goal_validators, "run_validator",
-        lambda c: (False, "remediate me"),
+        lambda c, workspace_root=None: (False, "remediate me"),
     )
 
     monkeypatch.setattr(orchestrator, "run_orchestrator", lambda **kw: {
@@ -365,7 +365,7 @@ def test_gate_writes_validation_passed_flag(qwe_temp_data_dir, monkeypatch):
     capture = _patch_update_subtask_capture(db, monkeypatch)
 
     # A passes, B fails.
-    def _validator(criterion):
+    def _validator(criterion, workspace_root=None):
         path = criterion["spec"]["paths"][0]
         if path == "a.md":
             return True, ""
@@ -438,7 +438,7 @@ def test_gate_legacy_callers_without_done_condition_get_default(
     # return (True, "") so the gate passes on first attempt.
     call_count = {"n": 0}
 
-    def _validator(criterion):
+    def _validator(criterion, workspace_root=None):
         call_count["n"] += 1
         return True, ""
 
@@ -483,7 +483,7 @@ def test_gate_shutdown_mid_retry_pauses_goal(qwe_temp_data_dir, monkeypatch):
     # Validator always fails so the gate would retry forever.
     monkeypatch.setattr(
         goal_validators, "run_validator",
-        lambda c: (False, "still missing"),
+        lambda c, workspace_root=None: (False, "still missing"),
     )
 
     shutdown_evt: dict = {}
