@@ -16,7 +16,14 @@ import asyncio
 
 import pytest
 
-import goal_runner
+# NB: ``import goal_runner`` is deliberately NOT at module level.
+# It would transitively import db / orchestrator and open a DB
+# connection against the unsandboxed ``CASTOR_DATA_DIR``, polluting
+# state for later tests that use the ``qwe_temp_data_dir`` fixture
+# (observed CI failure on Python 3.12 — ``test_skill_import``
+# subsequently hit ``no such table: skill_imports`` because the
+# reload chain in conftest doesn't reload goal_runner). Each test
+# function below imports goal_runner locally.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -33,23 +40,27 @@ class _MockSDKError(Exception):
 
 
 def test_402_classified_as_billing_exhausted():
+    import goal_runner
     e = _MockSDKError("Error code: 402 - out of credits", status_code=402)
     assert goal_runner._classify_provider_error(e) == "provider_billing_exhausted"
 
 
 def test_429_classified_as_rate_limited():
+    import goal_runner
     e = _MockSDKError("Error code: 429 - too many requests", status_code=429)
     assert goal_runner._classify_provider_error(e) == "provider_rate_limited"
 
 
 @pytest.mark.parametrize("code", [500, 502, 503, 504])
 def test_5xx_classified_as_unavailable(code):
+    import goal_runner
     e = _MockSDKError(f"Error code: {code}", status_code=code)
     assert goal_runner._classify_provider_error(e) == "provider_unavailable"
 
 
 def test_status_attribute_from_string_repr_fallback():
     """When status_code attr isn't set but the repr embeds the code."""
+    import goal_runner
     # The actual error string we saw from OpenRouter via openai-compat:
     msg = (
         "APIStatusError: Error code: 402 - {'error': {'message': "
@@ -62,6 +73,7 @@ def test_status_attribute_from_string_repr_fallback():
 
 def test_non_provider_exception_returns_none():
     """A ValueError or whatever else from real code is NOT a provider error."""
+    import goal_runner
     assert goal_runner._classify_provider_error(ValueError("bad input")) is None
     assert goal_runner._classify_provider_error(KeyError("missing")) is None
     assert goal_runner._classify_provider_error(
@@ -71,6 +83,7 @@ def test_non_provider_exception_returns_none():
 
 def test_4xx_other_than_402_429_not_classified():
     """400, 401, 404 are real bugs / config issues, not transients."""
+    import goal_runner
     for code in (400, 401, 403, 404):
         e = _MockSDKError(f"Error code: {code}", status_code=code)
         assert goal_runner._classify_provider_error(e) is None, (
@@ -87,6 +100,7 @@ def test_goal_paused_on_provider_402(qwe_temp_data_dir, monkeypatch):
     """When orchestrator raises a 402-ish error, goal_runner.run pauses
     the goal (not failed) so resume is possible after the user tops up."""
     import db
+    import goal_runner
     import orchestrator
 
     def _fake_orch(**kw):
@@ -114,6 +128,7 @@ def test_goal_paused_on_provider_402(qwe_temp_data_dir, monkeypatch):
 def test_goal_failed_on_real_runtime_error(qwe_temp_data_dir, monkeypatch):
     """Non-provider exceptions still mark the goal failed (terminal)."""
     import db
+    import goal_runner
     import orchestrator
 
     def _fake_orch(**kw):
@@ -186,6 +201,7 @@ def test_pause_backoff_expires(qwe_temp_data_dir):
 def test_provider_402_pause_sets_300s_backoff(qwe_temp_data_dir, monkeypatch):
     """End-to-end: 402 from orchestrator → paused with 300s cooldown."""
     import db
+    import goal_runner
     import orchestrator
     import time
 

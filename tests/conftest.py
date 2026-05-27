@@ -60,8 +60,18 @@ def qwe_temp_data_dir(monkeypatch):
         except Exception:
             pass
 
-    # Reload in dependency order
-    for mod_name in ("config", "db", "soul", "presets"):
+    # Reload in dependency order.
+    #
+    # ``goal_runner`` / ``orchestrator`` / ``subagent`` are reloaded because
+    # they keep module-level references to ``db`` (e.g. ``import db`` at
+    # top). When ``db`` is reloaded above, those references still point at
+    # the OLD module — so a test that exercises ``goal_runner.run`` and
+    # then asserts via ``db.get_goal(...)`` was reading from two
+    # different DB instances. Pollution surfaced on CI Python 3.12 as
+    # ``test_skill_import`` hitting "no such table: skill_imports" right
+    # after a test_provider_error_classification test ran.
+    for mod_name in ("config", "db", "soul", "presets",
+                     "goal_validators", "subagent", "orchestrator", "goal_runner"):
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
         else:
@@ -90,7 +100,8 @@ def qwe_temp_data_dir(monkeypatch):
         # (monkeypatch will have restored the original value before this runs
         #  in the normal finalizer order — but we also reload here so later
         #  tests don't see state tied to the now-removed tempdir).
-        for mod_name in ("config", "db", "soul", "presets"):
+        for mod_name in ("config", "db", "soul", "presets",
+                         "goal_validators", "subagent", "orchestrator", "goal_runner"):
             if mod_name in sys.modules:
                 try:
                     importlib.reload(sys.modules[mod_name])
