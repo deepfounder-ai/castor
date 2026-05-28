@@ -2400,6 +2400,60 @@ const handleWsMessage = (msg) => {
     return;
   }
 
+  // Other server-broadcast notification events — same class of "ghost
+  // streaming bubble" bug as task_update. The user observed it as a
+  // mysterious "castor 09:39 PM generating" status that appeared out
+  // of nowhere on an idle chat. The pattern: server fires a scheduled
+  // task (synthesis_continuous, heartbeat, user cron), broadcasts a
+  // `cron` WS message to ALL clients regardless of which thread they
+  // were viewing, the message wasn't a chat reply but had no short-
+  // circuit here, so it fell through to the streaming-gate below and
+  // opened a phantom assistant bubble that never closed (no `done`
+  // event for a notification broadcast).
+  //
+  // Each notification type below gets an appropriate UI treatment
+  // (toast for transient signals, ignore for ones with their own
+  // panel like update_progress).
+  if (t === 'cron') {
+    // {name, task, text} — scheduled task fired and produced output.
+    // Skip the system-internal jobs so the user isn't toasted about
+    // their own background curator running.
+    const name = msg.name || 'cron';
+    if (name.startsWith('__')) return;  // synthesis_continuous, heartbeat, etc.
+    const text = (msg.text || '').toString();
+    const preview = text.length > 80 ? text.slice(0, 77) + '…' : text;
+    toast(`⏰ ${name}: ${preview}`);
+    return;
+  }
+  if (t === 'compaction') {
+    // {event: 'start'|'summary'|'done'|'error', ...} — memory
+    // compaction progress. Done/error are the only states worth
+    // surfacing; start/summary are too noisy.
+    const ev = msg.event;
+    if (ev === 'done') toast('🧠 memory compacted');
+    else if (ev === 'error') toast('compaction failed: ' + (msg.error || ''), 'err');
+    return;
+  }
+  if (t === 'update_progress' || t === 'update_done') {
+    // Castor's self-update flow — has its own panel rendered by the
+    // updates view; the WS message arrives in case the user is
+    // watching from another view. Silent here.
+    return;
+  }
+  if (t === 'telegram') {
+    // {from, text, reply} — an echo of a turn that arrived via the
+    // Telegram bot. Just an audit signal for the operator running
+    // the web UI; no need to render in the chat (different thread).
+    return;
+  }
+  if (t === 'knowledge_progress' || t === 'knowledge_gpu_warning' || t === 'knowledge_done') {
+    // Knowledge-base ingestion progress — has its own KB view that
+    // polls; surface only the GPU warning + done states as toast.
+    if (t === 'knowledge_gpu_warning') toast(msg.text || 'GPU warning', 'err');
+    else if (t === 'knowledge_done') toast('📚 indexing complete');
+    return;
+  }
+
   // Canvas events — the `canvas_render` / `canvas_close` types come from
   // the canvas skill via _broadcast. MUST short-circuit here, BEFORE the
   // "create pending streaming message" branch below; otherwise the panel-
