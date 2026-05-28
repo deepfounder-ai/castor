@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import re
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -1227,7 +1228,6 @@ def _fix_elif_body_indent(code: str) -> str:
             continue
 
         after_indent = len(lines[k]) - len(lines[k].lstrip())
-        after_stripped = lines[k].strip()
 
         # Bad pattern: code after pass is at elif_indent (same level as branch header)
         # AND it is NOT a new tool-dispatch branch.
@@ -1268,6 +1268,142 @@ def _fix_elif_body_indent(code: str) -> str:
         # `continue` so the outer while re-processes `lines[i]` (the next branch).
 
     return "\n".join(out)
+
+
+# ── AST-level repair for the "stub Pass + code outside branch" anti-pattern ──
+#
+# Closes issue #14. Companion to ``_fix_elif_body_indent``: the line-based
+# regex catches the common case (pass + sibling code right under the branch).
+# AST repair handles the leftovers — blank lines between Pass and the real
+# code, comments before pass, multi-branch stubs with the real impl emitted
+# at the function-body indent ABOVE/BELOW the dispatch, and tab-vs-space
+# inconsistencies.
+
+
+def _is_name_dispatch_if(node: ast.AST) -> bool:
+    """``if name == "...": ...`` (any constant on the right) — the
+    dispatch shape used in skill execute() bodies."""
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if not isinstance(test, ast.Compare):
+        return False
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    return (
+        isinstance(test.left, ast.Name)
+        and test.left.id == "name"
+        and len(test.comparators) == 1
+        and isinstance(test.comparators[0], ast.Constant)
+    )
+
+
+def _last_in_elif_chain(node: ast.If) -> ast.If:
+    """Walk ``orelse`` through chained elifs, return the innermost If."""
+    cur = node
+    while (
+        len(cur.orelse) == 1
+        and isinstance(cur.orelse[0], ast.If)
+        and _is_name_dispatch_if(cur.orelse[0])
+    ):
+        cur = cur.orelse[0]
+    return cur
+
+
+def _body_is_only_pass(if_node: ast.If) -> bool:
+    """Body is ``[Pass]`` — the stub marker the LLM left behind."""
+    return len(if_node.body) == 1 and isinstance(if_node.body[0], ast.Pass)
+
+
+def _fix_stub_branch_outside_code(code: str) -> str:
+    """Pull stray top-level statements into the preceding stub-Pass branch.
+
+    The LLM anti-pattern (issue #14, observed in workspace_meter +
+    camera_diagnostics field sessions):
+
+        elif name == "camera_benchmark":
+            pass                              # <- stub, not real impl
+        import time, tools                    # <- at function-body indent
+        samples = int(args.get("samples"))    # <- meant for the branch above
+        ...
+        return f"benchmark complete"
+
+    The line-based ``_fix_elif_body_indent`` covers the common shape.
+    This AST pass handles the remainder: blank lines or comments
+    between Pass and the stray code, tab/space mixing, chained
+    elif/else, and the case where the stray code spans across what
+    the LLM thought was one branch's implementation.
+
+    Algorithm:
+      1. Wrap input as a fake function body so ``ast.parse`` accepts it.
+      2. Walk top-level statements. For each dispatch ``If`` (``name == "..."``)
+         with body=[Pass], pull all following non-dispatch siblings into
+         that branch's body (replacing the Pass).
+      3. For chained ``elif``: descend into the last If in the chain;
+         the stray code following the OUTER If logically belongs to
+         the inner-most stub branch.
+      4. Re-emit via ``ast.unparse``.
+
+    Safety:
+      * If ``ast.parse`` fails (LLM emitted truly broken code), return
+        the input unchanged — let the next pipeline step error.
+      * If nothing changes, return the original string (preserves
+        LLM's formatting / comments via the regex pass).
+    """
+    if not code or not code.strip():
+        return code
+
+    # Wrap so the snippet (which has no surrounding def) is parseable.
+    wrapped = "def __sk_fake__(name, args):\n" + textwrap.indent(code, "    ")
+    try:
+        tree = ast.parse(wrapped)
+    except SyntaxError:
+        return code  # bail — broken input is the previous pass's problem
+
+    if not (tree.body and isinstance(tree.body[0], ast.FunctionDef)):
+        return code
+    func = tree.body[0]
+
+    new_body: list[ast.stmt] = []
+    body = func.body
+    changed = False
+    i = 0
+    while i < len(body):
+        stmt = body[i]
+        if _is_name_dispatch_if(stmt):
+            tail = _last_in_elif_chain(stmt)
+            if _body_is_only_pass(tail):
+                # Pull subsequent non-dispatch siblings into tail.body.
+                pulled: list[ast.stmt] = []
+                j = i + 1
+                while j < len(body):
+                    nxt = body[j]
+                    if _is_name_dispatch_if(nxt):
+                        break  # next branch — stop
+                    pulled.append(nxt)
+                    j += 1
+                if pulled:
+                    tail.body = pulled  # replace Pass with the real code
+                    new_body.append(stmt)
+                    i = j  # skip the absorbed statements
+                    changed = True
+                    continue
+        new_body.append(stmt)
+        i += 1
+
+    if not changed:
+        return code  # nothing to do — preserve original formatting
+
+    func.body = new_body
+    try:
+        out = ast.unparse(tree)
+    except Exception:
+        return code  # extremely defensive — unparse should never fail
+    # Strip the wrapper line and dedent back to caller's indent.
+    out_lines = out.split("\n")
+    if out_lines and out_lines[0].startswith("def __sk_fake__"):
+        out_lines = out_lines[1:]
+    return textwrap.dedent("\n".join(out_lines))
 
 
 def _fix_empty_blocks(code: str) -> str:
@@ -1630,6 +1766,11 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 custom_code = _fix_indentation(custom_code)
                 custom_code = _fix_empty_blocks(custom_code)
                 custom_code = _fix_elif_body_indent(custom_code)
+                # AST pass (issue #14) catches the residual cases the
+                # line-based fixer above misses: blank lines / comments
+                # between Pass and the stray code, multi-statement
+                # spans, and chained-elif tail-stub patterns.
+                custom_code = _fix_stub_branch_outside_code(custom_code)
                 # Defensive post-process: even with the prompt fix,
                 # small models sometimes still emit `elif` first when
                 # they're supposed to start with `if`. If our body is
@@ -1696,6 +1837,7 @@ def _run_pipeline(skill_name: str, description: str, target: Path, task_id: int 
                 # LLM-generated elif branches have their bodies properly indented.
                 execute_body = _fix_empty_blocks(execute_body)
                 execute_body = _fix_elif_body_indent(execute_body)
+                execute_body = _fix_stub_branch_outside_code(execute_body)
                 code = SKILL_TEMPLATE.format(
                     docstring_block=docstring_block,
                     short_description_repr=short_desc_repr,
