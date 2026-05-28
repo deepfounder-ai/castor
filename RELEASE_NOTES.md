@@ -1,67 +1,48 @@
-## v0.23.1 — Goal Runtime Hardening
+## v0.23.2 — Phantom "generating" bubble fix
 
-v0.23.0 shipped the Goal Runtime as a new architecture. Real production stress-tests on long LinkedIn networking goals (50+ subagent dispatches across 100+ minutes) surfaced a class of bugs that were invisible in unit tests because the affected code paths were dead in v0.23.0 — the budget cap never fired, the workspace was never isolated, secrets never got scrubbed in goal storage. This release wires them all up and adds the production-shaped tests that should have caught them.
+### Critical user-facing fix
 
-**Backwards compatible** — no schema break beyond one additive migration (`015_agent_runs_goal_id.sql`). Goals submitted on v0.23.0 keep running; the new behaviours apply from the next claim onward.
+**Phantom "generating" assistant bubble appeared out of nowhere on idle chats and blocked further sends.**
 
-### Goal-runtime fixes
+User report: idle chat, agent's last reply already delivered, everything looked done — and suddenly a "castor 09:39 PM generating" status appeared with the typing indicator on. The bubble never closed, so the composer stayed in a busy state and new messages couldn't be sent.
 
-- **Per-goal workspace at `~/.castor/workspace/goals/<goal_id>/`.** Each goal now runs in its own dir. The shared workspace is invisible to the orchestrator inside a goal context — no more 60-round shell-mining sweeps over leftover CSVs / screenshots from prior goals. Symmetric writer/validator path rewriting catches the orchestrator's habit of writing `~/.castor/workspace/foo.csv` and routes it under the goal dir transparently.
+Root cause: ``static/index.html::handleWsMessage`` short-circuited only on a few notification WS types (``task_update``, ``canvas_*``, ``get_frame``, ``interrupted_turn``). The server emits 8 more notification types via ``_broadcast`` to every connected client regardless of which thread is in view — ``cron``, ``compaction``, ``update_progress``, ``update_done``, ``telegram``, ``knowledge_progress``, ``knowledge_gpu_warning``, ``knowledge_done``. Each slipped past the (incomplete) short-circuit list and hit the streaming-message creation gate, which opened a pending assistant bubble that NEVER received the ``done`` event that notifications don't emit.
 
-- **Budget cap (`budget_usd`) actually works.** Migration 015 adds `agent_runs.goal_id` and rolls up costs via a LEFT JOIN. Before this commit, `goals.cost_usd` was dead storage (never written), so the orchestrator's per-round budget check read 0 forever. The Goals UI Cost column now displays real spend.
+The exact 09:39 PM scenario: the ``__synthesis_continuous__`` cron fires every 15 minutes, the cron callback broadcasts a ``cron`` WS message, every open web client opens a phantom bubble. Same class of bug as ``task_update`` (fixed in v0.18.3) but for the remaining notification types that were never wired up.
 
-- **Provider transient errors → paused (not failed).** OpenRouter 402 / 429, upstream 5xx, etc. classify as transient. The goal goes to `paused` with a per-class backoff (402: 300s, 429: 60s, 5xx: 30s) so a topped-up account or expired rate-limit window lets the goal resume from the latest checkpoint — no work lost.
+Fix: explicit short-circuit handler for every broadcast notification type with appropriate UI treatment (toast for transient events, silent for events with their own panel). System-internal cron jobs (``__synthesis_continuous__``, ``__heartbeat__``) are silently filtered so the user isn't toasted by their own background curator every 15 minutes.
 
-- **Pause-with-backoff prevents reclaim thrash.** Without this, the worker's 5s poll cycle would re-claim a 402-paused goal and immediately burn another 402, in a tight loop. The backoff repurposes `lease_expires_at` as a "don't reclaim before this time" marker (no schema change).
+### Auditing guard
 
-- **`~`-expansion bug in goal_validators.** `_resolve("~/.castor/workspace/foo.txt")` was looking up `<workspace>/~/.castor/workspace/foo.txt`. Every regex/files check on a `~`-prefixed path falsely failed with "file does not exist", which forced the acceptance gate to mark working goals as failed.
+The original bug pattern can recur whenever someone adds a new ``_broadcast({"type": "..."})`` call in ``server.py`` and forgets the corresponding client-side handler. New JS-contract test (``tests/test_ws_notification_short_circuit.py``) walks ``server.py`` for every ``_broadcast`` type literal and asserts the client has a short-circuit BEFORE the streaming gate. Adding a new notification type without wiring the client will now fail CI rather than ship as a phantom bubble.
 
-- **Skipped subtasks no longer block the gate.** A subtask marked `status="skipped"` (e.g. orchestrator hit a quota early) had its `done_condition` evaluated anyway. The gate now correctly bypasses skipped entries.
+### skill_creator: AST-level repair (closes #14)
 
-- **Orchestrator anti-capitulation prompt rule.** The "Knowing when you have ENOUGH" section in `prompts/orchestrator.md` used to say "20-30 leads is enough for an MVP." That cap applied to vague quantities only — but the orchestrator also obeyed it for user-specified numbers ("100 invites" → delivered 50). The rule is now scoped: explicit numeric targets in the user_input are LAW; scaling them down is labelled as capitulation, not engineering.
+Issue #14 documented a recurring LLM failure mode in the skill-creation pipeline: small models emit a tool-dispatch ``elif name == "...":`` with body ``pass`` and write the real implementation OUTSIDE the branch at function-body indent. The line-based regex fixer (``_fix_elif_body_indent``) caught the common shape but missed edge cases observed in the workspace_meter and camera_diagnostics field sessions — blank lines between Pass and the stray code, comments in between, chained-elif tail-stub patterns, tab/space inconsistencies.
 
-### Security: secrets no longer leak through goal storage
+New ``_fix_stub_branch_outside_code`` does AST-level repair: parses the LLM output, walks dispatch ``If`` nodes whose tail is body=[Pass], pulls following non-dispatch siblings into the branch's body, re-emits via ``ast.unparse``. Defensive: returns the input unchanged if ``ast.parse`` can't handle it (lets downstream syntax check report the real error). Wired in two pipeline call sites (the main custom-code assembly and the SyntaxError recovery path).
 
-Forensic inspection of a production goal showed plaintext credentials in three goal-runtime tables (`goal_facts`, `goal_events`, `goal_checkpoints.messages_blob`). The `_scrub_secrets()` regex set that `memory.save()` has used since v0.17.18 was never applied to these new v0.22 storage paths.
+15 new tests pin the contract against the exact buggy shapes from the field sessions.
 
-- **Shared `secret_scrub.py` module.** Patterns moved out of `memory.py`. `scrub_text` for free-form text, `scrub_fact(key, value)` adds a key-name heuristic — keys named `password`, `api_key`, `access_token`, `private_key`, `session_cookie`, etc. fully redact their value regardless of shape, catching plain string passwords that don't match any provider regex.
+### Dependency updates
 
-- **Four goal storage paths now scrub on insert.** `db.fact_save`, `db.log_goal_event`, `db.save_checkpoint`, and `db.attach_goal_output` all pass values through the appropriate scrub before write. `save_checkpoint` also walks `tool_calls[].function.arguments` so the orchestrator's habit of putting credentials in dispatch prompts gets caught.
+Dependabot PRs #35-39 applied in batch:
 
-- **Natural-language credential phrasing.** Added a second regex for "Fill in the password field (#password) with: hunter2" style prose — the dispatch-prompt pattern that exposed a LinkedIn password in production. Keeps innocent technical writing intact.
-
-- **Browser subagent now has direct vault access.** Added `secret_get` / `secret_list` to the browser subagent's tool whitelist + a new `Credential handling` section in `prompts/orchestrator.md`. The orchestrator no longer needs to fetch credentials and ferry them across the trust boundary into dispatch prompts — the subagent fetches them locally and the raw value never enters orchestrator messages, events, or checkpoints.
-
-### Behaviour changes
-
-- **Worker daemon costs now roll up per goal.** Old goals (created before migration 015) keep showing `cost_usd: 0.0` since their `agent_runs` rows have no `goal_id` link. New goals get accurate per-goal cost tracking immediately.
-
-- **A paused goal with `retry_after_sec` set is invisible to `claim_next_goal` until the deadline elapses.** Existing pause paths (worker shutdown, user pause) don't set the deadline, so they stay immediately reclaimable — same as before.
-
-- **`mark_goal_paused(reason, retry_after_sec=N)`** is the new signature. Old callers (the keyword-only `reason=` form) keep working.
-
-### Migrations
-
-`015_agent_runs_goal_id.sql` — adds `goal_id TEXT` column to `agent_runs` with a partial index. Backward-compatible (existing rows get NULL, treated as "non-goal run" by the budget rollup).
+  openpyxl       3.1   -> 3.1.5   (patch)
+  python-pptx    1.0   -> 1.0.2   (patch)
+  qdrant-client  1.11.0 -> 1.18.0 (7 minor — verified memory + rag still work)
+  readchar       4.0.0  -> 4.2.2  (minor)
+  requests       2.31.0 -> 2.34.2 (patch)
 
 ### Tests
 
-96 new tests across 4 new + several updated files. Full suite: 1345 passing, 24 skipped.
+1451 passing, 24 skipped (was 1345 in v0.23.1). 19 new tests added across:
 
-- `test_goal_workspace_isolation.py` (13) — per-goal workspace creation, path-rewrite invariants, cross-goal isolation.
-- `test_provider_error_classification.py` (15) — 402/429/5xx classification, integration with `goal_runner.run`, backoff blocking immediate reclaim.
-- `test_secret_scrub_goals.py` (25) — every goal storage path scrubs, including `attach_goal_output` and tool_calls.arguments.
-- `test_agent_runs.py` (+5) — `goal_id` column persistence, `get_goal_total_cost`, `get_goal` / `list_goals` cost rollup contract.
+- ``test_ws_notification_short_circuit.py`` (4) — broadcast notification short-circuits + cron filter + auditing guard
+- ``test_skill_creator_ast_fix.py`` (15) — AST-level repair for issue #14
+
+Plus test isolation fix for CI Python 3.12 (``test_provider_error_classification`` was pulling ``goal_runner`` at module level, polluting ``test_skill_import``'s database state).
 
 ### Upgrading
 
-`git pull` + restart the server (or `castor-worker`). The first goal_runner claim on the new code applies migration 015 automatically. No config changes required.
-
-If you have goals paused or failed on v0.23.0 with `APIStatusError 402` (OpenRouter out of credits) in the error field, you can manually convert them to `paused` to make them resumable:
-
-```sql
-UPDATE goals
-SET status='paused', error=NULL, finished_at=NULL,
-    worker_id=NULL, lease_expires_at=NULL
-WHERE status='failed' AND error LIKE '%402%';
-```
+``git pull`` + restart. No config changes, no migrations.
