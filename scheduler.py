@@ -43,6 +43,7 @@ _callbacks = []  # [(fn, args)] — called when task completes
 HEARTBEAT_TASK_NAME = "__heartbeat__"
 SYNTHESIS_TASK_NAME = "__synthesis__"
 SYNTHESIS_CONTINUOUS_TASK_NAME = "__synthesis_continuous__"
+COACH_TASK_NAME = "__coach_daily__"
 
 
 def _ensure_table():
@@ -466,7 +467,8 @@ def remove_by_thread(thread_id: str) -> int:
     )
     removed = 0
     for rid, name in rows:
-        if name in (HEARTBEAT_TASK_NAME, SYNTHESIS_TASK_NAME, SYNTHESIS_CONTINUOUS_TASK_NAME):
+        if name in (HEARTBEAT_TASK_NAME, SYNTHESIS_TASK_NAME,
+                    SYNTHESIS_CONTINUOUS_TASK_NAME, COACH_TASK_NAME):
             continue  # system tasks survive even if their thread vanishes
         db.execute("DELETE FROM scheduled_tasks WHERE id=?", (rid,))
         _log.info(f"routine #{rid} '{name}' removed: its thread {thread_id} was deleted")
@@ -615,13 +617,54 @@ def _stamp_system_task_budgets():
         return
     _sys_cap = config.get("system_task_budget_usd")
     if _sys_cap:
-        for name in (HEARTBEAT_TASK_NAME, SYNTHESIS_TASK_NAME, SYNTHESIS_CONTINUOUS_TASK_NAME):
+        for name in (HEARTBEAT_TASK_NAME, SYNTHESIS_TASK_NAME,
+                     SYNTHESIS_CONTINUOUS_TASK_NAME, COACH_TASK_NAME):
             db.execute(
                 "UPDATE scheduled_tasks SET budget_usd_cap=?, budget_period_sec=86400 "
                 "WHERE name=? AND budget_usd_cap IS NULL",
                 (_sys_cap, name),
             )
     db.kv_set("_system_task_budgets_stamped", "1")
+
+
+def _register_coach():
+    """Auto-register the daily anti-pattern coach if enabled.
+
+    Inspired by Microsoft's AI Engineer Coach: scans recent agent_runs
+    / goals for known degenerate shapes (mega sessions, cost outliers,
+    capitulating goals, runaway synthesis, etc.) and saves a concise
+    markdown summary to ``memory`` so recall surfaces it on the user's
+    next turn. Pure-Python detection, no LLM cost.
+
+    Opt-in via ``setting:coach_enabled`` (default 0). Idempotent —
+    re-running at startup updates the schedule if the cadence changes;
+    no duplicate row.
+    """
+    if not config.get("coach_enabled"):
+        return
+    _ensure_table()
+    schedule = "daily 09:00"
+    # Stagger the first run to 1 hour after registration so a fresh
+    # install isn't slammed with a coach pass before any data exists.
+    next_run = time.time() + 3600
+    row = db.fetchone(
+        "SELECT id, schedule FROM scheduled_tasks WHERE name=?",
+        (COACH_TASK_NAME,),
+    )
+    if row:
+        if row[1] != schedule:
+            db.execute(
+                "UPDATE scheduled_tasks SET schedule=?, next_run=? WHERE id=?",
+                (schedule, next_run, row[0]),
+            )
+            _log.info(f"coach schedule updated: {schedule}")
+        return
+    db.execute(
+        "INSERT INTO scheduled_tasks (name, task, schedule, next_run, repeat, enabled) "
+        "VALUES (?,?,?,?,1,1)",
+        (COACH_TASK_NAME, COACH_TASK_NAME, schedule, next_run),
+    )
+    _log.info(f"coach registered: {schedule}")
 
 
 def start():
@@ -633,6 +676,7 @@ def start():
     _register_heartbeat()
     _register_synthesis()
     _register_synthesis_continuous()
+    _register_coach()
     _stamp_system_task_budgets()
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
@@ -795,6 +839,8 @@ def _is_routine(task_desc: str) -> bool:
     if task_desc == SYNTHESIS_TASK_NAME:
         return False
     if task_desc == SYNTHESIS_CONTINUOUS_TASK_NAME:
+        return False
+    if task_desc == COACH_TASK_NAME:
         return False
     low = task_desc.lower()
     reminder_markers = ("remind", "напомни", "напоминание", "напомнить",
@@ -1222,6 +1268,13 @@ def _execute_task(task_desc: str, max_rounds: int = 10, tool_executor=None) -> s
     if task_desc == SYNTHESIS_CONTINUOUS_TASK_NAME:
         import synthesis
         return synthesis.run_continuous()
+
+    # Anti-pattern coach — scans recent agent_runs / goals for known
+    # degenerate shapes, writes a markdown summary to memory. Pure
+    # Python, no LLM. Inspired by Microsoft's AI Engineer Coach.
+    if task_desc == COACH_TASK_NAME:
+        import coach
+        return coach.run_pass()
 
     # Simple reminders don't need LLM — just return a clean notification
     reminder_markers = ["remind", "напомни", "напоминание", "напомнить", "выпить", "drink", "stretch", "break"]

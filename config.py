@@ -316,6 +316,10 @@ EDITABLE_SETTINGS = {
     # ── Trajectory recording ──
     "trajectory_enabled":   ("setting:trajectory_enabled",   int, 0,  "Record every agent run as a JSONL trajectory file under ~/.castor/trajectories/. Useful for audit, debug, and future replay. Disabled by default — opt-in.", 0, 1),
     "trajectory_keep_days": ("setting:trajectory_keep_days", int, 30, "Auto-delete trajectory files older than N days. 0 = keep forever.", 0, 365),
+    # ── Coach (analyzes recent agent_runs for anti-patterns, writes a daily summary to memory) ──
+    # Inspired by Microsoft's AI Engineer Coach extension; subset of their 45 rules adapted to our agent_runs / goals tables.
+    "coach_enabled":        ("setting:coach_enabled",        int, 0,  "Run the daily anti-pattern coach (0=off, 1=on). Scans the last N days of agent_runs + goals for cost outliers, mega-sessions, shell-heavy passes, capitulating goals, etc. and saves a concise summary to memory so recall surfaces it next turn.", 0, 1),
+    "coach_lookback_days":  ("setting:coach_lookback_days",  int, 7,  "Days of agent_runs / goals to scan per coach pass. 7 matches weekly retrospectives; lower for tighter focus.", 1, 90),
     "rag_chunk_overlap":    ("setting:rag_chunk_overlap",     int, 100,    "RAG chunk overlap in chars", 0, 500),
     "tz_name":              ("setting:tz_name",               str, "",     "IANA timezone name (e.g. Europe/Moscow, America/New_York). When set, scheduler uses it via zoneinfo and honours DST. Empty = use fixed TZ_OFFSET.", "", ""),
     "fallback_provider":    ("setting:fallback_provider",     str, "",     "Fallback provider for complex tasks (e.g. openrouter)", "", ""),
