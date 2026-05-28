@@ -182,413 +182,43 @@ These are the techniques the agent uses to stay reliable across model sizes — 
 
 ## Interfaces
 
-### Web UI
-
-```bash
-castor --web                    # http://localhost:7860
-castor --web --ssl --port 7861  # HTTPS (needed for mic/camera)
-```
-
-Premium single-file SPA — **zero runtime JS dependencies** (no React, no CDN build). Linear / Vercel / Anthropic-Console aesthetic with Geist + Instrument Serif + Geist Mono type stack.
-
-**Shell**
-- 56-px icon rail (left) → chat / memory / scheduler / presets / settings
-- 264-px thread list with rename + delete inline actions
-- Editorial chat canvas (centered, 780 px)
-- Right-side **Inspector**: context-window gauge, INPUT / OUTPUT token cards, sparkbars (tokens-per-turn), recalled memories (`/api/knowledge/search` on last user prompt), active tools, latency bars
-- **⌘K command palette** + Gmail-style **Alt+letter** nav shortcuts
-- Keyboard cheatsheet modal (`Shift+?`)
-
-**Chat fidelity**
-- Streaming without flicker — in-place DOM patches, targeted updates, never full re-render during a turn
-- **Tool calls grouped by 11 categories** (memory / knowledge / files / shell / browser / web / vision / voice / automation / skills / orchestration), each expandable for full JSON input + output
-- **Markdown** rendering (H1–H6, bold / italic / strike, inline code, blockquote, lists, links)
-- **Code blocks** with line-number gutter, filename + language label, copy button
-- **Thinking** block as collapsible `<details>` after the turn ends
-- **Regenerate** = clean restart — server deletes the last user→assistant turn so the model has no idea it's a regeneration
-- Persistent attachments — images + files saved to message meta, survive server restart
-
-**Memory / Knowledge**
-- Drag-drop upload supporting **50+ formats** (see [Knowledge ingest](#knowledge-ingest))
-- URL scraping via MarkItDown
-- Folder scan — preview + batch index
-- Interactive knowledge graph (force-directed SVG) with hover edge highlights + search filter
-
-**Mobile**
-- iPhone safe-area insets on all 4 sides
-- Bottom tab bar replaces rail
-- Slide-in drawer for thread list
-- Composer textarea at 16 px (no iOS auto-zoom)
-- `100dvh` viewport, honors URL bar + home indicator
+- **Web UI** — `castor --web` (add `--ssl --port 7861` for mic/camera). Single-file SPA, zero runtime JS deps. Chat, memory browser, scheduler, presets, settings, knowledge graph, canvas panel, live voice mode.
+- **Terminal** — `castor`. Rich-formatted chat with 20+ slash commands (`/soul`, `/skills`, `/memory`, `/model`, `/cron`, `/doctor`, …).
+- **Telegram** — full mobile access: streaming replies, slash commands, topic-to-thread mapping, image vision. Setup → [docs/TELEGRAM.md](docs/TELEGRAM.md).
 
-**Settings** — 17 tabs grouped into Agent / I/O / Automation / System (Model, Soul, Tools, Memory, Voice, Camera, Telegram, MCP, Heartbeat, Inference, Network, Privacy, Appearance, Advanced, Account). Advanced sub-tabs expose all 30+ `EDITABLE_SETTINGS` as forms. **Abort** button stops runaway turns; **login modal** handles password-protected installs.
+## Features
 
-### Terminal (CLI)
+Castor's design principle: the system around the LLM does the heavy lifting, so the agent stays reliable on small local models and cheap on large hosted ones. Each feature below has a deep-dive guide in [`docs/`](docs/README.md).
 
-```bash
-castor
-```
+**Tool Search** — a meta-tool architecture that keeps the prompt lean. Only ~8 core tools load by default (`memory_search`, `memory_save`, `read_file`, `write_file`, `shell`, `http_request`, `spawn_task`, `tool_search`); the model calls `tool_search("browser")` / `"schedule"` / `"secret"` / … to activate the rest on demand. Saves ~75% of the tokens a flat 49-tool list would burn.
 
-Rich-formatted terminal chat with 20+ slash commands: `/soul`, `/skills`, `/memory`, `/model`, `/thread`, `/cron`, `/logs`, `/stats`, `/doctor` and more.
+**Memory & Knowledge Graph** — 3-layer system in one Qdrant collection: raw facts (saved instantly) → entities with typed relations → wiki summaries (both built by a nightly synthesis job). Hybrid retrieval fuses dense (FastEmbed MiniLM, 384d, 50+ languages) + sparse (SPLADE++) + BM25 via RRF. Thread-isolated, auto-chunked, secret-scrubbed. Interactive force-directed graph in the Web UI. → [docs/MEMORY.md](docs/MEMORY.md)
 
-### Telegram Bot
+**Knowledge ingest** — 50+ formats via Microsoft MarkItDown: PDF / DOCX / PPTX / XLSX / EPUB / HTML / code / data / images. Drop files, paste a URL, or scan a folder. Chunked, embedded, and queued for entity + wiki synthesis. → [docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)
 
-Full mobile access — streaming responses, slash commands, topic-to-thread mapping, image support, formatted messages. [Setup guide below](#telegram-bot-setup).
+**Skills** — pluggable single-file Python modules. Nine built in (`browser`, `canvas`, `serial_port`, `mcp_manager`, `skill_creator`, `soul_editor`, `notes`, `timer`, `weather`); create new ones from chat (`skill_creator` runs a plan→code→validate pipeline) or import from the agentskills.io spec. → [docs/SKILLS.md](docs/SKILLS.md) · [docs/SKILLS_IMPORT.md](docs/SKILLS_IMPORT.md)
 
-## Tool Search
-
-Castor uses a **meta-tool architecture** to minimize token usage. Only 8 core tools are loaded by default:
-
-| Core Tool | Purpose |
-|-----------|---------|
-| `memory_search` | Search saved memories |
-| `memory_save` | Save to long-term memory |
-| `read_file` | Read file contents |
-| `write_file` | Write/create files |
-| `shell` | Run bash commands |
-| `http_request` | HTTP requests to any API |
-| `spawn_task` | Run tasks in background |
-| `tool_search` | Discover & activate more tools |
-
-When the model needs more capabilities, it calls `tool_search("browser")` or `tool_search("notes")` — which activates the relevant tools for that turn.
-
-**Keywords:** `browser`, `notes`, `schedule`, `secret`, `mcp`, `profile`, `rag`, `skill`, `soul`, `timer`, `model`, `cron`
-
-This saves **~3000 tokens per request** compared to loading all 46 tools.
-
-## Tools
-
-49 tools total across core + extensions + skills:
-
-| Category | Tools | Loaded |
-|----------|-------|--------|
-| **Memory** | `memory_search`, `memory_save`, `memory_delete` | Core |
-| **Files & Shell** | `read_file`, `write_file`, `shell` | Core |
-| **HTTP** | `http_request` | Core |
-| **Tasks** | `spawn_task`, `schedule_task`, `list_cron`, `remove_cron` | Core + Search |
-| **Vault** | `secret_save`, `secret_get`, `secret_list`, `secret_delete` | Search |
-| **RAG** | `rag_index`, `rag_search`, `rag_status` | Search |
-| **Browser** | `browser_open`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_fill`, `browser_eval`, `browser_close` | Search |
-| **Notes** | `create_note`, `list_notes`, `read_note`, `edit_note`, `delete_note` | Search |
-| **Model** | `switch_model` | Search |
-| **Profile** | `user_profile_update`, `user_profile_get` | Search |
-| **Hardware (serial)** | `serial_list_ports`, `serial_read_once`, `serial_write` | Search |
-
-## Skills
-
-Pluggable skill system — built-in skills + create your own from chat:
-
-| Skill | Description |
-|-------|-------------|
-| `browser` | Web browsing via Playwright (open, read, click, screenshot) |
-| `mcp_manager` | Manage MCP tool servers (add, remove, restart) |
-| `skill_creator` | Create new skills from chat (multi-step LLM pipeline) |
-| `soul_editor` | AI-assisted personality tuning |
-| `notes` | Note management |
-| `timer` | Countdown timers |
-| `weather` | Weather reports via wttr.in |
-| `serial_port` | Talk to USB-serial / RS-232 / RS-485 hardware (scales, scanners, GPS, label printers, PLCs over Modbus RTU) — Windows / macOS / Linux |
-| `canvas` | Render HTML in a sandboxed right-side panel — forms (blocking, returns user input), dashboards (saveable), mockups / prototypes |
-
-### Creating skills from chat
-
-```
-You: create a skill for tracking my daily habits
-Agent: Skill 'habit_tracker' generation started...
-       plan -> tools -> code -> validate -> Created and enabled! (3 tools, 45s)
-```
-
-## Browser
-
-Built-in browser control via Playwright + headless Chromium:
-
-```
-You: open google.com and search for "qwen 3.5 benchmarks"
-Agent: [tool_search("browser")] -> [browser_open] -> [browser_snapshot]
-       Found results: ...
-```
-
-Tools: `browser_open`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_fill`, `browser_eval`, `browser_close`
-
-Activated via `tool_search("browser")`. The agent can navigate pages, read content, fill forms, click buttons, and take screenshots.
-
-## Hardware
-
-Castor runs on a real machine — and your machine is plugged into real hardware. Cloud agents can't see your floor; Castor can. The built-in **`serial_port`** skill talks USB-serial / RS-232 / RS-485 to the universe of business devices that show up on every loading dock, lab bench, retail counter, and factory line.
-
-Cross-platform via `pyserial`: same API on **Windows** (`COM3`), **macOS** (`/dev/tty.usbserial-…`), and **Linux** (`/dev/ttyUSB0`).
-
-**Tools** (activated via `tool_search("serial")` / `"scale"` / `"modbus"` / `"rfid"` / `"barcode"` / `"gps"` / `"plc"` / `"hardware"`):
-
-| Tool | Purpose |
-|---|---|
-| `serial_list_ports` | Enumerate plugged-in devices with description, manufacturer, VID:PID |
-| `serial_read_once` | Open → read one frame (line / N bytes / timeout) → close. Text or hex. |
-| `serial_write` | Open → write → close. **Gated by `confirm=true`** — writes to PLCs / actuators can damage equipment. |
-
-### What you can plug in
-
-| Category | Examples | Use case |
-|---|---|---|
-| **Weighing scales** | Mettler Toledo, CAS, Ohaus | Warehouse: "weigh pallet → ID via barcode → log to inventory + print label" |
-| **Barcode / RFID readers** | Datalogic, Honeywell (RS-232), UHF inventory readers | Receiving, stocktake, asset tracking, real-time inventory |
-| **GPS modules** | u-blox NEO-6M / 9M | Fleet tracking, geofence-into-warehouse triggers |
-| **Label printers** | Zebra (ZPL), TSC, Godex (ESC/P) | "Print this shipping label for the order I just packed" |
-| **Receipt printers** | Epson / Star / Bixolon (ESC/POS) | POS, kitchen display tickets |
-| **Industrial PLCs** | Anything Modbus RTU over RS-485 | Factory automation — read sensors, command motors, monitor production lines |
-| **VFDs / inverters** | Modbus-RTU drives | Pump and motor control |
-| **Environmental sensors** | pH, conductivity, gas, humidity, temperature | Greenhouses, labs, climate-controlled storage |
-| **Energy meters** | RS-485 with DLMS/COSEM | Plant-floor power monitoring, billing |
-| **Cash drawers / fingerprint scanners / SCUD turnstiles** | Standard serial-trigger devices | POS, time tracking, access control |
+**Browser** — Playwright + Chromium. Navigate, read, click, fill forms, screenshot. Headless by default; visible mode for logged-in sessions and OAuth flows. → [docs/BROWSER.md](docs/BROWSER.md)
 
-### Concrete scenarios that just work
+**Hardware** — the `serial_port` skill talks USB-serial / RS-232 / RS-485 to scales, barcode/RFID readers, GPS, label & receipt printers, PLCs (Modbus RTU), VFDs, and sensors. Cross-platform via `pyserial`. Actuator writes are gated behind an explicit `confirm=true` with a hex preview. → [docs/HARDWARE.md](docs/HARDWARE.md)
 
-**Weighing flow with Telegram alerts:**
+**Canvas** — render model-supplied HTML in a sandboxed 480px side panel: blocking forms that return submitted data, saveable dashboards, throwaway mockups. Iframe is `sandbox="allow-scripts allow-forms"` with no `allow-same-origin`, so generated HTML can't read parent state. → [docs/CANVAS.md](docs/CANVAS.md)
 
-```
-You: I have Mettler Toledo scales on COM3 baud 9600. When I weigh
-     something, ask me what it is via Telegram and log it.
-Agent: [tool_search("scale")] → activates 3 serial tools
-       [serial_list_ports] → confirms "USB-Serial CH340 (COM3)"
-       [serial_read_once port=COM3 baud=9600 until="newline"]
-         → "ST,GS,+00012.345,kg"
-       [telegram_notify_owner "I just weighed 12.345 kg — what was it?"]
-       [memory_save "Weighed 12.345 kg of [user reply] on 2026-05-09 14:32"]
-       Done.
-```
+**Routines** — scheduled tasks that live as chat threads: each firing appends a turn, and corrections you add between runs become context for the next. Natural schedule syntax (`every 2h`, `weekdays 09:00`, `mon,wed,fri 14:30`). Per-routine USD budget caps. → [docs/ROUTINES.md](docs/ROUTINES.md)
 
-**Modbus RTU on a VFD with safety:**
+**Goals** — long-running autonomous tasks. A durable SQLite queue + worker daemon survives disconnects and restarts; an orchestrator breaks the goal into subtasks, dispatches specialized subagents, and an acceptance gate validates deliverables before marking done. → [docs/GOALS.md](docs/GOALS.md)
 
-```
-You: Read the current frequency setpoint from the VFD on COM5
-     (Modbus address 1, register 0x2000).
-Agent: [serial_read_once] → constructs Modbus frame in hex,
-       decodes the response → "Setpoint is 50.0 Hz (raw 0x01F4)"
+**MCP** — connect external Model Context Protocol tool servers (stdio or HTTP). Tools surface as `mcp__server__tool` and flow through tool_search. Manage via chat (`mcp_manager`) or Settings. → [docs/MCP.md](docs/MCP.md)
 
-You: Now set it to 30 Hz.
-Agent: [serial_write data="01 06 20 00 01 2C ..." confirm=false]
-       (DRY RUN — pass confirm=true to actually send.
-        port: COM5, bytes: 8, hex: 0106200001 2C...)
-       This will write 30.0 Hz (0x012C) to register 0x2000.
-       Confirm to proceed.
-You: yes go ahead
-Agent: [serial_write ... confirm=true] → "Wrote 8 bytes to COM5."
-```
+**Providers** — any OpenAI-compatible endpoint (LM Studio, Ollama, OpenAI, OpenRouter, Groq, Together, DeepSeek, + more) plus a native Anthropic adapter for prompt caching & thinking budgets. Switch per-thread via `/model` or Settings. → [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
-The `confirm=true` gate is mandatory on every actuator write — set incorrectly, a PLC write can physically damage equipment, so the agent always shows a hex preview first and requires explicit confirmation.
+**Voice & Camera** — live voice mode (VAD → STT → LLM → TTS → auto-listen), local or API STT, multiple TTS backends; camera capture via browser PiP or OpenCV. → [docs/VOICE.md](docs/VOICE.md) · [docs/CAMERA.md](docs/CAMERA.md)
 
-**GPS-triggered routine:**
+**Personality (Soul)** — 8 adjustable traits (humor, honesty, curiosity, brevity, formality, proactivity, empathy, creativity) plus custom traits, agent name, and language. Edit via `/soul`, Settings, or chat. → [docs/SOUL.md](docs/SOUL.md)
 
-```
-You: every 5 min read the GPS on COM4 and if I'm within 200m of
-     the warehouse coordinates (52.0123, 4.5678) ping me on Telegram.
-Agent: [tool_search("schedule")] [tool_search("gps")]
-       [schedule_task every="5m"] running:
-         serial_read_once port=COM4 until="newline"
-         parse $GPRMC, compute haversine, telegram_notify_owner if <200m
-       Done. Routine #4 scheduled.
-```
+**Cost tracking** — every LLM call records tokens + USD by thread, source, model, and provider, with LiteLLM-backed pricing. Surfaced in the Web UI. → [docs/COST_TRACKING.md](docs/COST_TRACKING.md)
 
-### Setup notes
-
-- **Linux**: serial reads need `dialout` group membership. `castor --doctor` flags this and prints the fix: `sudo usermod -aG dialout $USER` then re-login.
-- **macOS**: FTDI cables work out of the box. CH340 / CH341 cables on Apple Silicon need the [WCH driver](https://www.wch.cn/downloads/CH34XSER_MAC_ZIP.html).
-- **Windows**: drivers usually auto-install via Windows Update. CH340 may need the [WCH driver](https://www.wch.cn/download/CH341SER_EXE.html); FTDI cables are plug-and-play.
-
-For non-serial hardware (Zigbee, Z-Wave, Wi-Fi, MQTT), the practical bridge is **Home Assistant** — adding an HA MCP server through `mcp_manager` exposes its 2000+ integrations. Pattern docs in [`docs/HARDWARE.md`](docs/HARDWARE.md).
-
-## Canvas
-
-Rich UI in chat. The built-in **`canvas`** skill renders model-supplied HTML in a sandboxed right-side panel — 480px wide, mutually exclusive with the inspector. Three use cases:
-
-| Use case | Tool | Behavior |
-|---|---|---|
-| **Interactive forms** | `canvas_prompt(html, title?)` | BLOCKS the agent's turn until the user submits the form. Returns the submitted data as JSON. Mirrors `camera_capture`'s blocking pattern. |
-| **Dashboards** | `canvas_render(html, title?)` then `canvas_save(slug, title, html)` | Fire-and-forget render, then save under a slug. Saved dashboards appear in the **Canvases** left-nav view and survive reloads. |
-| **Mockups / prototypes** | `canvas_render(html, title?)` | Visual communication. Agent renders a layout; user gives feedback in chat; agent iterates. |
-
-### Concrete scenario
-
-```
-You:    Make a form to add a new client. Fields: full name, phone, source
-        (Google / Referral / Other).
-Agent:  [tool_search("form")] → activates canvas_prompt
-        [canvas_prompt html="<form>...</form>" title="New client"]
-        → panel opens on the right (480px), inspector auto-closes
-        → user fills + clicks Save
-Agent:  Receives {full_name: "Anna", phone: "+7 ...", source: "Google"}
-        [memory_save "Client Anna · +7 ... · via Google · 2026-05-11"]
-        Saved.
-```
-
-### Security
-
-The iframe is **rigorously sandboxed**: `<iframe sandbox="allow-scripts allow-forms">` — **no `allow-same-origin`**. Iframe origin is `"null"`, so model-generated HTML cannot read parent cookies, localStorage, or DOM. The only channel back to the agent is `parent.postMessage({type:'canvas_submit', data: {...}}, '*')`, filtered by iframe identity. External CDN resources (Chart.js, fonts) work, but without the user's auth.
-
-HTML cap: 256 KB per artifact, enforced at both skill entry and REST POST. Pattern docs + reference HTML template + postMessage protocol: [`docs/CANVAS.md`](docs/CANVAS.md).
-
-## MCP
-
-**Model Context Protocol** — connect external tool servers to extend the agent's capabilities:
-
-```
-You: add MCP server for filesystem access
-Agent: [tool_search("mcp")] -> [mcp_add_server] Added 'filesystem' (14 tools)
-```
-
-Supports **stdio** (subprocess) and **HTTP** transports. Configured via Settings > System > MCP Servers or through chat using the `mcp_manager` skill.
-
-MCP tools appear as `mcp__servername__toolname` and are automatically available through tool_search.
-
-## Providers
-
-Primary target is **local models via LM Studio or Ollama**. Cloud providers supported as fallback:
-
-| Provider | Type | Notes |
-|----------|------|-------|
-| **LM Studio** | Local | Primary target. Auto-loads models |
-| **Ollama** | Local | Standard Ollama API |
-| **OpenAI** | Cloud | GPT-4o, GPT-4.1, etc. |
-| **OpenRouter** | Cloud | Multi-model gateway |
-| **Groq** | Cloud | Fast inference |
-| **Together** | Cloud | Open-source models |
-| **DeepSeek** | Cloud | DeepSeek models |
-
-Switch on the fly via `/model` (CLI/Telegram) or Settings (Web UI). Auto-discovers available models.
-
-## Knowledge ingest
-
-The knowledge base ingests **50+ formats** via Microsoft **MarkItDown** (primary) with stdlib fallbacks (pinned as hard deps — no silent degradation on fresh installs):
-
-| Category | Formats |
-|---|---|
-| **Documents** | PDF · DOCX · PPTX · XLSX · EPUB · ODT · RTF · Jupyter notebooks (`.ipynb`) |
-| **Web** | HTML · any `https://…` URL (MarkItDown handles fetch + markdown conversion) |
-| **Data** | JSON · CSV · TSV · YAML · TOML · XML · INI · ENV |
-| **Code** | Python, JS/TS, Go, Rust, Java/Kotlin/Scala, C/C++, Ruby, PHP, SQL, GraphQL, 40+ extensions total |
-| **Markup** | Markdown · reStructuredText · AsciiDoc · TeX |
-| **Images** | PNG · JPG · WEBP — via vision pipeline |
-
-### Three ways to ingest
-
-1. **Drop or pick files** — Memory tab upload-zone → batch upload + index
-2. **Paste URL** — `POST /api/knowledge/url` fetches, converts to markdown, indexes under `source:url` tag
-3. **Scan folder** — preview first (lists indexable files with size/method), then index all in one pass
-
-Each source is stored under `~/.castor/uploads/kb/<slug>_<name>`, chunked into ~800-char pieces, embedded + dense-vector-indexed in Qdrant, and queued for the nightly **synthesis** job that extracts entities + wiki pages from the content.
-
-## Memory & Knowledge Graph
-
-Three-layer knowledge system in a single Qdrant collection:
-
-```
-Layer 1: RAW           Layer 2: ENTITIES        Layer 3: WIKI
-(saved immediately)    (night synthesis)        (night synthesis)
-
-"FastAPI uses       -> [FastAPI] --uses-->      "FastAPI is a modern
- Pydantic for          [Pydantic]               Python framework that
- validation..."        [Python]                  uses Pydantic for
-                       [Starlette]               automatic validation..."
-```
-
-### How it works
-
-**During the day** (fast, no LLM cost):
-- Agent saves facts and knowledge via `memory_save`
-- Long texts (>1000 chars) auto-chunked into ~800 char pieces
-- Each chunk tagged `synthesis_status=pending`
-
-**At night** (configurable cron, default 03:00):
-- Synthesis worker processes pending queue
-- LLM extracts entities + relations from chunks
-- Creates entity nodes with typed relations (uses, built_on, part_of, etc.)
-- Generates wiki summaries stored as searchable chunks
-- Writes markdown to `~/.castor/wiki/` as human-readable backup
-
-**During search** (enriched context):
-- Wiki chunks found first (synthesized = higher quality embeddings)
-- Entity relations expanded (follow links to related knowledge)
-- Raw chunks provide specifics
-- Result: synthesized + structured + raw knowledge in one query
-
-### Features
-
-- **Hybrid search**: FastEmbed dense (384d, 50+ languages) + SPLADE++ sparse, fused via RRF
-- **Auto-chunking**: long texts split on sentence boundaries with overlap
-- **Knowledge graph**: entities with typed relations, built automatically
-- **Wiki pages**: synthesized markdown, searchable and human-readable
-- **Graph visualization**: interactive force-directed graph in Web UI (Knowledge > Graph tab)
-- **Thread isolation**: each conversation has its own memory context
-- **Smart compaction**: old messages summarized and saved to memory when context fills
-- **Auto-context**: wiki + entities + memories injected into each turn
-- **Experience learning**: past task outcomes inform future strategies
-- **Modes**: in-memory (testing), disk (default), or remote Qdrant server
-
-## Routines (scheduled tasks)
-
-A routine is a chat thread with a schedule attached. Each firing appends a new user + assistant turn to the same thread — tool calls, thinking steps, and replies all visible as a normal conversation. Corrections you add between firings become context the agent sees on the next run, so you can debug a misbehaving routine through dialogue.
-
-**Schedule syntax** (natural, no 5-field cron):
-
-```
-"in 5m"             -> run once in 5 minutes
-"every 2h"          -> repeat every 2 hours
-"every 30m"         -> repeat every 30 minutes
-"every 2 days 09:00" -> repeat every 2 days at 09:00
-"daily 09:00"       -> every day at 09:00
-"weekdays 09:00"    -> Mon-Fri at 09:00
-"weekends 10:00"    -> Sat-Sun at 10:00
-"mon,wed,fri 14:30" -> those days at 14:30
-"14:30"             -> once today/tomorrow at 14:30
-```
-
-**UI controls**:
-- Routines tab → New routine modal (frequency picker with day chips + time)
-- ▶ Run now button fires out-of-schedule; ⏸ Pause / Resume skips firings without deleting
-- Four-state status badge: running / active / last run failed / paused
-- Routine's thread opens with one click from the card; deleting either side cascades
-
-**Tools available inside routines**: everything in the core tool set, plus `telegram_notify_owner(text)` for one-call sends to the verified owner (no token/chat-id wrangling).
-
-## Telegram Bot Setup
-
-1. Create a bot via [@BotFather](https://t.me/BotFather) -> copy the token
-2. Set the token: `/telegram token <TOKEN>` (CLI) or Settings -> Telegram (Web)
-3. Start the bot: `/telegram start`
-4. Generate activation code: `/telegram activate`
-5. Send the 6-digit code to your bot in Telegram
-
-### Security
-
-- One-time 6-digit codes, expire in 10 minutes
-- 3 wrong attempts -> permanent ban (by Telegram user ID)
-- Only verified owner can chat with the bot
-
-### Telegram Features
-
-- **Streaming responses** via editMessageText
-- **Topic isolation**: supergroup topics -> separate threads
-- **Formatted messages**: MarkdownV2 with HTML fallback
-- **Image support**: send images for vision analysis
-- **Cron results**: scheduled task output delivered to chat
-- 12 slash commands: `/status`, `/model`, `/soul`, `/skills`, `/memory`, `/threads`, `/stats`, `/cron`, `/thinking`, `/doctor`, `/clear`, `/help`
-
-## Personality (Soul)
-
-8 adjustable traits (low / moderate / high):
-
-| Trait | Low | High |
-|-------|-----|------|
-| humor | serious | jokes around |
-| honesty | diplomatic | brutally honest |
-| curiosity | answers questions | asks follow-ups |
-| brevity | verbose | concise |
-| formality | casual | formal |
-| proactivity | waits for requests | suggests ideas |
-| empathy | rational | empathetic |
-| creativity | practical | unconventional |
-
-Plus custom traits, agent name, and language selection. Edit via `/soul` (CLI), Settings (Web), or `/soul` (Telegram).
+The reliability internals that keep all of this working on small models — JSON repair, anti-hedge nudging, self-check, loop detection, compaction, auto-resume — are described under [Engineering around the LLM](#engineering-around-the-llm) above.
 
 ## Diagnostics
 
@@ -596,7 +226,7 @@ Plus custom traits, agent name, and language selection. Edit via `/soul` (CLI), 
 castor --doctor
 ```
 
-Checks 20+ system components: Python, dependencies, SQLite, Qdrant, provider, LLM API, model loaded, embeddings, inference latency, agent loop v2, MCP servers, browser skill, Telegram, threads, skills, tools, cron/heartbeat, STT/TTS, files indexed, knowledge graph (entities/wiki), synthesis cron, BM25 index, disk space, logs.
+Checks 30+ components: Python, deps, SQLite, Qdrant, provider + LLM API, model loaded, embeddings, inference latency, MCP servers, browser skill, Telegram, threads, skills, tools, cron/heartbeat, STT/TTS, indexed files, knowledge graph, synthesis, BM25 index, disk space, and logs.
 
 ## Config
 
@@ -639,36 +269,7 @@ docker compose up
 
 LM Studio / Ollama should be running on the host. Persistent data in `./data/`.
 
-## Project Structure
-
-```
-cli.py            Terminal interface + entry point
-server.py         FastAPI web server + WebSocket
-agent.py          Core agent loop + JSON repair + self-check
-config.py         Settings (env-configurable)
-db.py             SQLite storage (WAL mode)
-memory.py         Qdrant semantic memory (hybrid search)
-rag.py            RAG file indexing & search
-tools.py          Tool definitions + tool_search + execution
-mcp_client.py     Model Context Protocol client
-providers.py      Multi-provider LLM management
-soul.py           Personality system + prompt generation
-tasks.py          Background task runner
-scheduler.py      Cron-like scheduler
-threads.py        Thread management
-telegram_bot.py   Telegram bot integration
-vault.py          Encrypted secrets (Fernet)
-logger.py         Structured logging
-skills/           Pluggable skill modules
-  browser.py      Web browsing (Playwright)
-  mcp_manager.py  MCP server management
-  skill_creator.py Skill generation pipeline
-  soul_editor.py  Personality editing
-  notes.py        Note management
-  timer.py        Countdown timers
-  weather.py      Weather reports
-static/           Web UI (single-file HTML/CSS/JS)
-```
+A module-by-module map of the codebase lives in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Documentation
 
