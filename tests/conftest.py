@@ -60,6 +60,18 @@ def qwe_temp_data_dir(monkeypatch):
         except Exception:
             pass
 
+    # Close any stale Qdrant client before reload — same issue class
+    # as the DB connection above. Qdrant in disk mode keeps a sqlite
+    # file lock; a stale singleton bound to the developer's production
+    # ``~/.castor/memory`` will refuse writes (readonly database) or
+    # hold the lock from a test that needed to mutate. Required for
+    # ``memory.reindex_from_markdown`` integration tests.
+    if "memory" in sys.modules:
+        try:
+            sys.modules["memory"]._close_qdrant()
+        except Exception:
+            pass
+
     # Reload in dependency order.
     #
     # ``goal_runner`` / ``orchestrator`` / ``subagent`` are reloaded because
@@ -71,7 +83,8 @@ def qwe_temp_data_dir(monkeypatch):
     # ``test_skill_import`` hitting "no such table: skill_imports" right
     # after a test_provider_error_classification test ran.
     for mod_name in ("config", "db", "soul", "presets",
-                     "goal_validators", "subagent", "orchestrator", "goal_runner"):
+                     "goal_validators", "subagent", "orchestrator", "goal_runner",
+                     "memory_store", "memory"):
         if mod_name in sys.modules:
             importlib.reload(sys.modules[mod_name])
         else:
@@ -100,8 +113,16 @@ def qwe_temp_data_dir(monkeypatch):
         # (monkeypatch will have restored the original value before this runs
         #  in the normal finalizer order — but we also reload here so later
         #  tests don't see state tied to the now-removed tempdir).
+        # Close + reset Qdrant client so subsequent tests don't reuse
+        # a handle bound to the about-to-be-deleted tempdir.
+        if "memory" in sys.modules:
+            try:
+                sys.modules["memory"]._close_qdrant()
+            except Exception:
+                pass
         for mod_name in ("config", "db", "soul", "presets",
-                         "goal_validators", "subagent", "orchestrator", "goal_runner"):
+                         "goal_validators", "subagent", "orchestrator", "goal_runner",
+                         "memory_store", "memory"):
             if mod_name in sys.modules:
                 try:
                     importlib.reload(sys.modules[mod_name])

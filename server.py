@@ -3384,6 +3384,26 @@ async def knowledge_graph_clear():
     return {"ok": True, "message": "Graph cleared — entities and wiki removed"}
 
 
+@app.post("/api/knowledge/reindex")
+async def knowledge_reindex(skip_existing: bool = True):
+    """Re-embed every markdown atom under ``~/.castor/memories/atoms/`` and
+    upsert it into Qdrant + FTS5 — recovery path for a desync where the
+    canonical markdown layer survived but the derived search indexes are
+    empty.
+
+    Symptom this fixes: ``memory.search`` returns 0 / knowledge graph
+    view is empty, but ``GET /api/memory/list?tag=entity`` (which reads
+    the markdown layer) returns rows.
+
+    ``skip_existing`` (default True) skips any atom whose id is already
+    in Qdrant — repeat calls are no-ops on a healthy install.
+
+    Returns stats ``{scanned, written, skipped, errors}``.
+    """
+    stats = mem.reindex_from_markdown(skip_existing=skip_existing)
+    return {"ok": True, **stats}
+
+
 @app.get("/api/knowledge/list")
 async def knowledge_list():
     """List indexed files. When preset active, show only preset's files."""

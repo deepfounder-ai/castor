@@ -991,6 +991,131 @@ def get_all_entities(limit: int = 200) -> list[dict]:
         return []
 
 
+# ── Reindex from markdown (Phase 1 recovery path) ──
+
+
+def upsert_with_id(point_id: str, *, text: str, tag: str,
+                   thread_id: str | None = None,
+                   meta: dict | None = None,
+                   synthesis_status: str = "skip") -> None:
+    """Re-embed and upsert a memory under an EXISTING point_id.
+
+    Companion to :func:`_save_single` which always allocates a fresh
+    UUID. The reindex path needs to preserve ids so cross-references
+    (entity ``relations[].to`` pointing at another entity by name, or
+    wiki referencing entity ids) stay valid after rebuild.
+
+    Skips the markdown-companion write — the markdown atom is the
+    SOURCE of truth in this code path; we only need to refresh the
+    Qdrant + FTS5 derived indexes.
+    """
+    qc = _get_qdrant()
+    dense_vector = _embed(text)
+    sparse_vector = sparse_embed(text)
+    payload = {
+        "text": text,
+        "tag": tag,
+        "ts": time.time(),
+        "synthesis_status": synthesis_status,
+    }
+    if thread_id:
+        payload["thread_id"] = thread_id
+    if meta:
+        payload.update(meta)
+    qc.upsert(
+        config.QDRANT_COLLECTION,
+        points=[PointStruct(
+            id=point_id,
+            vector={"dense": dense_vector, "sparse": sparse_vector},
+            payload=payload,
+        )],
+    )
+    import db
+    db.fts_upsert("fts_memory", "point_id", point_id,
+                  {"tag": tag, "text": text})
+
+
+def reindex_from_markdown(*, skip_existing: bool = True) -> dict:
+    """Walk all markdown atoms and ensure each is present in Qdrant + FTS5.
+
+    Recovery path for a Qdrant ↔ markdown desync — observed when the
+    Qdrant collection gets wiped (e.g. via ``/api/knowledge/graph/clear``
+    or a corrupt-rebuild) while the canonical markdown layer survives.
+    Symptom: ``memory.search`` returns 0 results and the knowledge-graph
+    view is empty even though ``~/.castor/memories/atoms/`` contains
+    hundreds of files.
+
+    ``skip_existing=True`` (default) scans Qdrant once at the start to
+    collect point ids that are already present and skips them — keeps
+    a no-op reindex fast on an already-healthy install.
+
+    Returns a stats dict ``{scanned, written, skipped, errors}``. Never
+    raises — a malformed atom is logged and counted toward ``errors``
+    so the rest of the sweep continues.
+    """
+    import memory_store
+    ids = memory_store.iter_all()
+    scanned = written = skipped = errors = 0
+
+    existing: set[str] = set()
+    if skip_existing:
+        try:
+            qc = _get_qdrant()
+            offset = None
+            # Pull EVERY point id with a no-filter scroll — cheap because
+            # we ask for empty payload + no vectors.
+            while True:
+                batch, next_offset = qc.scroll(
+                    config.QDRANT_COLLECTION,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=False,
+                    with_vectors=False,
+                )
+                if not batch:
+                    break
+                existing.update(str(p.id) for p in batch)
+                if next_offset is None:
+                    break
+                offset = next_offset
+        except Exception as e:
+            _log.warning(f"reindex: pre-scroll failed, will not skip any: {e}")
+            existing = set()
+
+    for pid in ids:
+        scanned += 1
+        if skip_existing and pid in existing:
+            skipped += 1
+            continue
+        atom = memory_store.read(pid)
+        if not atom or not atom.get("text"):
+            errors += 1
+            continue
+        try:
+            upsert_with_id(
+                pid,
+                text=atom["text"],
+                tag=atom.get("tag") or "general",
+                thread_id=atom.get("thread_id"),
+                meta=atom.get("meta") or {},
+            )
+            written += 1
+        except Exception:
+            _log.exception(f"reindex: upsert failed for {pid}")
+            errors += 1
+
+    _log.info(
+        f"reindex_from_markdown: scanned={scanned} written={written} "
+        f"skipped={skipped} errors={errors}"
+    )
+    return {
+        "scanned": scanned,
+        "written": written,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
 # ── Delete / Cleanup ──
 
 def delete(point_id: str) -> bool:
