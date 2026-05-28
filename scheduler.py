@@ -776,10 +776,25 @@ def _check_and_run():
 def _is_routine(task_desc: str) -> bool:
     """True if this is a user-created routine (runs through agent.run in a
     dedicated thread), False for system tasks (heartbeat, synthesis) and
-    trivial reminders which keep the fast stateless path."""
+    trivial reminders which keep the fast stateless path.
+
+    ``SYNTHESIS_CONTINUOUS_TASK_NAME`` is in the False-list as of v0.23.2.
+    Before that it returned True by default and the scheduler routed
+    every 15-min fire through ``agent.run`` on the user's main thread —
+    each fire loaded the full system prompt + thread history + tool
+    catalog + recall, turning a "process 5 new memory items" job into
+    a megacontext sweep that cost $0.06-$9.86 per fire instead of the
+    stateless-path's ~$0. One user accumulated $41.94 in a week from
+    ~680 fires with no awareness. The fast path at
+    ``_execute_task::SYNTHESIS_CONTINUOUS_TASK_NAME`` (which calls
+    ``synthesis.run_continuous()`` directly with no LLM) was dead code
+    for a year because ``_is_routine`` claimed control first.
+    """
     if task_desc == HEARTBEAT_TASK_NAME:
         return False
     if task_desc == SYNTHESIS_TASK_NAME:
+        return False
+    if task_desc == SYNTHESIS_CONTINUOUS_TASK_NAME:
         return False
     low = task_desc.lower()
     reminder_markers = ("remind", "напомни", "напоминание", "напомнить",

@@ -245,3 +245,40 @@ def test_execute_routine_dispatches_nightly_synthesis(qwe_temp_data_dir):
 
     mock_night.assert_called_once_with()
     assert result == "nightly result"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cost-leak regression: __synthesis_continuous__ MUST use the fast
+# stateless path, NOT agent.run on the user's thread.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_is_routine_false_for_synthesis_continuous(qwe_temp_data_dir):
+    """Pre-v0.23.2 silent regression: ``_is_routine`` only excluded
+    ``__heartbeat__`` and ``__synthesis__`` from the routine path. The
+    trickle's task name (``__synthesis_continuous__``) was missed,
+    so every 15-min fire routed through ``agent.run`` on the user's
+    main thread (with full system prompt + history + tool catalog +
+    recall context), burning $0.06-$9.86 per fire instead of the
+    stateless ~$0 path. One user accumulated $41.94 in a week.
+
+    All three system task names must return False — agent.run is
+    reserved for user-created routines, NOT system housekeeping.
+    """
+    import scheduler
+    assert scheduler._is_routine(scheduler.HEARTBEAT_TASK_NAME) is False
+    assert scheduler._is_routine(scheduler.SYNTHESIS_TASK_NAME) is False
+    assert scheduler._is_routine(scheduler.SYNTHESIS_CONTINUOUS_TASK_NAME) is False
+
+
+def test_is_routine_true_for_user_routines(qwe_temp_data_dir):
+    """Sanity: real user-created routines (anything not on the
+    system-task allow-list and not a trivial reminder) still hit
+    the agent.run path. Without this confirmation the fix above
+    might over-exclude."""
+    import scheduler
+    # Free-form user prompts → routine path
+    assert scheduler._is_routine("scrape new leads from /api/customers") is True
+    assert scheduler._is_routine("post daily standup to #ops") is True
+    # The shortest non-reminder still counts
+    assert scheduler._is_routine("audit logs") is True

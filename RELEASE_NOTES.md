@@ -1,4 +1,12 @@
-## v0.23.2 — Phantom "generating" bubble fix
+## v0.23.2 — Phantom "generating" bubble fix + synthesis cost leak
+
+### Cost-leak fix: ``__synthesis_continuous__`` was going through ``agent.run``
+
+The 15-min trickle synthesis cron has been silently routed through ``agent.run`` on the user's main chat thread for the past year because ``scheduler._is_routine`` only excluded ``__heartbeat__`` and ``__synthesis__`` from the routine path — ``__synthesis_continuous__`` was missed. The dead-code fast path at ``scheduler._execute_task`` (which calls ``synthesis.run_continuous()`` directly, no LLM) was never reached because ``_is_routine`` claimed control first.
+
+Effect: every 15-min fire loaded the full system prompt + the user's main thread history (often hundreds of messages) + tool catalog + recall context, then went through multi-round agent loops processing whatever the model decided about the magic input ``__synthesis_continuous__``. One audited user accumulated **$41.94 of waste across 674 fires in 7 days** with no awareness. Worst single fire hit **$9.86 on 10.2M input tokens (32 min)**. Median nonzero fire was $0.058.
+
+Fix: add ``SYNTHESIS_CONTINUOUS_TASK_NAME`` to the False list in ``_is_routine``. The intended fast path (a direct call into ``synthesis.run_continuous()`` with no LLM, no context, no agent loop) now runs as designed.
 
 ### Critical user-facing fix
 
