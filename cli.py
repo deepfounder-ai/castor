@@ -1636,10 +1636,12 @@ def doctor():
         try:
             import importlib.metadata as _md
 
-            # If user explicitly set embed_device=cuda, they know what they're doing
+            # If user explicitly set embed_device=cuda, they know what they're doing.
+            # ``config`` is already imported at the top of cli.py — no alias rebind
+            # (CLAUDE.md anti-pattern: "Never use ``import X as _X`` alias just to
+            # re-bind a module-level name inside a function").
             try:
-                import config as _cfg
-                if _cfg.get("embed_device") == "cuda":
+                if config.get("embed_device") == "cuda":
                     return "✓ onnxruntime-gpu — user-configured (embed_device=cuda)"
             except Exception:
                 pass
