@@ -1635,11 +1635,57 @@ def doctor():
     def _check_onnxruntime_variant():
         try:
             import importlib.metadata as _md
+
+            # If user explicitly set embed_device=cuda, they know what they're doing
+            try:
+                import config as _cfg
+                if _cfg.get("embed_device") == "cuda":
+                    return "✓ onnxruntime-gpu — user-configured (embed_device=cuda)"
+            except Exception:
+                pass
+
+            def _pkg_disk_size(pkg_name):
+                """Estimate installed package size in bytes."""
+                try:
+                    files = _md.files(pkg_name)
+                    if not files:
+                        return 0
+                    import pathlib as _pl
+                    total = 0
+                    dist_loc = None
+                    for f in files:
+                        p = _pl.Path(f.locate())
+                        if dist_loc is None:
+                            dist_loc = p.parent
+                        if p.is_file():
+                            total += p.stat().st_size
+                    # Fallback: measure entire dist-info parent if individual files are sparse
+                    if total < 1_000_000 and dist_loc and dist_loc.is_dir():
+                        total = sum(p.stat().st_size for p in dist_loc.rglob("*") if p.is_file())
+                    return total
+                except Exception:
+                    return 0
+
+            def _fmt_size(nbytes):
+                if nbytes >= 1_073_741_824:
+                    return f"~{nbytes / 1_073_741_824:.1f} GB"
+                if nbytes >= 1_048_576:
+                    return f"~{nbytes / 1_048_576:.0f} MB"
+                return f"~{nbytes / 1024:.0f} KB"
+
             try:
                 _md.version("onnxruntime-gpu")
-                # onnxruntime-gpu is installed → warn. It's 3GB of CUDA DLLs
-                # and causes LoadLibrary errors when CUDA Toolkit isn't in sync.
-                return ("⚠ onnxruntime-gpu detected — castor is CPU-only by design. "
+                size_hint = ""
+                sz = _pkg_disk_size("onnxruntime-gpu")
+                if sz:
+                    size_hint = f" ({_fmt_size(sz)} disk)"
+                # Check if user has CUDA toolkit — soften the warning
+                if os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME"):
+                    return ("⚠ onnxruntime-gpu detected alongside CUDA toolkit"
+                            f"{size_hint}. Castor uses CPU embeddings by default; "
+                            "the GPU package is unused unless embed_device=cuda is set.")
+                return ("⚠ onnxruntime-gpu detected — castor is CPU-only by design."
+                        f"{size_hint} "
                         "Run: pip uninstall onnxruntime-gpu && pip install onnxruntime")
             except _md.PackageNotFoundError:
                 pass
