@@ -1,56 +1,83 @@
-## v0.23.2 — Phantom "generating" bubble fix + synthesis cost leak
+## v0.23.3 — Coach, recovery helpers, polish
 
-### Cost-leak fix: ``__synthesis_continuous__`` was going through ``agent.run``
+Patch release on v0.23.2: opt-in daily anti-pattern coach, a recovery path for Qdrant ↔ markdown desync, a sharper `--doctor` warning for `onnxruntime-gpu` (community PR), and a brand refresh on the web UI.
 
-The 15-min trickle synthesis cron has been silently routed through ``agent.run`` on the user's main chat thread for the past year because ``scheduler._is_routine`` only excluded ``__heartbeat__`` and ``__synthesis__`` from the routine path — ``__synthesis_continuous__`` was missed. The dead-code fast path at ``scheduler._execute_task`` (which calls ``synthesis.run_continuous()`` directly, no LLM) was never reached because ``_is_routine`` claimed control first.
+No schema migrations, no breaking changes. Drop-in upgrade.
 
-Effect: every 15-min fire loaded the full system prompt + the user's main thread history (often hundreds of messages) + tool catalog + recall context, then went through multi-round agent loops processing whatever the model decided about the magic input ``__synthesis_continuous__``. One audited user accumulated **$41.94 of waste across 674 fires in 7 days** with no awareness. Worst single fire hit **$9.86 on 10.2M input tokens (32 min)**. Median nonzero fire was $0.058.
+### Coach — daily anti-pattern scan (opt-in, no LLM cost)
 
-Fix: add ``SYNTHESIS_CONTINUOUS_TASK_NAME`` to the False list in ``_is_routine``. The intended fast path (a direct call into ``synthesis.run_continuous()`` with no LLM, no context, no agent loop) now runs as designed.
+Inspired by Microsoft's [AI Engineer Coach](https://github.com/microsoft/AI-Engineering-Coach) VS Code extension. A small scheduled job (`__coach_daily__`, fires at 09:00) walks the last N days of `agent_runs` + `goals` + `scheduled_tasks` and writes a markdown summary to memory + an archive copy under `$DATA_DIR/uploads/coach-YYYY-MM-DD.md`. Pure SQL/Python, zero LLM cost.
 
-### Critical user-facing fix
+Six built-in rules:
 
-**Phantom "generating" assistant bubble appeared out of nowhere on idle chats and blocked further sends.**
+- `mega_session` — non-subagent run >30 min (loop/stuck candidate)
+- `cost_outlier` — any single run ≥ $1.00
+- `capitulating_goals` — goal status='done' with failed subtasks or no acceptance criteria
+- `shell_heavy` — input/output token ratio >50:1 across 3+ runs (proxy for shell-poking)
+- `synthesis_overspend` — system synthesis crons burning more than $0.10/day (regression guard for the v0.23.2 `_is_routine` fix)
+- `no_skills_used` — 30+ chat sessions with zero skill / tool_search hits
 
-User report: idle chat, agent's last reply already delivered, everything looked done — and suddenly a "castor 09:39 PM generating" status appeared with the typing indicator on. The bubble never closed, so the composer stayed in a busy state and new messages couldn't be sent.
+Each finding ships with severity, headline, and an actionable recommendation. Dry-run against the developer's actual ~/.castor surfaced 5 real anti-patterns including the historical synthesis cost leak.
 
-Root cause: ``static/index.html::handleWsMessage`` short-circuited only on a few notification WS types (``task_update``, ``canvas_*``, ``get_frame``, ``interrupted_turn``). The server emits 8 more notification types via ``_broadcast`` to every connected client regardless of which thread is in view — ``cron``, ``compaction``, ``update_progress``, ``update_done``, ``telegram``, ``knowledge_progress``, ``knowledge_gpu_warning``, ``knowledge_done``. Each slipped past the (incomplete) short-circuit list and hit the streaming-message creation gate, which opened a pending assistant bubble that NEVER received the ``done`` event that notifications don't emit.
+Opt-in via `setting:coach_enabled = 1`. Window configurable via `setting:coach_lookback_days` (default 7). 20 unit tests pin the rules + scheduler wire-up.
 
-The exact 09:39 PM scenario: the ``__synthesis_continuous__`` cron fires every 15 minutes, the cron callback broadcasts a ``cron`` WS message, every open web client opens a phantom bubble. Same class of bug as ``task_update`` (fixed in v0.18.3) but for the remaining notification types that were never wired up.
+### Knowledge graph recovery: `memory.reindex_from_markdown`
 
-Fix: explicit short-circuit handler for every broadcast notification type with appropriate UI treatment (toast for transient events, silent for events with their own panel). System-internal cron jobs (``__synthesis_continuous__``, ``__heartbeat__``) are silently filtered so the user isn't toasted by their own background curator every 15 minutes.
+User-facing symptom this fixes: the knowledge-graph view in the Web UI is empty and `memory.search` returns 0 results, despite hundreds of memory atoms visible via the markdown layer (`~/.castor/memories/atoms/`).
 
-### Auditing guard
+Phase-1 Living Memory writes Qdrant + markdown as siblings. If Qdrant gets wiped or rebuilt — corrupt-rebuild, manual `/api/knowledge/graph/clear`, or a migration that drops the collection — the markdown layer survives but the search indexes are gone. There was no reverse path to recreate them (`memory_store.backfill_from_qdrant` goes the wrong direction).
 
-The original bug pattern can recur whenever someone adds a new ``_broadcast({"type": "..."})`` call in ``server.py`` and forgets the corresponding client-side handler. New JS-contract test (``tests/test_ws_notification_short_circuit.py``) walks ``server.py`` for every ``_broadcast`` type literal and asserts the client has a short-circuit BEFORE the streaming gate. Adding a new notification type without wiring the client will now fail CI rather than ship as a phantom bubble.
+New `memory.upsert_with_id(point_id, text, tag, ...)` and `memory.reindex_from_markdown(skip_existing=True)`:
 
-### skill_creator: AST-level repair (closes #14)
+- Scrolls every markdown atom under `$DATA_DIR/memories/atoms/`
+- Re-embeds dense + sparse vectors
+- Upserts to Qdrant under the SAME point id (entity `relations[]` cross-references stay valid) + FTS5
+- `skip_existing=True` (default) scrolls Qdrant up-front to collect already-present ids and skips them — a no-op on a healthy install
+- Never raises; malformed atoms count as `errors` and the sweep continues
 
-Issue #14 documented a recurring LLM failure mode in the skill-creation pipeline: small models emit a tool-dispatch ``elif name == "...":`` with body ``pass`` and write the real implementation OUTSIDE the branch at function-body indent. The line-based regex fixer (``_fix_elif_body_indent``) caught the common shape but missed edge cases observed in the workspace_meter and camera_diagnostics field sessions — blank lines between Pass and the stray code, comments in between, chained-elif tail-stub patterns, tab/space inconsistencies.
+New `POST /api/knowledge/reindex` endpoint exposes it for one-click recovery from the UI / CLI.
 
-New ``_fix_stub_branch_outside_code`` does AST-level repair: parses the LLM output, walks dispatch ``If`` nodes whose tail is body=[Pass], pulls following non-dispatch siblings into the branch's body, re-emits via ``ast.unparse``. Defensive: returns the input unchanged if ``ast.parse`` can't handle it (lets downstream syntax check report the real error). Wired in two pipeline call sites (the main custom-code assembly and the SyntaxError recovery path).
+Verified on the affected install: 159 scanned, 133 written, 26 skipped, 0 errors. The knowledge-graph endpoint immediately returned 19 nodes + 38 links again.
 
-15 new tests pin the contract against the exact buggy shapes from the field sessions.
+### Web UI: server-broadcast notifications no longer open a phantom bubble
 
-### Dependency updates
+Carry-over fix from the v0.23.2 release-day investigation, restated here because more notification types were caught. `handleWsMessage` short-circuits all 12 broadcast notification types (`cron`, `compaction`, `update_*`, `telegram`, `knowledge_*`, `task_update`, `canvas_*`, `get_frame`/`frame_request`, `interrupted_turn`) BEFORE the streaming-gate that creates an assistant bubble. The cron handler additionally filters `__`-prefixed system jobs so users aren't toasted by their own background curator every 15 minutes. A JS-contract test walks `server.py` for new `_broadcast({"type": ...})` sites — adding a notification type without a client-side handler now fails CI rather than ships as a phantom bubble.
 
-Dependabot PRs #35-39 applied in batch:
+### Doctor: `onnxruntime-gpu` warning is now actionable (closes #8)
 
-  openpyxl       3.1   -> 3.1.5   (patch)
-  python-pptx    1.0   -> 1.0.2   (patch)
-  qdrant-client  1.11.0 -> 1.18.0 (7 minor — verified memory + rag still work)
-  readchar       4.0.0  -> 4.2.2  (minor)
-  requests       2.31.0 -> 2.34.2 (patch)
+Community contribution from @gberaberry-sys (PR #40).
+
+The doctor check that warns about `onnxruntime-gpu` (3 GB of CUDA DLLs Castor doesn't use under CPU-only embeddings) now:
+
+- Reports the **disk space** that would be freed (e.g. `~3.1 GB disk`).
+- Softens the warning when `CUDA_PATH` / `CUDA_HOME` is set — the user installed CUDA Toolkit intentionally, so the message switches to an informational "embeddings use CPU by default; GPU package is unused unless `embed_device=cuda`."
+- Skips the warning entirely when `setting:embed_device = cuda` is explicitly set — user knows what they're doing.
+
+### skill_creator AST repair (closes #14)
+
+Carry-over from v0.23.2 — restated for the changelog. New `_fix_stub_branch_outside_code` does AST-level repair for the LLM anti-pattern where small models emit `elif name == "x":  pass` and then write the real implementation outside the branch at function-body indent. The line-based `_fix_elif_body_indent` catches the common shape; the AST pass handles blank lines, comments, chained-elif tail-stubs, and tab/space inconsistencies. 15 new tests pin the contract.
+
+### Brand refresh
+
+`static/logo.png` updated. Apple touch icon and favicon regenerated from the same source. `logo-spicy.png` (the easter-egg variant toggled by `state.spicy`) intentionally left alone.
 
 ### Tests
 
-1451 passing, 24 skipped (was 1345 in v0.23.1). 19 new tests added across:
-
-- ``test_ws_notification_short_circuit.py`` (4) — broadcast notification short-circuits + cron filter + auditing guard
-- ``test_skill_creator_ast_fix.py`` (15) — AST-level repair for issue #14
-
-Plus test isolation fix for CI Python 3.12 (``test_provider_error_classification`` was pulling ``goal_runner`` at module level, polluting ``test_skill_import``'s database state).
+1500+ passing (was 1453 in v0.23.2). 29 new tests across `test_coach.py` (20), `test_memory_reindex.py` (9), plus the cli.py doctor improvements from PR #40.
 
 ### Upgrading
 
-``git pull`` + restart. No config changes, no migrations.
+`git pull` + restart. No config or schema changes.
+
+If you were affected by the empty-knowledge-graph desync, run once:
+
+```bash
+curl -X POST http://localhost:7860/api/knowledge/reindex
+```
+
+To enable the coach (off by default):
+
+```python
+# Via the Settings UI, or:
+import db; db.kv_set("setting:coach_enabled", "1")
+```
