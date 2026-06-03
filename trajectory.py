@@ -36,7 +36,14 @@ A trajectory file is a stream of JSON events:
 Trajectory files contain whatever the user typed and whatever tools
 returned. They live entirely on disk — never uploaded. Disabled by
 default (config setting ``trajectory_enabled``). Rotate after
-``trajectory_keep_days`` (default 30).
+``trajectory_keep_days`` (default 30) — wired into the scheduler as
+``__trajectory_prune__`` so the rotation actually happens.
+
+v0.23.4 — every ``args_preview`` / ``result_preview`` ALSO runs through
+``secret_scrub`` before the file write, mirroring the
+``db.save_message`` / ``save_checkpoint`` redaction layer. Without
+this, a tool that reads/echoes an API key would land it on disk
+unscrubbed, defeating the rotation window.
 """
 from __future__ import annotations
 
@@ -48,7 +55,52 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import secret_scrub
+
 _log = logging.getLogger("castor.trajectory")
+
+
+def _scrub_args(args: dict | None, tool_name: str = "") -> dict:
+    """Shallow-scrub a tool-call args dict for trajectory persistence.
+
+    Mirrors :func:`db._scrub_meta` but tuned for tool args: every
+    string-typed value runs through ``scrub_fact`` (so a value under a
+    self-identifying key like ``api_key`` is fully redacted), every
+    nested string list element runs through ``scrub_text``.
+
+    Structural special-case for ``fact_save``: its args have shape
+    ``{"key": "linkedin_password", "value": "..."}``. The ``key`` field
+    NAMES the secret; the ``value`` field HOLDS it. Generic per-key
+    scrubbing misses this because the dict key is literally ``"value"``,
+    not a self-identifying name. Same shape that :func:`db.save_checkpoint`
+    handles for ``tool_calls``.
+    """
+    if not args:
+        return {}
+    out: dict[str, Any] = {}
+    fact_save_key = None
+    if tool_name == "fact_save" and isinstance(args.get("key"), str):
+        fact_save_key = args["key"]
+    for k, v in args.items():
+        if fact_save_key is not None and k == "value" and isinstance(v, str):
+            sv, _ = secret_scrub.scrub_fact(fact_save_key, v)
+            out[k] = sv
+            continue
+        if isinstance(v, str):
+            sv, _ = secret_scrub.scrub_fact(str(k), v)
+            out[k] = sv
+        elif isinstance(v, list):
+            new_list = []
+            for item in v:
+                if isinstance(item, str):
+                    si, _ = secret_scrub.scrub_text(item)
+                    new_list.append(si)
+                else:
+                    new_list.append(item)
+            out[k] = new_list
+        else:
+            out[k] = v
+    return out
 
 
 def _trajectory_dir() -> Path:
@@ -128,16 +180,22 @@ class TrajectoryRecorder:
         self._tool_count += 1
         if name not in self._tools_used:
             self._tools_used.append(name)
-        self.event("tool_start", {"name": name, "args": args or {}})
+        # Scrub before write — trajectory files persist 30 days by default.
+        safe_args = _scrub_args(args, tool_name=name)
+        self.event("tool_start", {"name": name, "args": safe_args})
 
     def tool_end(self, name: str, result: str, duration_ms: int = 0) -> None:
         # Truncate long results to keep files reasonable. Full result
         # is in the LLM message history anyway; trajectory is for audit.
-        preview = (result or "")[:1000]
+        # Scrub after truncation (cheaper) — the patterns we care about
+        # all fit within 200 chars, never mind 1000.
+        raw = result or ""
+        preview = raw[:1000]
+        safe_preview, _ = secret_scrub.scrub_text(preview)
         self.event("tool_end", {
             "name": name,
-            "result_preview": preview,
-            "result_len": len(result or ""),
+            "result_preview": safe_preview,
+            "result_len": len(raw),
             "duration_ms": duration_ms,
         })
 

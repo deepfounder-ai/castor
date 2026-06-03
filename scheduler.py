@@ -44,6 +44,7 @@ HEARTBEAT_TASK_NAME = "__heartbeat__"
 SYNTHESIS_TASK_NAME = "__synthesis__"
 SYNTHESIS_CONTINUOUS_TASK_NAME = "__synthesis_continuous__"
 COACH_TASK_NAME = "__coach_daily__"
+TRAJECTORY_PRUNE_TASK_NAME = "__trajectory_prune__"
 
 
 def _ensure_table():
@@ -468,7 +469,8 @@ def remove_by_thread(thread_id: str) -> int:
     removed = 0
     for rid, name in rows:
         if name in (HEARTBEAT_TASK_NAME, SYNTHESIS_TASK_NAME,
-                    SYNTHESIS_CONTINUOUS_TASK_NAME, COACH_TASK_NAME):
+                    SYNTHESIS_CONTINUOUS_TASK_NAME, COACH_TASK_NAME,
+                    TRAJECTORY_PRUNE_TASK_NAME):
             continue  # system tasks survive even if their thread vanishes
         db.execute("DELETE FROM scheduled_tasks WHERE id=?", (rid,))
         _log.info(f"routine #{rid} '{name}' removed: its thread {thread_id} was deleted")
@@ -627,6 +629,48 @@ def _stamp_system_task_budgets():
     db.kv_set("_system_task_budgets_stamped", "1")
 
 
+def _register_trajectory_prune():
+    """Auto-register a daily trajectory rotation if trajectory recording
+    is enabled.
+
+    Trajectory files at ``~/.castor/trajectories/*.jsonl`` accumulate per
+    run (chat turns, subagent dispatches, etc.). The
+    ``trajectory_keep_days`` setting documents a default 30-day window
+    but until v0.23.4 nothing actually called ``trajectory.prune_old`` —
+    files grew unbounded. This task closes the gap: a stateless system
+    job at 04:00 daily that removes ``*.jsonl`` whose mtime is older
+    than the configured window.
+
+    Skipped when trajectory recording is OFF — no files, nothing to
+    prune. Idempotent: re-registering at startup updates the cadence
+    string but never creates a duplicate row.
+    """
+    if not config.get("trajectory_enabled"):
+        return
+    _ensure_table()
+    schedule = "daily 04:00"
+    next_run = time.time() + 3600  # stagger like coach
+    row = db.fetchone(
+        "SELECT id, schedule FROM scheduled_tasks WHERE name=?",
+        (TRAJECTORY_PRUNE_TASK_NAME,),
+    )
+    if row:
+        if row[1] != schedule:
+            db.execute(
+                "UPDATE scheduled_tasks SET schedule=?, next_run=? WHERE id=?",
+                (schedule, next_run, row[0]),
+            )
+            _log.info(f"trajectory prune schedule updated: {schedule}")
+        return
+    db.execute(
+        "INSERT INTO scheduled_tasks (name, task, schedule, next_run, repeat, enabled) "
+        "VALUES (?,?,?,?,1,1)",
+        (TRAJECTORY_PRUNE_TASK_NAME, TRAJECTORY_PRUNE_TASK_NAME,
+         schedule, next_run),
+    )
+    _log.info(f"trajectory prune registered: {schedule}")
+
+
 def _register_coach():
     """Auto-register the daily anti-pattern coach if enabled.
 
@@ -677,6 +721,7 @@ def start():
     _register_synthesis()
     _register_synthesis_continuous()
     _register_coach()
+    _register_trajectory_prune()
     _stamp_system_task_budgets()
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
@@ -841,6 +886,8 @@ def _is_routine(task_desc: str) -> bool:
     if task_desc == SYNTHESIS_CONTINUOUS_TASK_NAME:
         return False
     if task_desc == COACH_TASK_NAME:
+        return False
+    if task_desc == TRAJECTORY_PRUNE_TASK_NAME:
         return False
     low = task_desc.lower()
     reminder_markers = ("remind", "напомни", "напоминание", "напомнить",
@@ -1275,6 +1322,14 @@ def _execute_task(task_desc: str, max_rounds: int = 10, tool_executor=None) -> s
     if task_desc == COACH_TASK_NAME:
         import coach
         return coach.run_pass()
+
+    # Trajectory rotation — delete *.jsonl files older than the
+    # ``trajectory_keep_days`` window. Stateless, no LLM, no cost.
+    if task_desc == TRAJECTORY_PRUNE_TASK_NAME:
+        import trajectory
+        days = int(config.get("trajectory_keep_days") or 30)
+        removed = trajectory.prune_old(days)
+        return f"trajectory prune: removed {removed} file(s) older than {days}d"
 
     # Simple reminders don't need LLM — just return a clean notification
     reminder_markers = ["remind", "напомни", "напоминание", "напомнить", "выпить", "drink", "stretch", "break"]

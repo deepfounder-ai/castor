@@ -231,7 +231,8 @@ def test_memory_save_writes_markdown_companion(qwe_temp_data_dir, monkeypatch):
     canned_id = "11112222-3333-4444-5555-666677778888"
 
     def _fake_save_single(text, tag="general", dedup=True,
-                           thread_id=None, meta=None, synthesis_status="skip"):
+                           thread_id=None, meta=None, synthesis_status="skip",
+                           scrub=True):
         # Exercise the same companion-writer memory uses
         memory._write_markdown_companion(canned_id, text, tag, thread_id, meta)
         return canned_id

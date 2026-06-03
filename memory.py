@@ -798,8 +798,10 @@ def save(text: str, tag: str = "general", dedup: bool = True,
 
     # Single-atom save (short text, or chunk=False on a long one).
     # synth=True lets UI direct-saves participate in night synthesis.
+    # scrub=False — we already scrubbed at the top of this function.
     return _save_single(text, tag, dedup, thread_id, meta,
-                        synthesis_status="pending" if synth else "skip")
+                        synthesis_status="pending" if synth else "skip",
+                        scrub=False)
 
 
 def _save_chunked(text: str, tag: str,
@@ -821,8 +823,12 @@ def _save_chunked(text: str, tag: str,
             "chunk_total": len(chunks),
             "source": source,
         })
+        # scrub=False — caller (memory.save) already scrubbed the source
+        # text before _chunk_text split it; re-scrubbing each chunk would
+        # double the warning log and waste cycles.
         pid = _save_single(chunk, tag, dedup=False, thread_id=thread_id,
-                           meta=chunk_meta, synthesis_status="pending")
+                           meta=chunk_meta, synthesis_status="pending",
+                           scrub=False)
         if i == 0:
             first_id = pid
 
@@ -831,8 +837,24 @@ def _save_chunked(text: str, tag: str,
 
 def _save_single(text: str, tag: str, dedup: bool = True,
                  thread_id: str | None = None, meta: dict | None = None,
-                 synthesis_status: str = "skip") -> str:
-    """Save a single memory point to Qdrant + FTS5."""
+                 synthesis_status: str = "skip",
+                 scrub: bool = True) -> str:
+    """Save a single memory point to Qdrant + FTS5.
+
+    ``scrub`` (default True) runs ``secret_scrub.scrub_text`` over ``text``
+    BEFORE embedding/persistence. The public ``memory.save`` entry point
+    scrubs at its own boundary and passes ``scrub=False`` to avoid double
+    work. Direct callers — notably ``synthesis._save_*`` paths that
+    persist LLM-summarised wiki/entity descriptions and bypass ``save``
+    — get the default scrub for free. v0.23.4: cross-cutting §4.1 fix.
+    """
+    if scrub:
+        text, was_scrubbed = _scrub_secrets(text)
+        if was_scrubbed:
+            hits = text.count("[REDACTED")
+            _log.warning(
+                f"scrubbed {hits} secret-like pattern(s) from memory save (tag={tag})"
+            )
     qc = _get_qdrant()
     try:
         dense_vector = _embed(text)

@@ -434,20 +434,104 @@ def _tid(thread_id: str | None = None) -> str:
 
 # --- Messages (all thread-scoped) ---
 
+
+def _scrub_tool_calls(tool_calls: list) -> list:
+    """Walk an OpenAI ``tool_calls`` list and scrub every JSON-string
+    ``function.arguments`` value through ``secret_scrub``.
+
+    Mirrors the in-flight scrub from :func:`save_checkpoint` so chat
+    history (``messages.tool_calls``) and resumable checkpoints share
+    one redaction contract. Structural ``fact_save`` special-case so the
+    ``{"key": "linkedin_password", "value": "..."}`` shape gets the
+    name-aware ``scrub_fact`` treatment, not just generic ``scrub_text``.
+    Closes cross-cutting §4.1 (db.save_message no-scrub) in v0.23.4.
+    """
+    new_calls = []
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            new_calls.append(tc)
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            new_calls.append(tc)
+            continue
+        args_str = fn.get("arguments")
+        fn_name = fn.get("name", "")
+        if isinstance(args_str, str):
+            try:
+                args = json.loads(args_str)
+            except (json.JSONDecodeError, ValueError):
+                sa, _ = secret_scrub.scrub_text(args_str)
+                fn = {**fn, "arguments": sa}
+            else:
+                if isinstance(args, dict):
+                    new_args = dict(args)
+                    if fn_name == "fact_save" and isinstance(args.get("key"), str):
+                        val = args.get("value")
+                        if isinstance(val, str):
+                            sv, _ = secret_scrub.scrub_fact(args["key"], val)
+                            new_args["value"] = sv
+                    for k, v in args.items():
+                        if k in ("key", "value") and fn_name == "fact_save":
+                            continue
+                        if isinstance(v, str):
+                            sv, _ = secret_scrub.scrub_fact(k, v)
+                            new_args[k] = sv
+                    fn = {**fn, "arguments": json.dumps(new_args)}
+        tc = {**tc, "function": fn}
+        new_calls.append(tc)
+    return new_calls
+
+
+def _scrub_meta(meta: dict) -> dict:
+    """Shallow-walk a meta dict and scrub every string value. Non-string
+    values pass through unchanged (timestamps, ints, bools). Lists of
+    strings (e.g. ``files: [...]`` filenames) are walked one level deep.
+    """
+    if not meta:
+        return meta
+    out = {}
+    for k, v in meta.items():
+        if isinstance(v, str):
+            sv, _ = secret_scrub.scrub_fact(k, v)
+            out[k] = sv
+        elif isinstance(v, list):
+            new_list = []
+            for item in v:
+                if isinstance(item, str):
+                    si, _ = secret_scrub.scrub_text(item)
+                    new_list.append(si)
+                else:
+                    new_list.append(item)
+            out[k] = new_list
+        else:
+            out[k] = v
+    return out
+
+
 def save_message(role: str, content: str | None = None,
                  tool_calls: list | None = None,
                  tool_call_id: str | None = None,
                  name: str | None = None,
                  thread_id: str | None = None,
                  meta: dict | None = None):
+    # Scrub before persistence. Chat history is the largest secret
+    # surface in the project: every user turn, every tool call, every
+    # tool result lands here verbatim. The scrub layer mirrors
+    # save_checkpoint (which already scrubs messages_blob) so a leak
+    # caught at checkpoint time but missed here is now closed.
+    if isinstance(content, str):
+        content, _ = secret_scrub.scrub_text(content)
+    safe_tc = _scrub_tool_calls(tool_calls) if tool_calls else None
+    safe_meta = _scrub_meta(meta) if meta else None
     conn = _get_conn()
     tid = _tid(thread_id)
     conn.execute(
         "INSERT INTO messages (role, content, tool_calls, tool_call_id, name, ts, thread_id, meta) VALUES (?,?,?,?,?,?,?,?)",
         (role, content,
-         json.dumps(tool_calls) if tool_calls else None,
+         json.dumps(safe_tc) if safe_tc else None,
          tool_call_id, name, time.time(), tid,
-         json.dumps(meta) if meta else None)
+         json.dumps(safe_meta) if safe_meta else None)
     )
     conn.commit()
 
