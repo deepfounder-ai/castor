@@ -3,7 +3,7 @@ cryptography
 openai>=1.0.0
 qdrant-client>=1.18.0
 fastembed>=0.4.0
-rich>=13.0.0
+rich>=15.0.0
 readchar>=4.2.2
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
