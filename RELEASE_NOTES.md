@@ -1,83 +1,50 @@
-## v0.23.3 — Coach, recovery helpers, polish
+## v0.23.4 — Secret-scrub bundle (3 CRITICAL fixes)
 
-Patch release on v0.23.2: opt-in daily anti-pattern coach, a recovery path for Qdrant ↔ markdown desync, a sharper `--doctor` warning for `onnxruntime-gpu` (community PR), and a brand refresh on the web UI.
+Security-focused patch release. Closes the secret-scrubbing bypass family flagged by the whole-codebase architecture review (cross-cutting §4.1): three CRITICAL findings and one HIGH, all in a single PR. No schema migrations. No breaking changes. Drop-in upgrade.
 
-No schema migrations, no breaking changes. Drop-in upgrade.
+### What changed
 
-### Coach — daily anti-pattern scan (opt-in, no LLM cost)
+Three persistence paths were skipping the redaction layer that `memory.save` has used since v0.17.18. Every site now shares the same `secret_scrub.scrub_text` / `scrub_fact` engine.
 
-Inspired by Microsoft's [AI Engineer Coach](https://github.com/microsoft/AI-Engineering-Coach) VS Code extension. A small scheduled job (`__coach_daily__`, fires at 09:00) walks the last N days of `agent_runs` + `goals` + `scheduled_tasks` and writes a markdown summary to memory + an archive copy under `$DATA_DIR/uploads/coach-YYYY-MM-DD.md`. Pure SQL/Python, zero LLM cost.
+**C1 — `db.save_message` (chat history)**
 
-Six built-in rules:
+Chat history was the project's largest secret surface: every user turn, every tool call, every tool result landed in `messages.{content, tool_calls, meta}` verbatim. The same redaction layer that `save_checkpoint` uses in-flight is now applied at message persistence. The `fact_save({"key": "linkedin_password", "value": "..."})` structural special-case is mirrored so plain-string passwords keyed by a self-identifying name are caught — not just provider-regex shapes.
 
-- `mega_session` — non-subagent run >30 min (loop/stuck candidate)
-- `cost_outlier` — any single run ≥ $1.00
-- `capitulating_goals` — goal status='done' with failed subtasks or no acceptance criteria
-- `shell_heavy` — input/output token ratio >50:1 across 3+ runs (proxy for shell-poking)
-- `synthesis_overspend` — system synthesis crons burning more than $0.10/day (regression guard for the v0.23.2 `_is_routine` fix)
-- `no_skills_used` — 30+ chat sessions with zero skill / tool_search hits
+**C2 — `synthesis.py` (entity / wiki summaries)**
 
-Each finding ships with severity, headline, and an actionable recommendation. Dry-run against the developer's actual ~/.castor surfaced 5 real anti-patterns including the historical synthesis cost leak.
+The night synthesis pass calls `memory._save_single` directly to persist LLM-summarised entity and wiki blobs. `memory.save` scrubbed at its entry, so direct callers bypassed redaction. `_save_single` now scrubs by default; `memory.save` passes `scrub=False` (it already scrubbed at the boundary). Synthesis paths pick up the scrub for free.
 
-Opt-in via `setting:coach_enabled = 1`. Window configurable via `setting:coach_lookback_days` (default 7). 20 unit tests pin the rules + scheduler wire-up.
+**C3 — `trajectory.tool_start` / `tool_end` (JSONL audit trail)**
 
-### Knowledge graph recovery: `memory.reindex_from_markdown`
+Trajectory recorder is opt-in but ships with a 30-day default retention — a tool that echoed a secret would persist it on disk longer than the chat that triggered it. `args` dict and `result_preview` now run through `secret_scrub`. The `fact_save` structural special-case is reused so passwords stored under `{"key": "...", "value": "..."}` shape are caught.
 
-User-facing symptom this fixes: the knowledge-graph view in the Web UI is empty and `memory.search` returns 0 results, despite hundreds of memory atoms visible via the markdown layer (`~/.castor/memories/atoms/`).
+**H4 — `trajectory.prune_old` actually wired**
 
-Phase-1 Living Memory writes Qdrant + markdown as siblings. If Qdrant gets wiped or rebuilt — corrupt-rebuild, manual `/api/knowledge/graph/clear`, or a migration that drops the collection — the markdown layer survives but the search indexes are gone. There was no reverse path to recreate them (`memory_store.backfill_from_qdrant` goes the wrong direction).
+`prune_old(days)` was defined since v0.22 but never called — the "30-day rotation" was documented but never fired. New `__trajectory_prune__` system task at 04:00 daily, registered only when `trajectory_enabled`, routes through `_execute_task` to `trajectory.prune_old(trajectory_keep_days)`. Stateless fast path — no LLM, zero cost.
 
-New `memory.upsert_with_id(point_id, text, tag, ...)` and `memory.reindex_from_markdown(skip_existing=True)`:
+### Why this matters
 
-- Scrolls every markdown atom under `$DATA_DIR/memories/atoms/`
-- Re-embeds dense + sparse vectors
-- Upserts to Qdrant under the SAME point id (entity `relations[]` cross-references stay valid) + FTS5
-- `skip_existing=True` (default) scrolls Qdrant up-front to collect already-present ids and skips them — a no-op on a healthy install
-- Never raises; malformed atoms count as `errors` and the sweep continues
-
-New `POST /api/knowledge/reindex` endpoint exposes it for one-click recovery from the UI / CLI.
-
-Verified on the affected install: 159 scanned, 133 written, 26 skipped, 0 errors. The knowledge-graph endpoint immediately returned 19 nodes + 38 links again.
-
-### Web UI: server-broadcast notifications no longer open a phantom bubble
-
-Carry-over fix from the v0.23.2 release-day investigation, restated here because more notification types were caught. `handleWsMessage` short-circuits all 12 broadcast notification types (`cron`, `compaction`, `update_*`, `telegram`, `knowledge_*`, `task_update`, `canvas_*`, `get_frame`/`frame_request`, `interrupted_turn`) BEFORE the streaming-gate that creates an assistant bubble. The cron handler additionally filters `__`-prefixed system jobs so users aren't toasted by their own background curator every 15 minutes. A JS-contract test walks `server.py` for new `_broadcast({"type": ...})` sites — adding a notification type without a client-side handler now fails CI rather than ships as a phantom bubble.
-
-### Doctor: `onnxruntime-gpu` warning is now actionable (closes #8)
-
-Community contribution from @gberaberry-sys (PR #40).
-
-The doctor check that warns about `onnxruntime-gpu` (3 GB of CUDA DLLs Castor doesn't use under CPU-only embeddings) now:
-
-- Reports the **disk space** that would be freed (e.g. `~3.1 GB disk`).
-- Softens the warning when `CUDA_PATH` / `CUDA_HOME` is set — the user installed CUDA Toolkit intentionally, so the message switches to an informational "embeddings use CPU by default; GPU package is unused unless `embed_device=cuda`."
-- Skips the warning entirely when `setting:embed_device = cuda` is explicitly set — user knows what they're doing.
-
-### skill_creator AST repair (closes #14)
-
-Carry-over from v0.23.2 — restated for the changelog. New `_fix_stub_branch_outside_code` does AST-level repair for the LLM anti-pattern where small models emit `elif name == "x":  pass` and then write the real implementation outside the branch at function-body indent. The line-based `_fix_elif_body_indent` catches the common shape; the AST pass handles blank lines, comments, chained-elif tail-stubs, and tab/space inconsistencies. 15 new tests pin the contract.
-
-### Brand refresh
-
-`static/logo.png` updated. Apple touch icon and favicon regenerated from the same source. `logo-spicy.png` (the easter-egg variant toggled by `state.spicy`) intentionally left alone.
+The architecture review's verdict was "the security story is mostly honoured in the spec, but the implementation has at least three places where secret-scrubbing is bypassed on real persistence paths. Close those (small surgical fixes) and Castor's defensive posture matches what its docs already promise." This release closes those three places.
 
 ### Tests
 
-1500+ passing (was 1453 in v0.23.2). 29 new tests across `test_coach.py` (20), `test_memory_reindex.py` (9), plus the cli.py doctor improvements from PR #40.
+1590 passing (was 1500 in v0.23.3). 16 new tests in `tests/test_scrub_bundle.py` pin every surface area:
+
+- `_save_single` scrubs by default; `scrub=False` opt-out works.
+- `memory.save` → `_save_single` chain scrubs once, no double-warning.
+- `save_message` scrubs content / tool_calls (incl. fact_save shape) / meta.
+- `save_message` passes clean text byte-for-byte.
+- `tool_start` scrubs args dict, incl. fact_save keyed-as-secret value.
+- `tool_end` scrubs result_preview; empty-result safe.
+- `_register_trajectory_prune` is opt-in (skips when trajectory disabled).
+- `_execute_task` routes the task name to `prune_old`.
+- `_is_routine` returns False (system task stays on fast path).
+- `prune_old` actually deletes stale `*.jsonl` files.
+
+The only failure in the full suite is `tests/test_serial_port_skill::test_list_ports_empty_includes_platform_hints` — pre-existing platform flake on main, unrelated to this PR.
 
 ### Upgrading
 
 `git pull` + restart. No config or schema changes.
 
-If you were affected by the empty-knowledge-graph desync, run once:
-
-```bash
-curl -X POST http://localhost:7860/api/knowledge/reindex
-```
-
-To enable the coach (off by default):
-
-```python
-# Via the Settings UI, or:
-import db; db.kv_set("setting:coach_enabled", "1")
-```
+To audit pre-v0.23.4 chat history for secrets, run the existing `memory.reindex_from_markdown` recovery flow (added in v0.23.3) — atoms re-embedded from markdown source get re-scrubbed on the way back into Qdrant.
