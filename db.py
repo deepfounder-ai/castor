@@ -335,11 +335,30 @@ def _apply_one(conn: sqlite3.Connection, path: Path) -> None:
             try:
                 conn.execute(stmt)
             except sqlite3.OperationalError as exc:
-                if "duplicate column name" in str(exc).lower():
+                msg = str(exc).lower()
+                if "duplicate column name" in msg:
                     # Column already exists — migration is effectively already
                     # applied for this column; skip and continue.
                     _log.debug(
                         f"{path.name}: skipping already-present column ({exc})"
+                    )
+                    continue
+                if "already exists" in msg:
+                    # Table / index / trigger already present. Two cases:
+                    # 1. A second migration runner raced this one (module
+                    #    reload across pytest fixtures creates a new
+                    #    ``_migrate_lock``, so two reloaded modules can
+                    #    both enter ``_apply_migrations`` on the same
+                    #    DB file). Architecture review H-2.1 flagged
+                    #    this; the schema_version check still gates the
+                    #    legitimate path.
+                    # 2. An ad-hoc helper (e.g. ``scheduler._ensure_table``)
+                    #    used ``CREATE TABLE IF NOT EXISTS`` before the
+                    #    migration ran, creating a stub table.
+                    # Either way: forward progress is safe — the object
+                    # already exists in the shape we wanted.
+                    _log.debug(
+                        f"{path.name}: skipping already-present object ({exc})"
                     )
                     continue
                 raise
