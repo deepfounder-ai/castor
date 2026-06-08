@@ -46,7 +46,7 @@ dependencies = [
     # is frequently broken by YouTube's bot-detection. yt-dlp has the JS-based
     # PotToken workarounds and is actively maintained. rag.index_url() tries
     # yt-dlp first for youtube.com / youtu.be URLs.
-    "yt-dlp>=2025.1.0",
+    "yt-dlp>=2026.3.17",
     # Cross-platform serial / USB-COM driver. Powers the `serial_port` skill
     # — talks to scales, barcode scanners, RFID readers, GPS modules, label
     # printers, PLCs (Modbus RTU), industrial sensors, etc. Tiny dependency
