@@ -18,17 +18,15 @@ debug and continue.
 from __future__ import annotations
 
 import sqlite3
-import tempfile
-from pathlib import Path
 
 
-def test_apply_one_skips_table_already_exists(monkeypatch):
+def test_apply_one_skips_table_already_exists(monkeypatch, tmp_path):
     """A migration whose CREATE TABLE collides with an existing object
     no longer raises — it logs and continues with the next statement.
     """
     import db
 
-    tmp = Path(tempfile.mkdtemp(prefix="castor_mig_test_"))
+    tmp = tmp_path
     db_path = tmp / "x.db"
     conn = sqlite3.connect(db_path)
     # Pre-create the table the migration would try to create.
@@ -54,14 +52,14 @@ def test_apply_one_skips_table_already_exists(monkeypatch):
     assert row is not None
 
 
-def test_apply_one_skips_duplicate_column(monkeypatch):
+def test_apply_one_skips_duplicate_column(monkeypatch, tmp_path):
     """Existing contract preserved — duplicate column name is still
     silently skipped (back-compat with scheduler._ensure_table that
     added columns ad-hoc before the migration ran).
     """
     import db
 
-    tmp = Path(tempfile.mkdtemp(prefix="castor_mig_test_"))
+    tmp = tmp_path
     db_path = tmp / "x.db"
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE bar (id INTEGER PRIMARY KEY, extant TEXT)")
@@ -81,7 +79,7 @@ def test_apply_one_skips_duplicate_column(monkeypatch):
     assert "brand_new" in cols
 
 
-def test_apply_one_still_raises_real_errors(monkeypatch):
+def test_apply_one_still_raises_real_errors(monkeypatch, tmp_path):
     """Defensive — unrelated OperationalErrors (e.g. invalid SQL,
     constraint violations) still propagate so the migration runner
     aborts and rolls back as before.
@@ -89,7 +87,7 @@ def test_apply_one_still_raises_real_errors(monkeypatch):
     import db
     import pytest
 
-    tmp = Path(tempfile.mkdtemp(prefix="castor_mig_test_"))
+    tmp = tmp_path
     db_path = tmp / "x.db"
     conn = sqlite3.connect(db_path)
 
@@ -104,13 +102,13 @@ def test_apply_one_still_raises_real_errors(monkeypatch):
         db._apply_one(conn, mig)
 
 
-def test_apply_one_skips_already_existing_index(monkeypatch):
+def test_apply_one_skips_already_existing_index(monkeypatch, tmp_path):
     """CREATE INDEX collision is silently skipped too — the "already
     exists" detector is keyword-based, not table-specific.
     """
     import db
 
-    tmp = Path(tempfile.mkdtemp(prefix="castor_mig_test_"))
+    tmp = tmp_path
     db_path = tmp / "x.db"
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE baz (id INTEGER PRIMARY KEY, k TEXT)")
