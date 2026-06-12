@@ -18,6 +18,7 @@ debug and continue.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 
 def test_apply_one_skips_table_already_exists(monkeypatch, tmp_path):
@@ -26,30 +27,29 @@ def test_apply_one_skips_table_already_exists(monkeypatch, tmp_path):
     """
     import db
 
-    tmp = tmp_path
-    db_path = tmp / "x.db"
-    conn = sqlite3.connect(db_path)
-    # Pre-create the table the migration would try to create.
-    conn.execute("CREATE TABLE foo (id INTEGER PRIMARY KEY, payload TEXT)")
-    conn.commit()
+    db_path = tmp_path / "x.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        # Pre-create the table the migration would try to create.
+        conn.execute("CREATE TABLE foo (id INTEGER PRIMARY KEY, payload TEXT)")
+        conn.commit()
 
-    mig = tmp / "099_collision.sql"
-    mig.write_text(
-        "BEGIN;\n"
-        "CREATE TABLE foo (id INTEGER PRIMARY KEY, payload TEXT);\n"
-        "CREATE INDEX foo_payload_idx ON foo (payload);\n"
-        "COMMIT;\n"
-    )
+        mig = tmp_path / "099_collision.sql"
+        mig.write_text(
+            "BEGIN;\n"
+            "CREATE TABLE foo (id INTEGER PRIMARY KEY, payload TEXT);\n"
+            "CREATE INDEX foo_payload_idx ON foo (payload);\n"
+            "COMMIT;\n"
+        )
 
-    # Should not raise — the CREATE TABLE is harmlessly skipped, the
-    # CREATE INDEX runs, the migration completes.
-    db._apply_one(conn, mig)
+        # Should not raise — the CREATE TABLE is harmlessly skipped, the
+        # CREATE INDEX runs, the migration completes.
+        db._apply_one(conn, mig)
 
-    # Index actually got created.
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='index' AND name='foo_payload_idx'"
-    ).fetchone()
-    assert row is not None
+        # Index actually got created.
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='foo_payload_idx'"
+        ).fetchone()
+        assert row is not None
 
 
 def test_apply_one_skips_duplicate_column(monkeypatch, tmp_path):
@@ -59,24 +59,23 @@ def test_apply_one_skips_duplicate_column(monkeypatch, tmp_path):
     """
     import db
 
-    tmp = tmp_path
-    db_path = tmp / "x.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE bar (id INTEGER PRIMARY KEY, extant TEXT)")
-    conn.commit()
+    db_path = tmp_path / "x.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE bar (id INTEGER PRIMARY KEY, extant TEXT)")
+        conn.commit()
 
-    mig = tmp / "099_alter.sql"
-    mig.write_text(
-        "BEGIN;\n"
-        "ALTER TABLE bar ADD COLUMN extant TEXT;\n"
-        "ALTER TABLE bar ADD COLUMN brand_new INTEGER;\n"
-        "COMMIT;\n"
-    )
+        mig = tmp_path / "099_alter.sql"
+        mig.write_text(
+            "BEGIN;\n"
+            "ALTER TABLE bar ADD COLUMN extant TEXT;\n"
+            "ALTER TABLE bar ADD COLUMN brand_new INTEGER;\n"
+            "COMMIT;\n"
+        )
 
-    db._apply_one(conn, mig)
+        db._apply_one(conn, mig)
 
-    cols = [r[1] for r in conn.execute("PRAGMA table_info(bar)").fetchall()]
-    assert "brand_new" in cols
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(bar)").fetchall()]
+        assert "brand_new" in cols
 
 
 def test_apply_one_still_raises_real_errors(monkeypatch, tmp_path):
@@ -87,19 +86,17 @@ def test_apply_one_still_raises_real_errors(monkeypatch, tmp_path):
     import db
     import pytest
 
-    tmp = tmp_path
-    db_path = tmp / "x.db"
-    conn = sqlite3.connect(db_path)
+    db_path = tmp_path / "x.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        mig = tmp_path / "099_broken.sql"
+        mig.write_text(
+            "BEGIN;\n"
+            "INSERT INTO nonexistent VALUES (1);\n"
+            "COMMIT;\n"
+        )
 
-    mig = tmp / "099_broken.sql"
-    mig.write_text(
-        "BEGIN;\n"
-        "INSERT INTO nonexistent VALUES (1);\n"
-        "COMMIT;\n"
-    )
-
-    with pytest.raises(sqlite3.OperationalError):
-        db._apply_one(conn, mig)
+        with pytest.raises(sqlite3.OperationalError):
+            db._apply_one(conn, mig)
 
 
 def test_apply_one_skips_already_existing_index(monkeypatch, tmp_path):
@@ -108,26 +105,25 @@ def test_apply_one_skips_already_existing_index(monkeypatch, tmp_path):
     """
     import db
 
-    tmp = tmp_path
-    db_path = tmp / "x.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE baz (id INTEGER PRIMARY KEY, k TEXT)")
-    conn.execute("CREATE INDEX baz_k_idx ON baz (k)")
-    conn.commit()
+    db_path = tmp_path / "x.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE baz (id INTEGER PRIMARY KEY, k TEXT)")
+        conn.execute("CREATE INDEX baz_k_idx ON baz (k)")
+        conn.commit()
 
-    mig = tmp / "099_idx.sql"
-    mig.write_text(
-        "BEGIN;\n"
-        "CREATE INDEX baz_k_idx ON baz (k);\n"
-        "CREATE TABLE baz_extra (id INTEGER PRIMARY KEY);\n"
-        "COMMIT;\n"
-    )
+        mig = tmp_path / "099_idx.sql"
+        mig.write_text(
+            "BEGIN;\n"
+            "CREATE INDEX baz_k_idx ON baz (k);\n"
+            "CREATE TABLE baz_extra (id INTEGER PRIMARY KEY);\n"
+            "COMMIT;\n"
+        )
 
-    db._apply_one(conn, mig)
+        db._apply_one(conn, mig)
 
-    # The follow-up CREATE TABLE still landed even though the prior
-    # CREATE INDEX raised "already exists".
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='baz_extra'"
-    ).fetchone()
-    assert row is not None
+        # The follow-up CREATE TABLE still landed even though the prior
+        # CREATE INDEX raised "already exists".
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='baz_extra'"
+        ).fetchone()
+        assert row is not None
