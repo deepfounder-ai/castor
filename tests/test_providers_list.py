@@ -62,9 +62,10 @@ def _fake_urlopen_ok():
 
 
 def test_presets_include_newly_added_cloud_providers(fresh_providers):
-    """v0.17.33: Perplexity / Cerebras / Mistral — each a simple config preset."""
+    """v0.17.33: Perplexity / Cerebras / Mistral; later: MiniMax — each a
+    simple OpenAI-compatible config preset."""
     p = fresh_providers.PRESETS
-    for name in ("perplexity", "cerebras", "mistral"):
+    for name in ("perplexity", "cerebras", "mistral", "minimax"):
         assert name in p, f"preset {name!r} missing from PRESETS"
         entry = p[name]
         assert entry["url"].startswith("https://"), f"{name} must be HTTPS"
@@ -72,11 +73,20 @@ def test_presets_include_newly_added_cloud_providers(fresh_providers):
         assert entry["models"], f"{name} must list at least one default model"
 
 
+def test_minimax_preset_shape(fresh_providers):
+    """MiniMax (international): OpenAI-compatible /v1 base so the SDK posts to
+    /v1/chat/completions; MiniMax-prefixed default models."""
+    mm = fresh_providers.PRESETS["minimax"]
+    assert mm["url"] == "https://api.minimax.io/v1"
+    assert mm["name"] == "MiniMax"
+    assert all(m.startswith("MiniMax-") for m in mm["models"])
+
+
 def test_new_provider_capabilities_registered(fresh_providers):
     """Each new preset has a CAPABILITIES entry so `supports()` doesn't
     silently default to False for everyone."""
     caps = fresh_providers.CAPABILITIES
-    for name in ("perplexity", "cerebras", "mistral"):
+    for name in ("perplexity", "cerebras", "mistral", "minimax"):
         assert name in caps, f"{name} missing from CAPABILITIES"
         assert "supports_response_format" in caps[name]
 

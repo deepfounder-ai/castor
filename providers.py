@@ -96,6 +96,20 @@ PRESETS = {
         "models": ["mistral-large-latest", "mistral-small-latest",
                    "codestral-latest", "ministral-8b-latest"],
     },
+    "minimax": {
+        # MiniMax (international). OpenAI-compatible at /v1 — the SDK posts to
+        # /v1/chat/completions, Bearer auth, no GroupId needed (the legacy
+        # text/chatcompletion_v2 path isn't required). China endpoint is
+        # https://api.minimaxi.com/v1 — switch the URL in Settings for that.
+        # The M2 family supports long context (up to ~1M tokens on M2.5) and
+        # tool calls. Sold as a token subscription. Model list is editable;
+        # these are suggestions following MiniMax's PascalCase naming.
+        "name": "MiniMax",
+        "url": "https://api.minimax.io/v1",
+        "key": "",
+        "models": ["MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2",
+                   "MiniMax-M1", "MiniMax-Text-01"],
+    },
     # ── Native Anthropic (v0.22+) — routed through providers_anthropic.py
     #     when the SDK is installed + ANTHROPIC_API_KEY is set. Without the
     #     SDK, ``get_client()`` transparently falls back to the OpenAI client,
@@ -132,6 +146,10 @@ CAPABILITIES = {
     # cache in agent.py will remember per-run if not.
     "cerebras":   {"supports_response_format": True},
     "mistral":    {"supports_response_format": True},
+    # MiniMax M2+ supports response_format json_object + tool calls. The
+    # per-run structured-output failure cache in agent.py remembers per model
+    # if a given one doesn't.
+    "minimax":    {"supports_response_format": True},
     # Anthropic's native API doesn't expose OpenAI's ``response_format`` knob —
     # the native adapter handles tool-use directly, callers asking for JSON
     # just prompt for it. Keep this consistent whether we use the native
