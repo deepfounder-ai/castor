@@ -481,6 +481,26 @@ def _api(method: str, token: str, **kwargs) -> dict:
         return {"ok": False, "description": str(e)}
 
 
+def _method_unsupported(result: dict) -> bool:
+    """True when an ``_api`` result means the METHOD itself is unavailable on
+    this Bot API version — NOT a content-level rejection.
+
+    Telegram answers HTTP 404 ``Not Found`` for an unknown method; content
+    errors are 400 ``Bad Request: <reason>`` (e.g. ``chat not found``,
+    ``message to edit not found``). The distinction matters: a bare
+    ``"not found" in description`` substring test wrongly latches a feature
+    OFF after a single bad ``chat_id`` — disabling rich messages / drafts for
+    the whole process. Match the 404 status (or the exact ``"not found"``
+    method-missing description), never the substring.
+    """
+    if result.get("error_code") == 404:
+        return True
+    desc = (result.get("description") or "").strip().lower()
+    # "method not found" / "unknown method" are method-level signals that
+    # never appear in content errors ("chat not found", "user not found").
+    return desc == "not found" or "unknown method" in desc or "method not found" in desc
+
+
 # ── Slash commands ──
 #
 # Command METADATA (name + description shown in the Telegram predictive
@@ -1554,9 +1574,9 @@ def _send_draft_safe(chat_id: int, text: str, token: str,
     if result.get("ok"):
         _draft_supported = True
         return True
-    # Check if method is not supported (older Bot API)
-    desc = result.get("description", "").lower()
-    if "not found" in desc or "unknown method" in desc or "bad request" in desc:
+    # Check if method is not supported (older Bot API) — never latch off on a
+    # content-level error.
+    if _method_unsupported(result):
         _draft_supported = False
         _log.info("sendMessageDraft not supported — falling back to final-only mode")
         return False
@@ -1621,10 +1641,9 @@ def _send_rich_safe(chat_id: int, text: str, token: str, *,
         return result
     desc = result.get("description", "").lower()
     # Treat "method/param unknown" as a hard unsupported signal (cache off).
-    # A content-level error (e.g. a malformed rich payload) is NOT cached —
-    # it may succeed for the next, well-formed message.
-    if ("not found" in desc or "unknown method" in desc or "unsupported" in desc
-            or "rich_message" in desc or "method not" in desc):
+    # A content-level error (e.g. a malformed payload or a bad chat_id —
+    # "chat not found") is NOT cached: it may succeed for the next message.
+    if _method_unsupported(result) or "unsupported" in desc or "rich_message" in desc:
         _rich_supported = False
         _log.info("sendRichMessage not supported by this Bot API — using MarkdownV2/HTML")
     return result
@@ -1669,8 +1688,7 @@ def _send_rich_draft_safe(chat_id: int, draft_id: int, text: str, token: str,
         _rich_draft_supported = True
         return True
     desc = result.get("description", "").lower()
-    if ("not found" in desc or "unknown method" in desc or "unsupported" in desc
-            or "draft_id" in desc or "method not" in desc):
+    if _method_unsupported(result) or "unsupported" in desc or "draft_id" in desc:
         _rich_draft_supported = False
         _log.info("sendRichMessageDraft not supported — streaming via placeholder edits")
     return False

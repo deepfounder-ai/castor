@@ -103,6 +103,42 @@ def test_send_rich_content_error_not_cached(monkeypatch):
     assert tb._rich_supported is None  # still unknown, not disabled
 
 
+def test_method_unsupported_classifier():
+    # 404 / exact "Not Found" = method missing → unsupported.
+    assert tb._method_unsupported({"error_code": 404}) is True
+    assert tb._method_unsupported({"description": "Not Found"}) is True
+    assert tb._method_unsupported({"description": "Bad Request: unknown method"}) is True
+    # Content errors that merely CONTAIN "not found" are NOT method-missing.
+    assert tb._method_unsupported({"error_code": 400, "description": "Bad Request: chat not found"}) is False
+    assert tb._method_unsupported({"description": "Bad Request: message to edit not found"}) is False
+    assert tb._method_unsupported({"description": "Bad Request: user not found"}) is False
+
+
+def test_send_rich_chat_not_found_does_not_latch(monkeypatch):
+    # Regression: "chat not found" is a content error (bad chat_id), NOT an
+    # unsupported method. It must not disable rich messages process-wide.
+    rec = _ApiRecorder({"sendRichMessage": {"ok": False, "error_code": 400,
+                                            "description": "Bad Request: chat not found"}})
+    monkeypatch.setattr(tb, "_api", rec)
+    tb._send_rich_safe(999, "x", "TOK")
+    assert tb._rich_supported is None  # NOT latched off
+
+    # But a real 404 (method missing on an old Bot API) does latch.
+    tb._rich_supported = None
+    rec404 = _ApiRecorder({"sendRichMessage": {"ok": False, "error_code": 404, "description": "Not Found"}})
+    monkeypatch.setattr(tb, "_api", rec404)
+    tb._send_rich_safe(123, "x", "TOK")
+    assert tb._rich_supported is False
+
+
+def test_send_rich_draft_chat_not_found_does_not_latch(monkeypatch):
+    rec = _ApiRecorder({"sendRichMessageDraft": {"ok": False, "error_code": 400,
+                                                 "description": "Bad Request: chat not found"}})
+    monkeypatch.setattr(tb, "_api", rec)
+    tb._send_rich_draft_safe(999, 1, "x", "TOK")
+    assert tb._rich_draft_supported is None  # NOT latched off
+
+
 def test_send_rich_empty_text_noop(monkeypatch):
     rec = _ApiRecorder({})
     monkeypatch.setattr(tb, "_api", rec)
