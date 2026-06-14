@@ -319,6 +319,50 @@ def test_attach_to_emitter_bridges_events(qwe_temp_data_dir):
     assert "status" in types  # unknown types pass through as generic events
 
 
+def test_attach_to_emitter_handles_string_args(qwe_temp_data_dir):
+    """agent_loop emits ``tool_start(name, str(args)[:80])`` — a STRING, not
+    a dict. The recorder must still write the tool_start event (scrubbed as
+    free text) rather than crashing on ``str.items()``."""
+    db.kv_set("setting:trajectory_enabled", "1")
+    from agent_events import EventEmitter
+
+    rec = trajectory.start("chat")
+    emitter = EventEmitter()
+    trajectory.attach_to_emitter(emitter, rec)
+
+    emitter.tool_start("read_file", "{'path': '/etc/hostname'}")
+    emitter.tool_end("read_file", "macbook", duration_ms=12)
+    rec.finish()
+
+    events = trajectory.load_run(rec.run_id)
+    starts = [e for e in events if e["ev"] == "tool_start"]
+    assert starts and starts[0]["name"] == "read_file"
+    assert "preview" in starts[0]["args"]
+
+
+def test_scrub_args_redacts_string_preview(qwe_temp_data_dir):
+    """String args preview runs through secret_scrub before persistence."""
+    out = trajectory._scrub_args("api_key=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
+    assert "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345" not in out["preview"]
+
+
+def test_agent_run_writes_trajectory_when_enabled(qwe_temp_data_dir, mock_llm):
+    """End-to-end wiring pin: with trajectory_enabled=1, agent.run produces
+    a .jsonl carrying a terminal run_start + run_end pair."""
+    db.kv_set("setting:trajectory_enabled", "1")
+    import agent
+
+    before = {r["run_id"] for r in trajectory.list_runs()}
+    agent.run("hello there")
+    after = trajectory.list_runs()
+    new = [r for r in after if r["run_id"] not in before]
+    assert new, "agent.run produced no new trajectory file"
+    events = trajectory.load_run(new[0]["run_id"])
+    types = [e["ev"] for e in events]
+    assert types[0] == "run_start"
+    assert "run_end" in types
+
+
 def test_attach_to_emitter_with_null_recorder_is_noop(qwe_temp_data_dir):
     """When recording is disabled and the caller passes a NullRecorder
     (from ``recording(...)``), attach_to_emitter is a safe no-op."""

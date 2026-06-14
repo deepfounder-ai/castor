@@ -16,6 +16,7 @@ import soul
 import providers
 import threads
 import logger
+import trajectory
 from turn_context import TurnContext, get_current as _get_ctx, set_current as _set_ctx, reset as _reset_ctx
 
 _log = logger.get("agent")
@@ -1483,27 +1484,42 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
         emitter.on("tool_start", _on_start)
         emitter.on("tool_end", _on_end)
 
+    # Trajectory recording (opt-in via the ``trajectory_enabled`` setting).
+    # Mirrors every emitter event to ~/.castor/trajectories/<run_id>.jsonl
+    # for audit / replay. ``start`` returns None when disabled, so this is
+    # a no-op for the default-off case.
+    _recorder = trajectory.start(source, model=_model, thread_id=tid)
+    if _recorder is not None:
+        trajectory.attach_to_emitter(emitter, _recorder)
+
     _tools = tools.get_all_tools(compact=True)
     # Lower temperature when tools are present — improves tool-calling reliability
     _temp = min(soul.get_temperature(), 0.3) if _tools else soul.get_temperature()
-    loop_result = run_loop(
-        client=client,
-        model=_model,
-        messages=messages,
-        tools=_tools,
-        emitter=emitter,
-        budget=BudgetLimits.from_config(),
-        temperature=_temp,
-        presence_penalty=config.get("presence_penalty"),
-        max_tokens=2048,
-        tool_executor=tools.execute,
-        json_repair_fn=_repair_tool_json,
-        extra_kwargs={"extra_body": {"options": {"num_ctx": config.get("ollama_num_ctx")}}} if providers.get_active_name() == "ollama" else {},
-        abort_event=abort_event,
-        ctx=ctx,
-        thread_id=tid,
-        system_note=system_note,
-    )
+    try:
+        loop_result = run_loop(
+            client=client,
+            model=_model,
+            messages=messages,
+            tools=_tools,
+            emitter=emitter,
+            budget=BudgetLimits.from_config(),
+            temperature=_temp,
+            presence_penalty=config.get("presence_penalty"),
+            max_tokens=2048,
+            tool_executor=tools.execute,
+            json_repair_fn=_repair_tool_json,
+            extra_kwargs={"extra_body": {"options": {"num_ctx": config.get("ollama_num_ctx")}}} if providers.get_active_name() == "ollama" else {},
+            abort_event=abort_event,
+            ctx=ctx,
+            thread_id=tid,
+            system_note=system_note,
+        )
+    except BaseException as e:
+        # Finalise the trajectory with the error before propagating, so the
+        # .jsonl always carries a terminal run_end event.
+        if _recorder is not None:
+            _recorder.finish(status="error", error=f"{type(e).__name__}: {e}")
+        raise
 
     result.reply = _clean_response(loop_result["reply"])
     result.thinking = loop_result["thinking"]
@@ -1556,6 +1572,14 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
 
     if result.tool_calls_made and user_input:
         _save_experience(user_input, result, stats.turns, stats.total_errors)
+
+    if _recorder is not None:
+        _recorder.finish(
+            status="ok",
+            prompt_tokens=int(result.prompt_tokens or 0),
+            completion_tokens=int(result.completion_tokens or 0),
+            tools_used=result.tool_calls_made or [],
+        )
 
     return result
 

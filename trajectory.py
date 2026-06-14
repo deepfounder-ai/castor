@@ -77,6 +77,15 @@ def _scrub_args(args: dict | None, tool_name: str = "") -> dict:
     """
     if not args:
         return {}
+    # The emitter integration passes a pre-stringified args preview
+    # (``str(args)[:80]``) rather than the original dict. Scrub it as free
+    # text and wrap so ``tool_start`` events still land on disk instead of
+    # crashing on ``str.items()``.
+    if isinstance(args, str):
+        sv, _ = secret_scrub.scrub_text(args)
+        return {"preview": sv}
+    if not isinstance(args, dict):
+        return {}
     out: dict[str, Any] = {}
     fact_save_key = None
     if tool_name == "fact_save" and isinstance(args.get("key"), str):
