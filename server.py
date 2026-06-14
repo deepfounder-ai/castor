@@ -4347,6 +4347,19 @@ _agent.on_compaction(_compaction_callback)
 import telegram_bot
 
 
+# Telegram-only capability hint. Surfaces the Bot API 10.1 rich rendering so
+# the agent uses it when helpful (it can't know the surface otherwise). Kept
+# terse — it's prepended to every Telegram turn, not the shared soul, so web /
+# CLI prompts stay clean.
+_TG_RICH_CAPABILITY_NOTE = (
+    "You're replying on Telegram, which renders full rich Markdown: headings, "
+    "tables, ordered/unordered/task lists, blockquotes, dividers, inline math "
+    "$x^2$ and display math $$...$$, spoilers ||text||, ==marked==, and inline "
+    "media via ![](https://url \"caption\") for images, audio, video, and GIFs. "
+    "Use these when they genuinely help; plain prose is fine for simple replies."
+)
+
+
 def _telegram_handler(chat_id: int, text: str, user_id: int, username: str,
                       thread_id: str | None = None, image_b64: str | None = None) -> str:
     """Handle incoming Telegram message → agent → response.
@@ -4359,7 +4372,8 @@ def _telegram_handler(chat_id: int, text: str, user_id: int, username: str,
     tid = thread_id or db.kv_get("telegram:thread_id") or None
     tg_ctx = telegram_bot.pop_active_ctx()
     result = agent.run(text, thread_id=tid, source="telegram",
-                       image_b64=image_b64, ctx=tg_ctx)
+                       image_b64=image_b64, ctx=tg_ctx,
+                       system_note=_TG_RICH_CAPABILITY_NOTE)
 
     # Store tool names so telegram_bot can access them for enriched display
     agent._last_tools = list(result.tool_calls_made) if result.tool_calls_made else []

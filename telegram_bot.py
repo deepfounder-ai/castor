@@ -1630,6 +1630,66 @@ def _send_rich_safe(chat_id: int, text: str, token: str, *,
     return result
 
 
+# ── Rich streaming drafts + <tg-thinking> (Bot API 10.1) ─────────────────────
+#
+# sendRichMessageDraft streams a PARTIAL rich message as an ephemeral ~30s
+# preview while the answer is being generated. Unlike the old, broken
+# sendMessageDraft (which we never gave the required id, hence
+# RANDOM_ID_INVALID), this one takes an explicit `draft_id` integer that keys
+# the preview so refreshes update the same draft. It also unlocks the
+# `<tg-thinking>` block — a "Thinking..." placeholder usable ONLY in drafts —
+# so Castor can surface the agent's live reasoning instead of discarding it.
+# Private chats only (the method targets a private chat).
+_rich_draft_supported: bool | None = None
+
+
+def send_rich_draft(chat_id: int, draft_id: int, text: str, token: str | None = None,
+                    topic_id: int | None = None) -> dict:
+    """Stream a partial rich message via sendRichMessageDraft. ``draft_id``
+    keys the ephemeral preview so successive calls refresh the same draft."""
+    token = token or get_token()
+    if not token or not text:
+        return {"ok": False}
+    rm = _rich_message_payload(text)
+    kwargs: dict = {"chat_id": chat_id, "draft_id": draft_id, "rich_message": rm}
+    if topic_id:
+        kwargs["message_thread_id"] = topic_id
+    return _api("sendRichMessageDraft", token, **kwargs)
+
+
+def _send_rich_draft_safe(chat_id: int, draft_id: int, text: str, token: str,
+                          topic_id: int | None = None) -> bool:
+    """Send a streaming rich draft; return True if delivered. Caches support
+    so older Bot APIs / non-private chats stop being probed after a miss."""
+    global _rich_draft_supported
+    if _rich_draft_supported is False:
+        return False
+    result = send_rich_draft(chat_id, draft_id, text, token, topic_id=topic_id)
+    if result.get("ok"):
+        _rich_draft_supported = True
+        return True
+    desc = result.get("description", "").lower()
+    if ("not found" in desc or "unknown method" in desc or "unsupported" in desc
+            or "draft_id" in desc or "method not" in desc):
+        _rich_draft_supported = False
+        _log.info("sendRichMessageDraft not supported — streaming via placeholder edits")
+    return False
+
+
+def _build_thinking_draft_body(thinking: str, content: str) -> str:
+    """Compose a streaming-draft body: the agent's current reasoning in a
+    ``<tg-thinking>`` block (tail-capped) above the partial answer. Either part
+    may be empty; returns ``""`` when there's nothing to show yet."""
+    parts = []
+    th = (thinking or "").strip()
+    if th:
+        parts.append(f"<tg-thinking>{th[-600:]}</tg-thinking>")
+    c = (content or "").strip()
+    if c:
+        parts.append(c)
+    return "\n\n".join(parts)
+
+
 def _send_audio(chat_id: int, audio_bytes: bytes, token: str,
                 reply_to: int | None = None, topic_id: int | None = None):
     """Send an audio file (mp3) to a Telegram chat via multipart upload."""
@@ -2117,24 +2177,40 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
     _thinking_buf = []        # accumulated thinking chunks
     _status_text = [""]       # latest tool status
 
+    # Private chats (chat_id > 0) stream via the Bot API 10.1 rich draft
+    # (ephemeral preview + live <tg-thinking> block). Groups/supergroups
+    # (negative chat_id) aren't supported by sendRichMessageDraft, so they
+    # fall back to the placeholder + editMessageText path. draft_id keys the
+    # ephemeral preview; the message_id makes it stable across this turn's
+    # refreshes and distinct per turn.
+    _use_rich_draft = [bool(chat_id and chat_id > 0)]
+    _draft_id = abs(int(message_id)) if message_id else (abs(int(chat_id)) if chat_id else 1)
+
     def _update_stream():
-        """Send or update the streaming message with current buffer."""
+        """Send or update the streaming preview with current buffers."""
         with _stream_lock:
-            text = _stream_buf.strip()
-            if not text:
+            content = _stream_buf.strip()
+            thinking = "".join(_thinking_buf).strip()
+        status = _status_text[0]
+
+        # Private chat: stream a rich draft carrying the live <tg-thinking>
+        # block above the partial answer. Ephemeral — refreshed each tick.
+        if _use_rich_draft[0]:
+            body = _build_thinking_draft_body(thinking, content)
+            if not body:
                 return
-            # Append status if any
-            status = _status_text[0]
-            display = text + (f"\n\n_{status}_" if status else "") + " ▍"
+            if status and content:
+                body = body + f"\n\n_{status}_"
+            if _send_rich_draft_safe(chat_id, _draft_id, body, token, topic_id=topic_id):
+                return
+            # Unsupported (older Bot API) → fall through to placeholder path.
+            _use_rich_draft[0] = False
 
-        # Try sendMessageDraft first
-        if _send_draft_safe(chat_id, display, token,
-                            topic_id=topic_id, reply_to=message_id):
+        # Fallback: sendMessage placeholder + editMessageText (no thinking).
+        if not content:
             return
-
-        # Fallback: sendMessage + editMessageText
+        display = content + (f"\n\n_{status}_" if status else "") + " ▍"
         if _stream_msg_id[0] is None:
-            # Send initial placeholder
             kwargs = {"chat_id": chat_id, "text": display}
             if topic_id:
                 kwargs["message_thread_id"] = topic_id
@@ -2145,7 +2221,6 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
                 _stream_msg_id[0] = result["result"]["message_id"]
                 _log.info(f"streaming placeholder sent: msg_id={_stream_msg_id[0]}")
         else:
-            # Edit existing message
             result = _api("editMessageText", token,
                  chat_id=chat_id, message_id=_stream_msg_id[0], text=display)
             if not result.get("ok"):
@@ -2162,6 +2237,12 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
 
     def _tg_thinking_cb(text_chunk: str):
         _thinking_buf.append(text_chunk)
+        # Surface reasoning live in the rich draft before content arrives.
+        if _use_rich_draft[0]:
+            now = time.time()
+            if now - _last_update_ts[0] >= _STREAM_INTERVAL:
+                _update_stream()
+                _last_update_ts[0] = now
 
     def _tg_status_cb(status_text: str):
         _status_text[0] = status_text
@@ -2182,7 +2263,7 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
         source="telegram",
         session_id=str(chat_id) if chat_id else None,
         on_content=_tg_content_cb if streaming_on else None,
-        on_thinking=_tg_thinking_cb,
+        on_thinking=_tg_thinking_cb if streaming_on else None,
         on_status=_tg_status_cb if streaming_on else None,
     )
     _push_active_ctx(tg_ctx)

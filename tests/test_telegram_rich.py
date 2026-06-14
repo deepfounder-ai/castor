@@ -148,3 +148,73 @@ def test_send_message_html_reply_uses_html_field(monkeypatch):
     monkeypatch.setattr(tb, "get_token", lambda: "TOK")
     tb.send_message(123, "<b>bold</b> <i>it</i>")
     assert captured["sendRichMessage"]["rich_message"] == {"html": "<b>bold</b> <i>it</i>"}
+
+
+# ── streaming drafts + <tg-thinking> ────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_draft_cache():
+    tb._rich_draft_supported = None
+    yield
+    tb._rich_draft_supported = None
+
+
+def test_build_thinking_draft_body_both():
+    out = tb._build_thinking_draft_body("reasoning here", "partial answer")
+    assert "<tg-thinking>reasoning here</tg-thinking>" in out
+    assert "partial answer" in out
+    # thinking block comes first
+    assert out.index("tg-thinking") < out.index("partial answer")
+
+
+def test_build_thinking_draft_body_thinking_only():
+    out = tb._build_thinking_draft_body("just thinking", "")
+    assert out == "<tg-thinking>just thinking</tg-thinking>"
+
+
+def test_build_thinking_draft_body_content_only():
+    assert tb._build_thinking_draft_body("", "answer") == "answer"
+
+
+def test_build_thinking_draft_body_empty():
+    assert tb._build_thinking_draft_body("", "") == ""
+    assert tb._build_thinking_draft_body("  ", "  ") == ""
+
+
+def test_build_thinking_draft_body_caps_thinking():
+    long_th = "x" * 5000
+    out = tb._build_thinking_draft_body(long_th, "")
+    # capped to the last 600 chars
+    assert out.count("x") == 600
+
+
+def test_send_rich_draft_passes_draft_id(monkeypatch):
+    rec = _ApiRecorder({"sendRichMessageDraft": {"ok": True}})
+    monkeypatch.setattr(tb, "_api", rec)
+    ok = tb._send_rich_draft_safe(123, 42, "<tg-thinking>hm</tg-thinking>\n\ntext", "TOK")
+    assert ok is True
+    method, kwargs = rec.calls[0]
+    assert method == "sendRichMessageDraft"
+    assert kwargs["draft_id"] == 42
+    assert kwargs["chat_id"] == 123
+    assert "rich_message" in kwargs
+    assert tb._rich_draft_supported is True
+
+
+def test_send_rich_draft_caches_unsupported(monkeypatch):
+    rec = _ApiRecorder({"sendRichMessageDraft": {"ok": False, "description": "method not found"}})
+    monkeypatch.setattr(tb, "_api", rec)
+    assert tb._send_rich_draft_safe(123, 1, "x", "TOK") is False
+    assert tb._rich_draft_supported is False
+    # second call short-circuits
+    assert tb._send_rich_draft_safe(123, 2, "y", "TOK") is False
+    assert rec.methods() == ["sendRichMessageDraft"]
+
+
+def test_send_rich_draft_empty_noop(monkeypatch):
+    rec = _ApiRecorder({})
+    monkeypatch.setattr(tb, "_api", rec)
+    monkeypatch.setattr(tb, "get_token", lambda: "TOK")
+    assert tb.send_rich_draft(123, 1, "", "TOK") == {"ok": False}
+    assert rec.calls == []
