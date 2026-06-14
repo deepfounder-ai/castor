@@ -6923,9 +6923,9 @@ function renderAdvancedSub() {
   if (t === 'settings') {
     const s = state.allSettings || {};
     const groups = [
-      { label: 'Agent loop', keys: ['max_history_messages','max_tool_rounds','tool_retry_max','compaction_threshold','context_budget','presence_penalty','self_check_enabled','experience_learning','agent_loop_v2'] },
+      { label: 'Agent loop', keys: ['max_history_messages','max_tool_rounds','tool_retry_max','compaction_threshold','context_budget','presence_penalty','experience_learning'] },
       { label: 'Memory & RAG', keys: ['max_memory_results','rag_chunk_size','rag_chunk_overlap','synthesis_enabled','synthesis_time','synthesis_max_per_run'] },
-      { label: 'Inference', keys: ['ollama_num_ctx','fallback_provider','fallback_model'] },
+      { label: 'Inference', keys: ['model_context','ollama_num_ctx','fallback_provider','fallback_model'] },
       { label: 'Automation', keys: ['heartbeat_interval_min'] },
       { label: 'Vision', keys: ['camera_index'] },
       { label: 'STT', keys: ['stt_backend','stt_model','stt_language','stt_api_url','stt_api_model','stt_openai_key'] },
