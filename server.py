@@ -4262,6 +4262,14 @@ async def _broadcast(msg: dict):
             _ws_clients.difference_update(dead)
 
 
+def _is_system_task(name: str) -> bool:
+    """System/infrastructure cron tasks use the ``__name__`` convention
+    (heartbeat, synthesis, continuous synthesis, coach, trajectory prune).
+    They run on their own cadence and must NOT DM the owner — a 15-minute
+    "__synthesis_continuous__ No pending items" stream is pure chat noise."""
+    return name.startswith("__") and name.endswith("__")
+
+
 def _cron_callback(name: str, task: str, result: str):
     """Called from scheduler thread when a cron task completes."""
     # Heartbeat: suppress silent OK results
@@ -4279,8 +4287,11 @@ def _cron_callback(name: str, task: str, result: str):
         }
         asyncio.run_coroutine_threadsafe(_broadcast(msg), _ws_loop)
 
-    # Telegram notification
-    if telegram_bot.is_verified() and telegram_bot._running:
+    # Telegram notification — only for user-created routines. System tasks
+    # (synthesis, coach, trajectory prune, heartbeat) are infrastructure and
+    # never DM the owner.
+    if (not _is_system_task(name)
+            and telegram_bot.is_verified() and telegram_bot._running):
         owner = telegram_bot.get_owner_id()
         if owner:
             truncated = result[:500] + ("..." if len(result) > 500 else "")
