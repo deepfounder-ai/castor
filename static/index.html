@@ -2227,7 +2227,6 @@ const state = {
   kbPicked: null,
   kbStatus: null,
   kbRecent: [],  // last N completed indexings from /api/knowledge/recent
-  kbRecallSessionTotal: 0,  // total pills recalled across this UI session
   spicy: false,
   _spicyClicks: 0,
   _spicyFirstClick: 0,
@@ -3276,7 +3275,6 @@ async function switchThread(id) {
   state.tokenTimeline = [];
   state.memoryPills = [];
   state.memoryPillsReal = false;
-  state.kbRecallSessionTotal = 0;
   // Stop any previously running poll (from the thread we're leaving)
   if (state._routinePollTimer) {
     clearInterval(state._routinePollTimer);
@@ -3323,33 +3321,6 @@ async function loadStatus(opts) {
     if (s.soul) state.soul = s.soul;
     if (s.provider || s.model) state.model = { provider: s.provider || '', model: s.model || '' };
     // Silent path: skip full render, let the caller do surgical updates
-    if (opts && opts.silent) return;
-    render();
-  } catch {}
-}
-
-async function fetchRecalledMemories(opts) {
-  // WS 'recall' event is the source of truth — it contains what the agent
-  // actually saw in the system prompt. Only run this fallback when no real
-  // recall has arrived yet (e.g. a reload hit a thread with pre-WS history,
-  // or the user clicked refresh manually) AND not forced by caller.
-  const forced = opts && opts.force;
-  if (state.memoryPillsReal && !forced) return;
-  const lastUser = [...state.messages].reverse().find(m => m.role === 'user');
-  if (!lastUser || !lastUser.content) return;
-  const query = lastUser.content.slice(0, 200);
-  try {
-    const r = await api('/api/knowledge/search', { method: 'POST', body: { query, limit: 6 } });
-    const results = (r && r.results) || [];
-    state.memoryPills = results.map(x => ({
-      relevance: typeof x.score === 'number' ? x.score : (x.relevance || 0.5),
-      tag: (x.tags && x.tags[0]) || x.tag || 'memory',
-      age: x.indexed_at ? fmtTime(x.indexed_at) : '',
-      text: (x.text || x.content || x.name || '').slice(0, 200),
-      source: 'knowledge_base',
-    }));
-    state.kbRecallSessionTotal = (state.kbRecallSessionTotal || 0) + state.memoryPills.length;
-    state.memoryPillsReal = false;  // this is a KB preview, not the real recall
     if (opts && opts.silent) return;
     render();
   } catch {}
@@ -5036,7 +5007,7 @@ function renderInspector() {
     // experience).
     '<div class="insp-section"><div class="insp-section-hdr"><h3>Recalled memories</h3>' +
       (pills.length ? '<span class="count">' + pills.length + '</span>' : '') +
-      (state.memoryPillsReal ? '<span class="tag" style="font-size:9px;color:var(--ok);border-color:var(--ok)" title="What the agent actually recalled in this turn\'s system prompt">live</span>' : '') +
+      (state.memoryPillsReal && pills.length ? '<span class="tag" style="font-size:9px;color:var(--ok);border-color:var(--ok)" title="What the agent actually recalled in this turn\'s system prompt">live</span>' : '') +
     '</div>' +
       (pills.length
         ? pills.map(m =>
@@ -5320,10 +5291,10 @@ function renderMemoryView() {
             ? (avgChunksPerSource + ' per source · ' + ((state.status && state.status.memories) || 0).toLocaleString() + ' vectors')
             : 'none indexed yet') + '</div></div>' +
       '<div class="stat"><div class="lbl">RECALLED</div>' +
-        '<div class="v accent">' + (state.memoryPills.length || state.kbRecallSessionTotal || 0) + '</div>' +
+        '<div class="v accent">' + (state.memoryPills.length || 0) + '</div>' +
         '<div class="sub">' + (state.memoryPills.length
             ? 'last turn · top: ' + esc(state.memoryPills[0].tag || 'memory')
-            : (state.kbRecallSessionTotal ? 'this session' : 'send a message to recall')) + '</div></div>' +
+            : 'send a message to recall') + '</div></div>' +
       '<div class="stat"><div class="lbl">GRAPH</div>' +
         '<div class="v">' + g.nodes.length + '</div>' +
         '<div class="sub">' + (g.nodes.length
