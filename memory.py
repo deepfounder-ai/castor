@@ -11,7 +11,7 @@ from qdrant_client.models import (
     FieldCondition, MatchValue, Range, PayloadSchemaType,
     SparseVectorParams, SparseVector,
     Fusion, FusionQuery, Prefetch, Datatype, TextIndexParams,
-    TokenizerType, RecommendInput, RecommendQuery,
+    TokenizerType,
 )
 import config
 import logger
@@ -622,93 +622,6 @@ def search_by_vector(vector: list[float], limit: int = config.MAX_MEMORY_RESULTS
 
 
 # ── Recommend (for Memento experience learning) ──
-
-def recommend(positive_ids: list[str], negative_ids: list[str] | None = None,
-              limit: int = 5, tag: str | None = None) -> list[dict]:
-    """Recommend similar memories based on positive/negative examples.
-
-    Uses Qdrant's Recommend API with BEST_SCORE strategy —
-    ideal for Memento experience learning:
-    "find experiences similar to these successes, unlike these failures"
-
-    Args:
-        positive_ids: point IDs of good examples
-        negative_ids: point IDs of bad examples to avoid
-        limit: max results
-        tag: optional tag filter
-
-    Returns [{text, tag, score, ts, ...}]
-    """
-    try:
-        qc = _get_qdrant()
-    except Exception as e:
-        _log.warning(f"qdrant unavailable for recommend: {e}")
-        return []
-
-    filt = _build_filter(tag=tag)
-
-    try:
-        results = qc.query_points(
-            config.QDRANT_COLLECTION,
-            query=RecommendQuery(recommend=RecommendInput(
-                positive=positive_ids,
-                negative=negative_ids or [],
-                strategy="best_score",
-            )),
-            using="dense",
-            query_filter=filt,
-            limit=limit,
-        )
-        return _points_to_dicts(results.points)
-    except Exception as e:
-        _log.warning(f"recommend failed: {e}")
-        return []
-
-
-# ── Search with grouping (dedup by thread) ──
-
-def search_grouped(query: str, limit: int = config.MAX_MEMORY_RESULTS,
-                   tag: str | None = None, group_size: int = 1) -> list[dict]:
-    """Search with grouping by thread_id — returns max group_size results per thread.
-
-    Prevents search results from being dominated by memories from one conversation.
-
-    Args:
-        query: search text
-        limit: number of groups to return
-        tag: optional tag filter
-        group_size: max results per thread group
-
-    Returns [{text, tag, thread_id, score, ts, ...}]
-    """
-    try:
-        vector = _embed(query)
-    except Exception:
-        return []
-
-    try:
-        qc = _get_qdrant()
-    except Exception:
-        return []
-
-    filt = _build_filter(tag=tag)
-
-    try:
-        results = qc.query_points_groups(
-            config.QDRANT_COLLECTION,
-            query=vector,
-            using="dense",
-            group_by="thread_id",
-            limit=limit,
-            group_size=group_size,
-            query_filter=filt,
-        )
-        all_hits = [hit for group in results.groups for hit in group.hits]
-        return _points_to_dicts(all_hits)
-    except Exception as e:
-        _log.debug(f"grouped search failed, falling back to regular: {e}")
-        return search(query, limit=limit, tag=tag)
-
 
 # ── Chunking ──
 
