@@ -926,6 +926,97 @@ def get_all_entities(limit: int = 200) -> list[dict]:
         return []
 
 
+def _entity_key(name: str) -> str:
+    """Canonical key for entity-identity comparison: trimmed + casefolded."""
+    return (name or "").strip().casefold()
+
+
+def merge_entity_group(group: list[dict]) -> dict:
+    """Pure merge of N same-named entity dicts into one.
+
+    Union of relations (dedup by (to, rel)), summed observation_count,
+    longest non-empty description, first node's type + display casing.
+    No I/O — unit-testable. Caller persists the result.
+    """
+    name = next((e["name"].strip() for e in group if e.get("name", "").strip()), "")
+    etype = group[0].get("type", "concept")
+    obs = 0
+    desc = ""
+    rels: list[dict] = []
+    seen: set[tuple] = set()
+    for e in group:
+        obs += int(e.get("observation_count", 1) or 1)
+        d = e.get("description", "") or ""
+        if len(d) > len(desc):
+            desc = d
+        for r in e.get("relations", []) or []:
+            k = (r.get("to"), r.get("rel"))
+            if k not in seen:
+                seen.add(k)
+                rels.append(r)
+    return {"name": name, "type": etype, "description": desc,
+            "relations": rels, "observation_count": obs}
+
+
+def find_entities_by_name(name: str) -> list[dict]:
+    """All entity nodes whose name matches ``name`` (trim + casefold).
+
+    Entity identity is by NAME (relations reference targets by name, not
+    point id), so duplicates share a name. Used by synthesis upsert to find
+    the canonical node reliably — the fuzzy ``search(limit=1)`` path missed
+    exact matches when a near-name node out-ranked it, spawning duplicates.
+    """
+    key = _entity_key(name)
+    if not key:
+        return []
+    return [e for e in get_all_entities(limit=10000) if _entity_key(e.get("name", "")) == key]
+
+
+def dedupe_entities() -> dict:
+    """Collapse same-named duplicate entity nodes into one each.
+
+    Merges relations + observation_count, deletes the extras, recreates a
+    single canonical node per name. Returns ``{groups, removed}``. Safe to
+    run repeatedly (no-op once clean). Identity is by NAME so the recreated
+    node keeps every inbound/outbound relation reference intact.
+    """
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for e in get_all_entities(limit=10000):
+        groups[_entity_key(e.get("name", ""))].append(e)
+
+    merged_groups = 0
+    removed = 0
+    for key, grp in groups.items():
+        if not key or len(grp) <= 1:
+            continue
+        merged = merge_entity_group(grp)
+        for e in grp:
+            try:
+                delete(e["id"])
+            except Exception as ex:
+                _log.warning(f"dedupe_entities: delete {e.get('id')} failed: {ex}")
+        try:
+            _save_single(
+                text=merged["name"], tag="entity", dedup=False,
+                meta={
+                    "entity_type": merged["type"],
+                    "description": merged["description"],
+                    "relations": merged["relations"],
+                    "observation_count": merged["observation_count"],
+                    "last_synthesized": time.time(),
+                    "synthesis_status": "done",
+                },
+            )
+        except Exception as ex:
+            _log.warning(f"dedupe_entities: recreate '{merged['name']}' failed: {ex}")
+            continue
+        merged_groups += 1
+        removed += len(grp) - 1
+    _log.info(f"dedupe_entities: merged {merged_groups} group(s), removed {removed} duplicate node(s)")
+    return {"groups": merged_groups, "removed": removed}
+
+
 # ── Reindex from markdown (Phase 1 recovery path) ──
 
 

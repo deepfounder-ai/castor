@@ -245,34 +245,49 @@ def _upsert_entity(entity: dict, all_relations: list[dict]):
         elif rel.get("to") == name:
             entity_relations.append({"to": rel["from"], "rel": f"inv_{rel['rel']}"})
 
-    # Search for existing entity (RRF scores are ~0.01-0.06, not cosine 0-1)
-    existing = memory.search(name, limit=1, tag="entity")
+    # Find the existing node(s) by EXACT name. The old path used a fuzzy
+    # search(limit=1) + exact-text guard, which missed the real node whenever
+    # a near-name entity out-ranked it (or the RRF score dipped under 0.02) —
+    # so every synthesis run spawned ANOTHER "Drayage"/"LinkedIn"/… node. An
+    # exact-name lookup finds all copies; we merge into one and drop the rest
+    # so the duplication self-heals as entities get re-touched.
+    matches = memory.find_entities_by_name(name)
 
-    if existing and existing[0]["score"] > 0.02 and existing[0]["text"].lower() == name.lower():
-        # Update existing entity
-        point = existing[0]
-        old_relations = point.get("relations", [])
-        # Merge relations (avoid duplicates)
-        rel_set = {(r["to"], r["rel"]) for r in old_relations}
+    if matches:
+        # Merge prior relations across ALL copies, then add this run's.
+        merged = memory.merge_entity_group(matches)
+        old_relations = merged["relations"]
+        rel_set = {(r.get("to"), r.get("rel")) for r in old_relations}
         for r in entity_relations:
             if (r["to"], r["rel"]) not in rel_set:
                 old_relations.append(r)
-        obs_count = point.get("observation_count", 0) + 1
+        obs_count = merged["observation_count"] + 1
+
+        # Collapse any duplicate copies into one canonical node.
+        for extra in matches[1:]:
+            try:
+                memory.delete(extra["id"])
+            except Exception as e:
+                _log.debug(f"synthesis: dedupe delete {extra.get('id')} failed: {e}")
+        try:
+            memory.delete(matches[0]["id"])
+        except Exception as e:
+            _log.debug(f"synthesis: delete primary {matches[0].get('id')} failed: {e}")
 
         memory._save_single(
             text=name,
             tag="entity",
-            dedup=True,
+            dedup=False,
             meta={
                 "entity_type": entity_type,
-                "description": description or point.get("description", ""),
+                "description": description or merged["description"],
                 "relations": old_relations,
                 "observation_count": obs_count,
                 "last_synthesized": time.time(),
                 "synthesis_status": "done",
             },
         )
-        _log.info(f"synthesis: updated entity '{name}' (obs={obs_count}, rels={len(old_relations)})")
+        _log.info(f"synthesis: updated entity '{name}' (copies={len(matches)}, obs={obs_count}, rels={len(old_relations)})")
     else:
         # Create new entity
         memory._save_single(

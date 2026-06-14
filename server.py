@@ -3329,6 +3329,17 @@ async def knowledge_recent():
 async def knowledge_graph():
     """Get entity graph data for visualization."""
     entities = mem.get_all_entities(limit=200)
+    # Collapse same-named entities into one node for display. The store can
+    # hold duplicates (legacy synthesis spawned a new node per run); a D3
+    # force graph with duplicate ids renders a hairball + binds links to the
+    # wrong node. Merge by name here so the view is clean even before the
+    # underlying store is deduped via POST /api/knowledge/graph/dedupe.
+    from collections import defaultdict
+    _by_name = defaultdict(list)
+    for e in entities:
+        _by_name[(e.get("name") or "").strip().casefold()].append(e)
+    entities = [mem.merge_entity_group(grp) for key, grp in _by_name.items() if key]
+
     # Build nodes + links for D3 force graph
     nodes = []
     links = []
@@ -3361,6 +3372,18 @@ async def knowledge_graph_clear():
     """Clear all entities and wiki from the knowledge graph."""
     mem.clear_graph()
     return {"ok": True, "message": "Graph cleared — entities and wiki removed"}
+
+
+@app.post("/api/knowledge/graph/dedupe")
+async def knowledge_graph_dedupe():
+    """Collapse same-named duplicate entity nodes into one each.
+
+    Non-destructive merge (relations + observation_count preserved); only the
+    redundant copies are removed. Fixes the duplicate-spawn from legacy
+    synthesis (a fresh node per run instead of updating the existing one)."""
+    res = mem.dedupe_entities()
+    return {"ok": True, "groups": res["groups"], "removed": res["removed"],
+            "message": f"Merged {res['groups']} duplicate group(s), removed {res['removed']} node(s)"}
 
 
 @app.post("/api/knowledge/reindex")

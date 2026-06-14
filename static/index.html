@@ -5351,7 +5351,8 @@ function renderMemoryView() {
                 '<button class="icon-btn" data-act="graph-fit" title="Fit all nodes">' + ico('eye', 12) + '</button>' +
                 '<button class="icon-btn" data-act="graph-reset" title="Reset view (double-click empty space)">' + ico('refresh', 12) + '</button>' +
                 '<button class="icon-btn" data-act="graph-relayout" title="Re-run layout (shuffles positions)">' + ico('graph', 12) + '</button>' +
-                '<button class="icon-btn" data-act="graph-clear" title="Clear graph (entities + wiki)" style="margin-left:4px">' + ico('trash', 12) + '</button>' +
+                '<button class="icon-btn" data-act="graph-dedupe" title="Merge duplicate entities (same name → one node)" style="margin-left:4px">' + ico('sparkle', 12) + '</button>' +
+                '<button class="icon-btn" data-act="graph-clear" title="Clear graph (entities + wiki)">' + ico('trash', 12) + '</button>' +
               '</div>'
             : '') +
         '</div>' +
@@ -8822,6 +8823,15 @@ function wireEvents() {
       if (!confirm('Clear the knowledge graph? Entities + wiki pages will be removed.\nIndexed chunks are kept; only the synthesized graph layer is cleared.')) return;
       try { await api('/api/knowledge/graph/clear', { method: 'POST' }); toast('graph cleared'); loadMemory(); }
       catch { toast('clear failed', 'err'); }
+    };
+  });
+  document.querySelectorAll('[data-act="graph-dedupe"]').forEach(b => {
+    b.onclick = async () => {
+      try {
+        const r = await api('/api/knowledge/graph/dedupe', { method: 'POST' });
+        toast(r && r.removed ? ('merged ' + r.groups + ' group(s), removed ' + r.removed + ' node(s)') : 'no duplicates found');
+        loadMemory();
+      } catch { toast('dedupe failed', 'err'); }
     };
   });
 
