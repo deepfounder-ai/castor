@@ -1543,44 +1543,11 @@ def send_message(chat_id: int, text: str, token: str | None = None,
             _log.warning("sent as plain text (all formatting failed)")
 
 
-def send_draft(chat_id: int, text: str, token: str | None = None,
-               topic_id: int | None = None, reply_to: int | None = None) -> dict:
-    """Send a message draft (streaming) via sendMessageDraft (Bot API 9.3+).
-
-    The draft is shown to the user in real-time and gets replaced when
-    a final send_message() is sent. Falls back silently on older API.
-    """
-    token = token or get_token()
-    if not token or not text:
-        return {"ok": False}
-    kwargs: dict = {"chat_id": chat_id, "text": text[:4000]}
-    if topic_id:
-        kwargs["message_thread_id"] = topic_id
-    if reply_to:
-        kwargs["reply_parameters"] = {"message_id": reply_to}
-    return _api("sendMessageDraft", token, **kwargs)
-
-
-_draft_supported: bool | None = None  # cached: does bot API support sendMessageDraft?
-
-
-def _send_draft_safe(chat_id: int, text: str, token: str,
-                     topic_id: int | None = None, reply_to: int | None = None) -> bool:
-    """Send draft, return True if supported. Caches API support check."""
-    global _draft_supported
-    if _draft_supported is False:
-        return False
-    result = send_draft(chat_id, text, token, topic_id=topic_id, reply_to=reply_to)
-    if result.get("ok"):
-        _draft_supported = True
-        return True
-    # Check if method is not supported (older Bot API) — never latch off on a
-    # content-level error.
-    if _method_unsupported(result):
-        _draft_supported = False
-        _log.info("sendMessageDraft not supported — falling back to final-only mode")
-        return False
-    return False
+# NOTE: the old sendMessageDraft helpers (send_draft / _send_draft_safe /
+# _draft_supported) were removed once the Bot API 10.1 rich-draft path
+# (sendRichMessageDraft, below) replaced streaming drafts. sendMessageDraft
+# never worked anyway — we never passed the required random id, so it always
+# returned RANDOM_ID_INVALID and fell back. The rich-draft path supersedes it.
 
 
 # ── Rich messages (Bot API 10.1) ────────────────────────────────────────────
@@ -2184,7 +2151,7 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
     typing_thread = threading.Thread(target=_keep_typing, daemon=True)
     typing_thread.start()
 
-    # ── Streaming via sendMessageDraft / editMessageText + agent callbacks ──
+    # ── Streaming via sendRichMessageDraft (rich) / editMessageText + callbacks ──
     import agent
 
     _stream_buf = ""          # accumulated content for streaming
