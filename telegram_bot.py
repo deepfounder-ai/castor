@@ -870,6 +870,26 @@ def _html_render_blockquotes(text: str) -> str:
     return "\n".join(out)
 
 
+import re as _re_mod
+
+# Closing tags are a strong "this is already Telegram HTML" signal — they're
+# vanishingly rare in normal prose, unlike a bare '<' or '>'. When the agent
+# answers with literal HTML (e.g. demonstrating formatting, or just choosing
+# HTML over markdown), we must send it verbatim with parse_mode=HTML instead
+# of routing it through _to_markdownv2 (which treats the tags as plain text,
+# so the user sees raw "<b>bold</b>") or _to_html (which would escape the
+# already-present tags into "&lt;b&gt;").
+_TG_HTML_TAGS = "b|strong|i|em|u|ins|s|strike|del|code|pre|a|tg-spoiler|tg-emoji|blockquote|span"
+_HTML_CLOSE_RE = _re_mod.compile(rf"</(?:{_TG_HTML_TAGS})>", _re_mod.IGNORECASE)
+
+
+def _looks_like_html(text: str) -> bool:
+    """True if ``text`` already contains Telegram-style HTML markup (detected
+    by a closing tag for one of the supported entities). Used to send the
+    agent's reply with parse_mode=HTML verbatim instead of mangling it."""
+    return bool(_HTML_CLOSE_RE.search(text or ""))
+
+
 def _md2_render_blockquotes(text: str) -> str:
     """Un-escape line-leading ``\\>`` quote markers in already-escaped
     MarkdownV2, grouping consecutive quote lines. A run opening with
@@ -1454,13 +1474,23 @@ def send_message(chat_id: int, text: str, token: str | None = None,
         # Try MarkdownV2 → HTML → Markdown → plain text
         sent = False
 
-        # 1. MarkdownV2
-        md2_text = _to_markdownv2(chunk)
-        result = _api("sendMessage", token, **base_kwargs, text=md2_text, parse_mode="MarkdownV2")
-        if result.get("ok"):
-            sent = True
+        # 0. Agent emitted raw Telegram HTML — send it verbatim as HTML so the
+        #    tags render instead of showing up as literal "<b>bold</b>". Skip
+        #    _to_html (it would escape the existing tags).
+        if _looks_like_html(chunk):
+            result = _api("sendMessage", token, **base_kwargs, text=chunk, parse_mode="HTML")
+            if result.get("ok"):
+                sent = True
+                _log.info("sent as raw HTML (agent-emitted tags)")
 
-        # 2. HTML fallback
+        # 1. MarkdownV2
+        if not sent:
+            md2_text = _to_markdownv2(chunk)
+            result = _api("sendMessage", token, **base_kwargs, text=md2_text, parse_mode="MarkdownV2")
+            if result.get("ok"):
+                sent = True
+
+        # 2. HTML fallback (convert markdown → HTML)
         if not sent:
             html_text = _to_html(chunk)
             result = _api("sendMessage", token, **base_kwargs, text=html_text, parse_mode="HTML")
@@ -2108,13 +2138,20 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
                 keyboard = _build_reply_keyboard(tool_names)
 
                 if _stream_msg_id[0]:
-                    # Edit the streaming message into the final formatted version
-                    # Try MarkdownV2 → HTML → plain text
-                    md2 = _to_markdownv2(enriched)
-                    result = _api("editMessageText", token,
-                                  chat_id=chat_id, message_id=_stream_msg_id[0],
-                                  text=md2, parse_mode="MarkdownV2",
-                                  reply_markup=keyboard)
+                    # Edit the streaming message into the final formatted version.
+                    # Raw agent HTML → HTML verbatim; else MarkdownV2 → HTML → plain.
+                    result = {"ok": False}
+                    if _looks_like_html(enriched):
+                        result = _api("editMessageText", token,
+                                      chat_id=chat_id, message_id=_stream_msg_id[0],
+                                      text=enriched, parse_mode="HTML",
+                                      reply_markup=keyboard)
+                    if not result.get("ok"):
+                        md2 = _to_markdownv2(enriched)
+                        result = _api("editMessageText", token,
+                                      chat_id=chat_id, message_id=_stream_msg_id[0],
+                                      text=md2, parse_mode="MarkdownV2",
+                                      reply_markup=keyboard)
                     if not result.get("ok"):
                         html = _to_html(enriched)
                         result = _api("editMessageText", token,

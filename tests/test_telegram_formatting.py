@@ -140,3 +140,32 @@ def test_html_escapes_plain_angle_brackets():
     assert "&lt;" in out
     assert "&amp;" in out
     assert "&gt;" in out
+
+
+# ── Agent-emitted raw HTML detection ────────────────────────────────────────
+#
+# When the agent answers with literal Telegram HTML (demonstrating formatting,
+# or just preferring HTML), the send path must ship it verbatim with
+# parse_mode=HTML — NOT route it through _to_markdownv2 (which renders the tags
+# as the literal text "<b>bold</b>") or _to_html (which would double-escape the
+# existing tags into "&lt;b&gt;"). _looks_like_html gates that fast-path.
+
+
+def test_looks_like_html_detects_closing_tags():
+    assert tb._looks_like_html("<b>bold</b>") is True
+    assert tb._looks_like_html("<i>i</i> and <code>c</code>") is True
+    assert tb._looks_like_html("<tg-spoiler>s</tg-spoiler>") is True
+    assert tb._looks_like_html("<blockquote>q</blockquote>") is True
+    assert tb._looks_like_html('<pre><code class="language-python">x</code></pre>') is True
+    assert tb._looks_like_html('<a href="http://e.com">link</a>') is True
+
+
+def test_looks_like_html_false_for_markdown():
+    assert tb._looks_like_html("just **bold** and _italic_ markdown") is False
+    assert tb._looks_like_html("> a quote\nand `code`") is False
+
+
+def test_looks_like_html_false_for_unclosed_mention():
+    # Talking ABOUT a tag (no closing tag) is not HTML content.
+    assert tb._looks_like_html("use the <b> tag for bold") is False
+    assert tb._looks_like_html("compare a < b and c > d") is False
