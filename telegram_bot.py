@@ -817,6 +817,78 @@ def _handle_bot_command(cmd: str, args: str, chat_id: int, user_id: int,
     return False
 
 
+def _iter_blockquote_groups(lines: list[str], marker: str):
+    """Yield ``(is_quote, is_expandable, content_lines)`` runs over ``lines``.
+
+    A quote line starts with ``marker`` (``"&gt;"`` for the HTML pass — the
+    leading ``>`` is already entity-escaped — or ``"\\>"`` for MarkdownV2,
+    where the escaper has backslash-escaped the ``>``). A run whose FIRST
+    line carries an extra ``!`` right after the marker is expandable.
+    Consecutive quote lines are coalesced into a single group so they render
+    as one ``<blockquote>`` / one collapsible block rather than N stacked
+    ones. The marker (and one optional following space) is stripped from
+    each returned content line.
+    """
+    expand_marker = marker + ("!" if "\\" not in marker else "\\!")
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if line.startswith(marker):
+            expandable = line.startswith(expand_marker)
+            content = []
+            while i < n and lines[i].startswith(marker):
+                ln = lines[i]
+                # Strip the longest matching marker (expandable first).
+                if ln.startswith(expand_marker):
+                    ln = ln[len(expand_marker):]
+                else:
+                    ln = ln[len(marker):]
+                if ln.startswith(" "):
+                    ln = ln[1:]
+                content.append(ln)
+                i += 1
+            yield (True, expandable, content)
+        else:
+            yield (False, False, [line])
+            i += 1
+
+
+def _html_render_blockquotes(text: str) -> str:
+    """Wrap consecutive ``&gt;``-prefixed lines in one ``<blockquote>`` (or
+    ``<blockquote expandable>`` when the run opens with ``&gt;!``)."""
+    out = []
+    for is_quote, expandable, content in _iter_blockquote_groups(text.split("\n"), "&gt;"):
+        if not is_quote:
+            out.append(content[0])
+            continue
+        body = "\n".join(content)
+        if expandable:
+            out.append(f"<blockquote expandable>{body}</blockquote>")
+        else:
+            out.append(f"<blockquote>{body}</blockquote>")
+    return "\n".join(out)
+
+
+def _md2_render_blockquotes(text: str) -> str:
+    """Un-escape line-leading ``\\>`` quote markers in already-escaped
+    MarkdownV2, grouping consecutive quote lines. A run opening with
+    ``\\>\\!`` becomes an expandable quote (``**>`` first line, trailing
+    ``||`` after the last)."""
+    out = []
+    for is_quote, expandable, content in _iter_blockquote_groups(text.split("\n"), "\\>"):
+        if not is_quote:
+            out.append(content[0])
+            continue
+        if expandable:
+            quoted = [("**>" if j == 0 else ">") + c for j, c in enumerate(content)]
+            quoted[-1] = quoted[-1] + "||"
+            out.append("\n".join(quoted))
+        else:
+            out.append("\n".join(">" + c for c in content))
+    return "\n".join(out)
+
+
 def _to_html(text: str) -> str:
     """Convert standard Markdown to Telegram HTML format.
 
@@ -843,18 +915,34 @@ def _to_html(text: str) -> str:
     # Escape HTML in remaining text
     result = _html.escape(result)
 
+    # Custom emoji ![👍](tg://emoji?id=N) → <tg-emoji emoji-id="N">👍</tg-emoji>.
+    # MUST run before the generic link rule, which would otherwise eat the
+    # [text](url) shape inside it. Bot API 10.1 entity.
+    result = _re.sub(
+        r'!\[([^\]]+)\]\(tg://emoji\?id=(\d+)\)',
+        r'<tg-emoji emoji-id="\2">\1</tg-emoji>',
+        result,
+    )
     # Convert ~~strikethrough~~ → <s>
     # Use negated char class instead of (.+?) to avoid ReDoS on repeated ~
     result = _re.sub(r'~~([^~]+)~~', r'<s>\1</s>', result)
+    # Spoiler ||text|| → <tg-spoiler>text</tg-spoiler>.
+    result = _re.sub(r'\|\|([^|]+)\|\|', r'<tg-spoiler>\1</tg-spoiler>', result)
     # Convert **bold** → <b>bold</b>
     result = _re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', result)
+    # Underline __text__ → <u>text</u>. MUST run before the single-_ italic
+    # rule below so the doubled underscores aren't consumed as two italics.
+    # Safe to repurpose __ for underline: the agent emits ** for bold.
+    result = _re.sub(r'__([^_]+)__', r'<u>\1</u>', result)
     # Convert *italic* and _italic_ → <i>italic</i>
     result = _re.sub(r'\*([^*]+)\*', r'<i>\1</i>', result)
     result = _re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'<i>\1</i>', result)
     # Convert [text](url) → <a href="url">text</a>
     result = _re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', result)
-    # Convert > blockquote — use [^\n]+ to avoid cross-line backtracking
-    result = _re.sub(r'^&gt;[ \t]*([^\n]+)$', r'<blockquote>\1</blockquote>', result, flags=_re.MULTILINE)
+    # Block quotations: group consecutive '> '/'>! ' lines into one tag. A
+    # group whose FIRST line opens with '>!' becomes <blockquote expandable>
+    # (collapsible). After html.escape the leading '>' is '&gt;'.
+    result = _html_render_blockquotes(result)
 
     # Restore protected blocks
     for i, p in enumerate(protected):
@@ -918,6 +1006,18 @@ def _to_markdownv2(text: str) -> str:
         italic_parts.append(m.group(1))
         return f"\x02ITALIC{idx}\x02"
 
+    # Protect custom emoji ![👍](tg://emoji?id=N) verbatim — BEFORE the link
+    # protect, which would otherwise eat the [text](url) shape inside it.
+    # MarkdownV2 keeps the literal markup; the brackets/parens inside must
+    # NOT be escaped. Bot API 10.1 entity.
+    emoji_parts = []
+    def _protect_emoji(m):
+        idx = len(emoji_parts)
+        emoji_parts.append(m.group(0))
+        return f"\x05EMOJI{idx}\x05"
+
+    result = _re.sub(r'!\[[^\]]+\]\(tg://emoji\?id=\d+\)', _protect_emoji, result)
+
     # Protect [text](url) links
     link_parts = []
     def _protect_link(m):
@@ -935,6 +1035,27 @@ def _to_markdownv2(text: str) -> str:
         return f"\x04STRIKE{idx}\x04"
 
     result = _re.sub(r'~~([^~]+)~~', _protect_strike, result)
+
+    # Protect ||spoiler|| — MarkdownV2 keeps the doubled pipes, inner text
+    # escaped. Bot API 6.1 entity.
+    spoiler_parts = []
+    def _protect_spoiler(m):
+        idx = len(spoiler_parts)
+        spoiler_parts.append(m.group(1))
+        return f"\x06SPOILER{idx}\x06"
+
+    result = _re.sub(r'\|\|([^|]+)\|\|', _protect_spoiler, result)
+
+    # Protect __underline__ — BEFORE bold/italic so the doubled underscores
+    # aren't consumed as two italics. Safe to repurpose __ for underline:
+    # the agent emits ** for bold.
+    underline_parts = []
+    def _protect_underline(m):
+        idx = len(underline_parts)
+        underline_parts.append(m.group(1))
+        return f"\x07UNDER{idx}\x07"
+
+    result = _re.sub(r'__([^_]+)__', _protect_underline, result)
 
     result = _re.sub(r'\*\*([^*]+)\*\*', _protect_bold, result)
     # Handle both *italic* and _italic_ — negated char classes prevent ReDoS
@@ -981,6 +1102,26 @@ def _to_markdownv2(text: str) -> str:
                 esc_s += ch
         result = result.replace(f"\x04STRIKE{i}\x04", f"~{esc_s}~")
 
+    # Restore spoiler → ||escaped_text||
+    for i, sp in enumerate(spoiler_parts):
+        esc_sp = ""
+        for ch in sp:
+            if ch in special:
+                esc_sp += "\\" + ch
+            else:
+                esc_sp += ch
+        result = result.replace(f"\x06SPOILER{i}\x06", f"||{esc_sp}||")
+
+    # Restore underline → __escaped_text__
+    for i, u in enumerate(underline_parts):
+        esc_u = ""
+        for ch in u:
+            if ch in special:
+                esc_u += "\\" + ch
+            else:
+                esc_u += ch
+        result = result.replace(f"\x07UNDER{i}\x07", f"__{esc_u}__")
+
     # Restore links → [escaped_text](url)
     for i, (link_text, link_url) in enumerate(link_parts):
         esc_lt = ""
@@ -993,9 +1134,19 @@ def _to_markdownv2(text: str) -> str:
         esc_url = link_url.replace("\\", "\\\\").replace(")", "\\)")
         result = result.replace(f"\x03LINK{i}\x03", f"[{esc_lt}]({esc_url})")
 
+    # Restore custom emoji verbatim (markup must stay unescaped)
+    for i, e in enumerate(emoji_parts):
+        result = result.replace(f"\x05EMOJI{i}\x05", e)
+
     # Restore protected code blocks (no escaping inside)
     for i, p in enumerate(protected):
         result = result.replace(f"\x00PROTECTED{i}\x00", p)
+
+    # Block quotations: the escaper turned every line-leading '>' into '\>'.
+    # Un-escape quote markers so Telegram renders them as quotes, grouping
+    # consecutive lines. A run opening with '>!' (escaped '\>\!') becomes an
+    # expandable quote: '**>' on the first line, trailing '||' after the last.
+    result = _md2_render_blockquotes(result)
 
     return result
 
