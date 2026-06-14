@@ -4929,12 +4929,13 @@ function renderInspector() {
   //   - model_context shown alongside as reference + a warning if
   //     context_budget > model_context (misconfiguration — agent would try
   //     to pack more tokens than the model can accept).
-  const budget = st.context_budget
-    || (state.settings && state.settings.context_budget)
-    || 24000;
-  const modelCtx = st.model_context
-    || (state.settings && (state.settings.model_context || state.settings.ollama_num_ctx))
-    || 0;
+  // Fallback to the /api/settings dump (shape {key: {value}}) when /status
+  // hasn't loaded yet — state.settings never existed, so the old guard was
+  // dead and always fell through to the 24000 default.
+  const aS = state.allSettings || {};
+  const sVal = (k) => (aS[k] && aS[k].value) || 0;
+  const budget = st.context_budget || sVal('context_budget') || 24000;
+  const modelCtx = st.model_context || sVal('model_context') || sVal('ollama_num_ctx') || 0;
   const ctxSource = st.model_context_source || (modelCtx ? 'setting' : 'unknown');
   const budgetOverflow = modelCtx > 0 && budget > modelCtx;  // misconfig warning
   // Compact token-count label: 1.5M / 128k / 800. Avoids the ugly "1000k".
@@ -9762,6 +9763,11 @@ function wireEvents() {
         await api('/api/settings', { method: 'POST', body: { [key]: value } });
         toast(key + ' saved');
         if (state.allSettings && state.allSettings[key]) state.allSettings[key].value = value;
+        // Refresh /api/status so status-derived UI (Inspector context-window
+        // gauge reads state.status.context_budget / model_context FIRST) stops
+        // showing the pre-save value until a reload. Silent — don't blow away
+        // the settings form mid-edit.
+        loadStatus({ silent: true });
       } catch { toast('save failed', 'err'); }
     });
   });
@@ -9776,6 +9782,7 @@ function wireEvents() {
         await api('/api/settings', { method: 'POST', body: { [key]: want } });
         toast(key + ': ' + (want ? 'on' : 'off'));
         if (state.allSettings && state.allSettings[key]) state.allSettings[key].value = want;
+        loadStatus({ silent: true });
         render();
       } catch { toast('save failed', 'err'); }
     };
