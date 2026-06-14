@@ -1634,6 +1634,80 @@ def _poll_loop(token: str):
             time.sleep(5)
 
 
+def _describe_nontext_message(msg: dict) -> str | None:
+    """Map a non-text Telegram message to a short bracketed text injection.
+
+    Handles the message types that carry no ``text`` / ``caption`` and that
+    ``_handle_update`` doesn't already consume (photo, document, voice/audio
+    are handled upstream and return None here). Returns ``None`` for those,
+    for plain-text messages, and for anything unrecognised — so the caller
+    only injects a synthetic prompt when there's genuinely something to say.
+
+    Pure function: reads the update dict, performs no I/O.
+    """
+    # Already-handled media: defer to the upstream paths.
+    if msg.get("photo") or msg.get("document") or msg.get("voice") or msg.get("audio"):
+        return None
+    if msg.get("text") or msg.get("caption"):
+        return None
+
+    loc = msg.get("location")
+    if loc and "venue" not in msg:
+        return (
+            f"[User shared a location: latitude {loc.get('latitude')}, "
+            f"longitude {loc.get('longitude')}.]"
+        )
+
+    venue = msg.get("venue")
+    if venue:
+        vloc = venue.get("location", {})
+        return (
+            f"[User shared a venue: \"{venue.get('title', '')}\" — "
+            f"{venue.get('address', '')} "
+            f"(latitude {vloc.get('latitude')}, longitude {vloc.get('longitude')}).]"
+        )
+
+    contact = msg.get("contact")
+    if contact:
+        name = " ".join(
+            p for p in (contact.get("first_name"), contact.get("last_name")) if p
+        )
+        return f"[User shared a contact: {name}, phone {contact.get('phone_number', '')}.]"
+
+    poll = msg.get("poll")
+    if poll:
+        opts = ", ".join(o.get("text", "") for o in poll.get("options", []))
+        return f"[User sent a poll. Question: \"{poll.get('question', '')}\". Options: {opts}.]"
+
+    dice = msg.get("dice")
+    if dice:
+        return f"[User rolled {dice.get('emoji', '🎲')} → {dice.get('value')}.]"
+
+    sticker = msg.get("sticker")
+    if sticker:
+        emoji = sticker.get("emoji")
+        return f"[User sent a sticker{f' ({emoji})' if emoji else ''}.]"
+
+    video = msg.get("video")
+    if video:
+        return (
+            f"[User sent a video ({video.get('duration', '?')}s, "
+            f"{video.get('width', '?')}x{video.get('height', '?')}). "
+            f"Castor can't view video content yet — ask for a description if needed.]"
+        )
+
+    if msg.get("video_note"):
+        dur = msg["video_note"].get("duration", "?")
+        return f"[User sent a round video note ({dur}s). Castor can't view video content yet.]"
+
+    # Animation (GIF). Telegram usually attaches a `document` too, which the
+    # upstream handler saves — only describe when it didn't.
+    if msg.get("animation"):
+        return "[User sent an animation/GIF. Castor can't view animated content yet.]"
+
+    return None
+
+
 def _handle_update(update: dict, token: str, bot_username: str):
     """Process a single Telegram update."""
     # Handle inline keyboard callback queries
@@ -1734,6 +1808,15 @@ def _handle_update(update: dict, token: str, bot_username: str):
             _log.error(f"voice transcription failed: {e}")
             send_message(chat_id, "⚠️ Failed to transcribe voice message.", token, topic_id=topic_id)
             return
+
+    # Non-text message types (location, contact, poll, dice, sticker, video,
+    # video_note, animation, venue) — inject a synthetic prompt so the agent
+    # sees them instead of the silent-drop below. Prepended so any caption
+    # the user added still reaches the agent.
+    if not image_b64 and not is_voice:
+        media_note = _describe_nontext_message(msg)
+        if media_note:
+            text = media_note + (("\n\n" + text) if text else "")
 
     if not text and not image_b64:
         return
