@@ -1,13 +1,8 @@
 <p align="center">
-<pre>
- ██████╗ █████╗ ███████╗████████╗ ██████╗ ██████╗ 
-██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗
-██║     ███████║███████╗   ██║   ██║   ██║██████╔╝
-██║     ██╔══██║╚════██║   ██║   ██║   ██║██╔══██╗
-╚██████╗██║  ██║███████║   ██║   ╚██████╔╝██║  ██║
- ╚═════╝╚═╝  ╚═╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
-</pre>
+  <img src="https://raw.githubusercontent.com/deepfounder-ai/castor/main/static/logo.png" alt="Castor" width="150">
 </p>
+
+<h1 align="center">Castor</h1>
 
 <h3 align="center">Business-oriented AI agent</h3>
 
