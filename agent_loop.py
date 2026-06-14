@@ -663,15 +663,33 @@ def run_loop(
                     full_content += delta.content
                     text = delta.content
 
-                    # Detect <think> tags in content (check only new text, not full_content)
+                    # Detect <think> tags in content (check only new text, not
+                    # full_content). When a tag shares a delta with real text we
+                    # must split and emit BOTH sides — otherwise the answer text
+                    # that rides alongside the closing </think> (common for
+                    # inline-thinking models) is silently dropped from the
+                    # streamed content, truncating the start of the reply.
                     if not _think_detected and "<think>" in text:
+                        before, _, after = text.partition("<think>")
+                        if before and not in_think:
+                            emitter.content(before)
                         in_think = True
                         _think_detected = True
                         emitter.status("thinking...")
+                        if after:
+                            emitter.thinking(after)
                     elif in_think and "</think>" in text:
+                        before, _, after = text.partition("</think>")
+                        if before:
+                            emitter.thinking(before)
                         in_think = False
                         emitter.status("writing reply...")
+                        if after:
+                            emitter.content(after)
                     elif "<|channel>" in text and not _think_detected:
+                        before, _, _ = text.partition("<|channel>")
+                        if before:
+                            emitter.content(before)
                         in_think = True
                         emitter.status("thinking...")
                     elif in_think:
