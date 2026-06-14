@@ -4937,6 +4937,10 @@ function renderInspector() {
     || 0;
   const ctxSource = st.model_context_source || (modelCtx ? 'setting' : 'unknown');
   const budgetOverflow = modelCtx > 0 && budget > modelCtx;  // misconfig warning
+  // Compact token-count label: 1.5M / 128k / 800. Avoids the ugly "1000k".
+  const fmtCtx = (n) => n >= 1e6
+    ? (n % 1e6 === 0 ? (n/1e6) + 'M' : (n/1e6).toFixed(1) + 'M')
+    : (n >= 1e3 ? (n/1e3).toFixed(0) + 'k' : String(n));
   // Numerator: actual prompt tokens that went into the model on the last turn.
   // Fall back to thread-history estimate only when no turn has happened yet.
   const lastPrompt = (lt && lt.prompt_tokens) || threadTokens || 0;
@@ -4994,17 +4998,17 @@ function renderInspector() {
       '<div class="insp-section-hdr"><h3>Context window</h3></div>' +
       '<div class="token-gauge">' +
         '<div class="row"><div><span class="used">' + lastPrompt.toLocaleString() + '</span>' +
-          '<span class="total">/ ' + (budget/1000).toFixed(0) + 'k</span></div>' +
+          '<span class="total">/ ' + fmtCtx(budget) + '</span></div>' +
           '<span class="pct" style="color:' + pctColor + '">' + pct.toFixed(1) + '%</span></div>' +
         '<div class="bar"><div class="fill" style="width:' + pct + '%;background:' + pctColor + '"></div></div>' +
         '<div style="font-size:9px;color:var(--fg-4);margin-top:4px;font-family:var(--font-mono);display:flex;justify-content:space-between;gap:8px">' +
           '<span title="Prompt tokens from last API call / context_budget (agent-side limit, triggers compaction). Change in Settings → Model.">prompt tokens · agent budget</span>' +
           (modelCtx > 0
-            ? '<span title="Model\'s native context limit (' + (ctxSource === 'detected' ? 'auto-detected' : ctxSource === 'override' ? 'manually set' : 'from setting') + '). The agent stays below context_budget so it never hits this.">model ' + (modelCtx/1000).toFixed(0) + 'k</span>'
+            ? '<span title="Model\'s native context limit (' + (ctxSource === 'detected' ? 'auto-detected' : ctxSource === 'override' ? 'manually set' : 'from setting') + '). The agent stays below context_budget so it never hits this.">model ' + fmtCtx(modelCtx) + '</span>'
             : '<span title="Model context unknown — set model_context in Settings → Inference">model ?</span>') +
         '</div>' +
         (budgetOverflow
-          ? '<div style="font-size:10px;color:var(--err);margin-top:6px;padding:5px 8px;background:rgba(255,80,80,0.08);border:1px solid var(--err);border-radius:4px;line-height:1.4">⚠ context_budget (' + (budget/1000).toFixed(0) + 'k) exceeds the model\'s actual context (' + (modelCtx/1000).toFixed(0) + 'k). Lower context_budget in Settings → Model to avoid provider errors.</div>'
+          ? '<div style="font-size:10px;color:var(--err);margin-top:6px;padding:5px 8px;background:rgba(255,80,80,0.08);border:1px solid var(--err);border-radius:4px;line-height:1.4">⚠ context_budget (' + fmtCtx(budget) + ') exceeds the model\'s actual context (' + fmtCtx(modelCtx) + '). Lower context_budget in Settings → Model to avoid provider errors.</div>'
           : '') +
       '</div>' +
       // Sparkline — prompt_tokens per turn history (shows growth trajectory)
