@@ -897,6 +897,7 @@ details.tool[open] > summary .tool-result { color: var(--fg-4); }
   font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-2); margin: 0 4px 4px 0;
 }
 .tool-chip .dot { width: 5px; height: 5px; border-radius: 50%; }
+.tool-chip.ext { border-style: dashed; color: var(--fg-3); }
 
 /* Inspector latency rows — label · bar · value */
 .latency-row {
@@ -4938,9 +4939,20 @@ function renderInspector() {
     if (n === 'camera_capture' || n === 'read_file') return 'var(--info)';
     return 'var(--fg-3)';
   };
-  const chips = Array.from(new Set(coreCore.concat(skillList))).map(n =>
-    '<span class="tool-chip"><span class="dot" style="background:' + colorFor(n) + '"></span>' + esc(n) + '</span>'
-  ).join('');
+  // Always-on = core tools + active skills. Extended = tool_search
+  // activations for THIS thread (from /api/status.extended_tools) — shown
+  // dashed so it's clear they were unlocked, not always loaded.
+  const alwaysOn = Array.from(new Set(coreCore.concat(skillList)));
+  const alwaysSet = new Set(alwaysOn);
+  const extList = (Array.isArray(st.extended_tools) ? st.extended_tools : [])
+    .filter(n => !alwaysSet.has(n));
+  const allActive = alwaysOn.concat(extList);
+  const chips = allActive.map(n => {
+    const isExt = !alwaysSet.has(n);
+    return '<span class="tool-chip' + (isExt ? ' ext' : '') + '"' +
+      (isExt ? ' title="unlocked via tool_search this thread"' : '') +
+      '><span class="dot" style="background:' + colorFor(n) + '"></span>' + esc(n) + '</span>';
+  }).join('');
 
   // Latency bars — normalized against reasonable maxima
   const decodeNorm = Math.min(1, (lt && lt.tok_per_sec || 0) / 100); // >100 tok/s = full bar
@@ -5022,7 +5034,7 @@ function renderInspector() {
     '</div>' +
 
     // Active tools — chips
-    '<div class="insp-section"><div class="insp-section-hdr"><h3>Active tools</h3><span class="count">' + (coreCore.length + skillList.length) + '</span></div>' +
+    '<div class="insp-section"><div class="insp-section-hdr"><h3>Active tools</h3><span class="count">' + allActive.length + '</span></div>' +
       '<div>' + chips + '</div>' +
     '</div>' +
 
@@ -5030,7 +5042,7 @@ function renderInspector() {
     (lt
       ? '<div class="insp-section"><div class="insp-section-hdr"><h3>Latency</h3></div>' +
           '<div style="display:grid;gap:6px;font-size:11px">' +
-            '<div class="latency-row"><span class="lbl">decode/s</span><div class="bar"><div class="fill" style="width:' + (decodeNorm*100) + '%"></div></div><span class="val">' + (lt.tok_per_sec || 0).toFixed(1) + ' tok</span></div>' +
+            '<div class="latency-row"><span class="lbl">decode/s</span><div class="bar"><div class="fill" style="width:' + (decodeNorm*100) + '%"></div></div><span class="val">' + (lt.tok_per_sec || 0).toFixed(1) + ' tok/s</span></div>' +
             '<div class="latency-row"><span class="lbl">duration</span><div class="bar"><div class="fill" style="width:' + (durNorm*100) + '%"></div></div><span class="val">' + ((lt.duration_ms || 0) / 1000).toFixed(2) + ' s</span></div>' +
             (lt.context_hits ? '<div class="latency-row"><span class="lbl">recall hits</span><div class="bar"><div class="fill" style="width:' + Math.min(100, lt.context_hits * 20) + '%"></div></div><span class="val">' + lt.context_hits + '</span></div>' : '') +
           '</div></div>'

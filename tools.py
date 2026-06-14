@@ -762,6 +762,34 @@ def _load_active_tools_for_thread(thread_id: str | None = None) -> None:
         pass
 
 
+def get_thread_extended_tools(thread_id: str | None = None) -> list[str]:
+    """Read the per-thread ``tool_search`` activations from DB, read-only.
+
+    Unlike ``_load_active_tools_for_thread`` this does NOT mutate the live
+    global ``_active_extra_tools`` set — safe for display surfaces like the
+    Inspector. Returns a sorted list of extended tool names, [] on any error.
+    """
+    tid = thread_id
+    if tid is None:
+        try:
+            import threads
+            tid = threads.get_active_id()
+        except Exception:
+            return []
+    if not tid:
+        return []
+    raw = db.kv_get(_THREAD_ACTIVE_TOOLS_KEY + tid)
+    if not raw:
+        return []
+    try:
+        activated = json.loads(raw)
+        if isinstance(activated, list):
+            return sorted({str(t) for t in activated})
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return []
+
+
 def _persist_active_tools(thread_id: str | None = None) -> None:
     """Write the current ``_active_extra_tools`` set back to DB for this thread."""
     tid = thread_id

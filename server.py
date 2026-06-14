@@ -1003,6 +1003,15 @@ async def status():
 
     active_thread = threads.get(threads.get_active_id())
 
+    # Per-thread tool_search activations — extended tools the agent unlocked
+    # in this thread (notes, schedule, secret, rag, …). Read-only; does NOT
+    # mutate the live activation set. Lets the Inspector show what's ACTUALLY
+    # callable, not just the always-loaded core + skills.
+    try:
+        extended_tools = tools.get_thread_extended_tools(threads.get_active_id())
+    except Exception:
+        extended_tools = []
+
     # Effective context limit is whichever is tighter:
     #   - context_budget: AGENT-side ceiling. Triggers compaction + tool-result
     #     truncation. Once you pass this, the agent starts summarizing old
@@ -1037,6 +1046,7 @@ async def status():
         "memories": mem_count,
         "skills": active_skills,
         "core_tools": core_tools,
+        "extended_tools": extended_tools,
         "context_budget": context_budget,
         "model_context": model_ctx,
         "model_context_source": "override" if override else ("detected" if detected else "unknown"),

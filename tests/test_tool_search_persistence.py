@@ -217,3 +217,33 @@ def test_tools_list_stable_across_simulated_turns(qwe_temp_data_dir):
     assert turn1_tools == turn2_tools
     # And it contains browser_open (the most common keyword match)
     assert "browser_open" in turn1_tools
+
+
+# ── Read-only accessor for display surfaces (Inspector) ──────────────────────
+
+
+def test_get_thread_extended_tools_reads_kv(qwe_temp_data_dir):
+    """get_thread_extended_tools returns the persisted activations, sorted."""
+    t = threads.create("test", source="cli")
+    tid = t["id"]
+    db.kv_set(tools._THREAD_ACTIVE_TOOLS_KEY + tid,
+              json.dumps(["schedule_add", "note_save", "schedule_add"]))
+    assert tools.get_thread_extended_tools(tid) == ["note_save", "schedule_add"]
+
+
+def test_get_thread_extended_tools_empty_and_safe(qwe_temp_data_dir):
+    """No kv entry / bad tid → [] and never raises."""
+    assert tools.get_thread_extended_tools("nope_tid") == []
+    assert tools.get_thread_extended_tools(None) == []
+
+
+def test_get_thread_extended_tools_does_not_mutate_global(qwe_temp_data_dir):
+    """Read-only: unlike _load_active_tools_for_thread, it must NOT touch the
+    live _active_extra_tools set (would corrupt a concurrent turn)."""
+    t = threads.create("test", source="cli")
+    tid = t["id"]
+    db.kv_set(tools._THREAD_ACTIVE_TOOLS_KEY + tid, json.dumps(["rag_search"]))
+    tools._active_extra_tools.clear()
+    tools._active_extra_tools.add("sentinel_marker")
+    tools.get_thread_extended_tools(tid)
+    assert tools._active_extra_tools == {"sentinel_marker"}
