@@ -1471,13 +1471,25 @@ def send_message(chat_id: int, text: str, token: str | None = None,
         if reply_markup and ci == len(chunks) - 1:
             base_kwargs["reply_markup"] = reply_markup
 
-        # Try MarkdownV2 → HTML → Markdown → plain text
+        # Try rich (Bot API 10.1) → raw-HTML → MarkdownV2 → HTML → Markdown → plain
         sent = False
 
-        # 0. Agent emitted raw Telegram HTML — send it verbatim as HTML so the
+        # 0. Rich message — Telegram parses the full rich markdown/HTML dialect
+        #    server-side (headings, tables, math, lists, media, footnotes, ...).
+        #    Primary path; everything below is the pre-10.1 fallback chain.
+        result = _send_rich_safe(
+            chat_id, chunk, token,
+            reply_to=reply_to if ci == 0 else None,
+            topic_id=topic_id,
+            reply_markup=base_kwargs.get("reply_markup"),
+        )
+        if result.get("ok"):
+            sent = True
+
+        # 0b. Agent emitted raw Telegram HTML — send it verbatim as HTML so the
         #    tags render instead of showing up as literal "<b>bold</b>". Skip
         #    _to_html (it would escape the existing tags).
-        if _looks_like_html(chunk):
+        if not sent and _looks_like_html(chunk):
             result = _api("sendMessage", token, **base_kwargs, text=chunk, parse_mode="HTML")
             if result.get("ok"):
                 sent = True
@@ -1549,6 +1561,73 @@ def _send_draft_safe(chat_id: int, text: str, token: str,
         _log.info("sendMessageDraft not supported — falling back to final-only mode")
         return False
     return False
+
+
+# ── Rich messages (Bot API 10.1) ────────────────────────────────────────────
+#
+# Bot API 10.1 added `sendRichMessage` / `editMessageText(rich_message=...)`,
+# which accept an `InputRichMessage` with EITHER a `markdown` or an `html`
+# string. Telegram parses the FULL rich dialect server-side — headings,
+# tables, math (`$x$`, `$$E=mc^2$$`), ordered/unordered/task lists, dividers,
+# block + pull quotations, footnotes, marked text (`==x==`), sub/superscript,
+# media embeds, details/collage/slideshow, auto-detected entities (#hashtags,
+# URLs, phone/card numbers, @mentions). This is strictly richer than the
+# classic MarkdownV2/HTML entity set the regex converters cover, so it's the
+# PRIMARY send path; the old converters remain as the graceful fallback for
+# deployments whose Bot API predates 10.1.
+_rich_supported: bool | None = None  # cached: does the Bot API support sendRichMessage?
+
+
+def _rich_message_payload(text: str) -> dict:
+    """Wrap a reply into an ``InputRichMessage``. Agent-emitted raw HTML goes
+    in the ``html`` field (verbatim); everything else as ``markdown``. Exactly
+    one field is set, per the API contract."""
+    if _looks_like_html(text):
+        return {"html": text}
+    return {"markdown": text}
+
+
+def _send_rich_safe(chat_id: int, text: str, token: str, *,
+                    reply_to: int | None = None, topic_id: int | None = None,
+                    reply_markup: dict | None = None,
+                    edit_message_id: int | None = None) -> dict:
+    """Send (or edit a message into) a Bot API 10.1 rich message.
+
+    Returns the raw API result dict. Caches whether the deployment supports
+    rich messages so older Bot API versions stop being probed after the first
+    miss. On any non-``ok`` result the caller falls back to the classic
+    MarkdownV2/HTML chain.
+    """
+    global _rich_supported
+    if _rich_supported is False or not text:
+        return {"ok": False, "description": "rich unsupported or empty"}
+    rm = _rich_message_payload(text)
+    if edit_message_id is not None:
+        kwargs: dict = {"chat_id": chat_id, "message_id": edit_message_id, "rich_message": rm}
+        if reply_markup:
+            kwargs["reply_markup"] = reply_markup
+        result = _api("editMessageText", token, **kwargs)
+    else:
+        kwargs = {"chat_id": chat_id, "rich_message": rm}
+        if reply_to:
+            kwargs["reply_parameters"] = {"message_id": reply_to}
+        if topic_id:
+            kwargs["message_thread_id"] = topic_id
+        if reply_markup:
+            kwargs["reply_markup"] = reply_markup
+        result = _api("sendRichMessage", token, **kwargs)
+    if result.get("ok"):
+        _rich_supported = True
+        return result
+    desc = result.get("description", "").lower()
+    # Treat "method/param unknown" as a hard unsupported signal (cache off).
+    # A content-level error (e.g. a malformed rich payload) is NOT cached —
+    # it may succeed for the next, well-formed message.
+    if ("not found" in desc or "unknown method" in desc or "unsupported" in desc
+            or "rich_message" in desc or "method not" in desc):
+        _rich_supported = False
+        _log.info("sendRichMessage not supported by this Bot API — using MarkdownV2/HTML")
+    return result
 
 
 def _send_audio(chat_id: int, audio_bytes: bytes, token: str,
@@ -2138,10 +2217,13 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
                 keyboard = _build_reply_keyboard(tool_names)
 
                 if _stream_msg_id[0]:
-                    # Edit the streaming message into the final formatted version.
-                    # Raw agent HTML → HTML verbatim; else MarkdownV2 → HTML → plain.
-                    result = {"ok": False}
-                    if _looks_like_html(enriched):
+                    # Edit the streaming placeholder into the final version.
+                    # Rich (Bot API 10.1) → raw-HTML → MarkdownV2 → HTML → plain.
+                    result = _send_rich_safe(
+                        chat_id, enriched, token,
+                        edit_message_id=_stream_msg_id[0], reply_markup=keyboard,
+                    )
+                    if not result.get("ok") and _looks_like_html(enriched):
                         result = _api("editMessageText", token,
                                       chat_id=chat_id, message_id=_stream_msg_id[0],
                                       text=enriched, parse_mode="HTML",
