@@ -208,19 +208,22 @@ def test_normalize_returns_string_not_dict():
 
 
 def test_normalize_used_when_building_assistant_msg_tool_calls():
-    """The actual fix in agent_loop.py and agent.py: the assistant
-    message's tool_calls[*].function.arguments goes through this
-    helper, so streaming-accumulated raw arguments can never reach the
+    """The actual fix in agent_loop.py: the assistant message's
+    tool_calls[*].function.arguments goes through this helper, so
+    streaming-accumulated raw arguments can never reach the
     strict-validator providers as `""` or other garbage. Pinned via a
     source-grep contract — if a future refactor reverts to raw
-    `tc["arguments"]`, this test fails loud."""
+    `tc["arguments"]`, this test fails loud.
+
+    (The legacy v1 loop in agent.py used to build assistant tool_call
+    messages too; it was removed — agent.py now delegates all tool-call
+    construction to agent_loop.run_loop, so only agent_loop.py is pinned.)"""
     from pathlib import Path
-    for relpath in ("agent_loop.py", "agent.py"):
-        src = (Path(__file__).resolve().parent.parent / relpath).read_text(encoding="utf-8")
-        # The assistant_msg construction must run arguments through
-        # normalize_args_for_api before persisting.
-        assert "normalize_args_for_api" in src, (
-            f"{relpath} no longer routes tool_call arguments through "
-            f"normalize_args_for_api. This re-opens the Alibaba 400 "
-            f"\"function.arguments must be in JSON format\" bug."
-        )
+    src = (Path(__file__).resolve().parent.parent / "agent_loop.py").read_text(encoding="utf-8")
+    # The assistant_msg construction must run arguments through
+    # normalize_args_for_api before persisting.
+    assert "normalize_args_for_api" in src, (
+        "agent_loop.py no longer routes tool_call arguments through "
+        "normalize_args_for_api. This re-opens the Alibaba 400 "
+        "\"function.arguments must be in JSON format\" bug."
+    )

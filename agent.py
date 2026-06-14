@@ -475,158 +475,6 @@ def _retry_tool_call(client, model: str, tool_name: str,
     return None
 
 
-# Tools where self-check is applied before execution
-_SELF_CHECK_TOOLS = {"shell", "write_file"}
-
-# Critical tool patterns for consensus self-verification (safety check)
-_CRITICAL_TOOL_PATTERNS = {
-    "shell": re.compile(
-        r'\b(rm\s|mv\s|chmod\s|kill\s|pip\s+uninstall|git\s+reset|git\s+push'
-        r'|DROP\s|DELETE\s+FROM|TRUNCATE)\b', re.IGNORECASE),
-    "write_file": re.compile(
-        r'(system32|/etc/|/usr/|\.env|\.ssh|\.git/|credentials|passwd)',
-        re.IGNORECASE),  # only verify writes to sensitive paths
-    "secret_delete": None, # always critical
-}
-
-
-def _needs_self_check(tool_name: str, args: dict) -> bool:
-    """Check if a tool call should be self-verified for safety."""
-    if tool_name not in _CRITICAL_TOOL_PATTERNS:
-        return False
-    pattern = _CRITICAL_TOOL_PATTERNS[tool_name]
-    if pattern is None:
-        return True  # always check
-    # Pick the relevant text to check against pattern
-    if tool_name == "write_file":
-        text = args.get("path", "")
-    else:
-        text = args.get("command", "")
-    return bool(pattern.search(text))
-
-
-def _self_verify(client, model: str, tool_name: str, args: dict,
-                 user_request: str) -> tuple[bool, str]:
-    """Quick safety verification: is this tool call correct for the user's request?
-
-    Returns (approved: bool, reason: str). Fails open on errors.
-    """
-    args_str = json.dumps(args, ensure_ascii=False)[:300]
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": (
-                    "You are a safety checker. The user asked something and an AI wants to run a tool.\n"
-                    "Is this tool call correct and safe for the user's request?\n"
-                    "Reply ONLY: APPROVE or REJECT: <reason>"
-                )},
-                {"role": "user", "content": (
-                    f"User request: {user_request[:200]}\n"
-                    f"Tool: {tool_name}({args_str})"
-                )},
-            ],
-            temperature=0.0,
-            max_tokens=50,
-            stream=False,
-        )
-        answer = _strip_thinking(resp.choices[0].message.content or "").strip()
-        if answer.upper().startswith("APPROVE"):
-            return True, "approved"
-        elif answer.upper().startswith("REJECT"):
-            return False, answer
-        else:
-            return True, "unclear response, allowing"  # fail open
-    except Exception as e:
-        _log.warning(f"self-verify failed: {e}")
-        return True, f"check failed: {e}"  # fail open on errors
-
-
-def _self_check_tool_call(client, model: str, tool_name: str,
-                          args: dict) -> tuple[bool, dict | None]:
-    """Ask model to validate tool arguments before execution.
-
-    Returns (is_ok, corrected_args). If is_ok=True, args are fine.
-    If is_ok=False and corrected_args is not None, use corrected version.
-    """
-    try:
-        args_json = json.dumps(args, ensure_ascii=False)
-        schema = _get_tool_schema(tool_name)
-        required = schema.get("required", []) if schema else []
-
-        use_structured = bool(_json_format_extra())
-        if use_structured:
-            system_msg = (
-                'Check this tool call. Reply as JSON: {"status": "ok"} if correct, '
-                'or {"status": "fix", "args": {corrected args}} if wrong.'
-            )
-        else:
-            system_msg = (
-                "Check this tool call. If arguments are correct, reply ONLY 'OK'. "
-                "If wrong, reply with corrected JSON only."
-            )
-
-        check_msgs = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": (
-                f"Tool: {tool_name}\n"
-                f"Required: {required}\n"
-                f"Arguments: {args_json}"
-            )},
-        ]
-
-        for attempt_extra in [_json_format_extra(), {}]:
-            try:
-                resp = client.chat.completions.create(
-                    model=model, messages=check_msgs,
-                    temperature=0.1, max_tokens=256, stream=False,
-                    **attempt_extra,
-                )
-                text = _strip_thinking(resp.choices[0].message.content or "").strip()
-                break
-            except Exception as e:
-                if attempt_extra:
-                    _mark_structured_failed(e)
-                    _log.warning(f"self-check (structured) failed: {e}, falling back")
-                    continue
-                raise
-
-        # Parse response
-        if use_structured:
-            try:
-                parsed = json.loads(text)
-                if parsed.get("status") == "ok":
-                    return True, None
-                if parsed.get("status") == "fix" and parsed.get("args"):
-                    fixed = parsed["args"]
-                    # Validate: corrected args must have required fields
-                    if required and not all(k in fixed for k in required):
-                        _log.warning(f"self-check correction missing required fields, ignoring")
-                        return True, None
-                    _log.info(f"self-check corrected {tool_name}: {args} → {fixed}")
-                    return False, fixed
-            except json.JSONDecodeError:
-                pass  # fall through to text parsing
-
-        if text.upper().startswith("OK"):
-            return True, None
-
-        m = re.search(r'\{.*\}', text, re.DOTALL)
-        if m:
-            corrected = json.loads(m.group())
-            # Validate: corrected args must have required fields
-            if required and not all(k in corrected for k in required):
-                _log.warning(f"self-check correction missing required fields, ignoring")
-                return True, None
-            _log.info(f"self-check corrected {tool_name}: {args} → {corrected}")
-            return False, corrected
-
-        return True, None
-    except Exception as e:
-        _log.warning(f"self-check failed for {tool_name}: {e}")
-        return True, None
-
-
 from utils import strip_thinking as _strip_thinking
 
 
@@ -677,9 +525,6 @@ def _clean_response(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
 
     return text.strip()
-
-
-from utils import extract_thinking as _extract_thinking
 
 
 def _summarize_tool_output(tool_name: str, output: str, max_chars: int) -> str:
@@ -1612,650 +1457,106 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
     if "[Recalled context from memory" in system_content:
         result.auto_context_hits = system_content.count("\n- [recalled:")
 
-    # ── Agent Loop v2 (feature flag) ──
-    if config.get("agent_loop_v2"):
-        from agent_loop import run_loop
-        from agent_events import EventEmitter
-        from agent_budget import BudgetLimits
+    from agent_loop import run_loop
+    from agent_events import EventEmitter
+    from agent_budget import BudgetLimits
 
-        emitter = EventEmitter()
-        # Wire emitter to the ctx's per-turn callbacks. Each lambda captures
-        # ``ctx`` by closure — NOT a module global — so concurrent turns can
-        # install different callback sets without stomping each other.
-        if ctx.on_content:
-            emitter.on("content_delta", lambda e: ctx.emit_content(e.data["text"]))
-        if ctx.on_thinking:
-            emitter.on("thinking_delta", lambda e: ctx.emit_thinking(e.data["text"]))
-        if ctx.on_status:
-            emitter.on("status", lambda e: ctx.emit_status(e.data["text"]))
-        if ctx.on_tool_call:
-            # Track args from tool_start so tool_end can pair them
-            _pending_args: dict[str, str] = {}
-            def _on_start(e):
-                _pending_args[e.data["name"]] = e.data.get("args", "")
-            def _on_end(e):
-                name = e.data["name"]
-                args = _pending_args.pop(name, "")
-                ctx.emit_tool_call(name, args, e.data.get("result", ""))
-            emitter.on("tool_start", _on_start)
-            emitter.on("tool_end", _on_end)
+    emitter = EventEmitter()
+    # Wire emitter to the ctx's per-turn callbacks. Each lambda captures
+    # ``ctx`` by closure — NOT a module global — so concurrent turns can
+    # install different callback sets without stomping each other.
+    if ctx.on_content:
+        emitter.on("content_delta", lambda e: ctx.emit_content(e.data["text"]))
+    if ctx.on_thinking:
+        emitter.on("thinking_delta", lambda e: ctx.emit_thinking(e.data["text"]))
+    if ctx.on_status:
+        emitter.on("status", lambda e: ctx.emit_status(e.data["text"]))
+    if ctx.on_tool_call:
+        # Track args from tool_start so tool_end can pair them
+        _pending_args: dict[str, str] = {}
+        def _on_start(e):
+            _pending_args[e.data["name"]] = e.data.get("args", "")
+        def _on_end(e):
+            name = e.data["name"]
+            args = _pending_args.pop(name, "")
+            ctx.emit_tool_call(name, args, e.data.get("result", ""))
+        emitter.on("tool_start", _on_start)
+        emitter.on("tool_end", _on_end)
 
-        _tools = tools.get_all_tools(compact=True)
-        # Lower temperature when tools are present — improves tool-calling reliability
-        _temp = min(soul.get_temperature(), 0.3) if _tools else soul.get_temperature()
-        loop_result = run_loop(
-            client=client,
-            model=_model,
-            messages=messages,
-            tools=_tools,
-            emitter=emitter,
-            budget=BudgetLimits.from_config(),
-            temperature=_temp,
-            presence_penalty=config.get("presence_penalty"),
-            max_tokens=2048,
-            tool_executor=tools.execute,
-            json_repair_fn=_repair_tool_json,
-            extra_kwargs={"extra_body": {"options": {"num_ctx": config.get("ollama_num_ctx")}}} if providers.get_active_name() == "ollama" else {},
-            abort_event=abort_event,
-            ctx=ctx,
-            thread_id=tid,
-            system_note=system_note,
+    _tools = tools.get_all_tools(compact=True)
+    # Lower temperature when tools are present — improves tool-calling reliability
+    _temp = min(soul.get_temperature(), 0.3) if _tools else soul.get_temperature()
+    loop_result = run_loop(
+        client=client,
+        model=_model,
+        messages=messages,
+        tools=_tools,
+        emitter=emitter,
+        budget=BudgetLimits.from_config(),
+        temperature=_temp,
+        presence_penalty=config.get("presence_penalty"),
+        max_tokens=2048,
+        tool_executor=tools.execute,
+        json_repair_fn=_repair_tool_json,
+        extra_kwargs={"extra_body": {"options": {"num_ctx": config.get("ollama_num_ctx")}}} if providers.get_active_name() == "ollama" else {},
+        abort_event=abort_event,
+        ctx=ctx,
+        thread_id=tid,
+        system_note=system_note,
+    )
+
+    result.reply = _clean_response(loop_result["reply"])
+    result.thinking = loop_result["thinking"]
+    result.tool_calls_made = loop_result["tool_calls"]
+    result.completion_tokens = loop_result["completion_tokens"]
+    result.prompt_tokens = loop_result["prompt_tokens"]
+    result.tok_per_sec = loop_result["tok_per_sec"]
+
+    turn_ms = int((time.time() - turn_start) * 1000)
+    msg_meta = {
+        "tools": result.tool_calls_made,
+        "tool_details": loop_result.get("tool_details", []),
+        "duration_ms": turn_ms,
+        "context_hits": result.auto_context_hits,
+        "thinking": result.thinking or "",
+        "tokens": result.completion_tokens,
+        "prompt_tokens": result.prompt_tokens,
+        "tok_per_sec": result.tok_per_sec,
+    }
+    # Dedup guard: skip persisting an "⏹ Stopped." reply when the previous
+    # assistant message in this thread is ALSO "⏹ Stopped.". Without this,
+    # rapid double-aborts (WS disconnect + server shutdown firing the same
+    # abort_event within the same second) save two identical assistant
+    # rows, which then show up as the duplicate "Stopped./Stopped." pile
+    # the user reported.
+    if not _is_duplicate_stop_reply(result.reply, tid):
+        db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
+
+    stats = loop_result["stats"]
+    logger.event("turn_complete", duration_ms=turn_ms, rounds=stats.turns,
+                 tools_used=result.tool_calls_made, reply_len=len(result.reply),
+                 est_tokens=result.completion_tokens, context_hits=result.auto_context_hits,
+                 thread=tid or "active")
+    # Telemetry — same metrics as the structured log line above, but
+    # with tool *categories* instead of names so custom-skill names
+    # never leave the machine. No-op unless user has opted in.
+    try:
+        _emit_turn_complete_telemetry(
+            duration_ms=turn_ms,
+            rounds=int(stats.turns),
+            tool_calls_made=result.tool_calls_made or [],
+            tool_errors_count=int(getattr(stats, "total_errors", 0)),
+            input_tokens=int(result.prompt_tokens or 0),
+            output_tokens=int(result.completion_tokens or 0),
+            context_hits=int(result.auto_context_hits or 0),
+            source=source,
         )
+    except Exception as e:
+        _log.debug(f"telemetry turn_complete (v2): {e}")
 
-        result.reply = _clean_response(loop_result["reply"])
-        result.thinking = loop_result["thinking"]
-        result.tool_calls_made = loop_result["tool_calls"]
-        result.completion_tokens = loop_result["completion_tokens"]
-        result.prompt_tokens = loop_result["prompt_tokens"]
-        result.tok_per_sec = loop_result["tok_per_sec"]
+    if result.tool_calls_made and user_input:
+        _save_experience(user_input, result, stats.turns, stats.total_errors)
 
-        turn_ms = int((time.time() - turn_start) * 1000)
-        msg_meta = {
-            "tools": result.tool_calls_made,
-            "tool_details": loop_result.get("tool_details", []),
-            "duration_ms": turn_ms,
-            "context_hits": result.auto_context_hits,
-            "thinking": result.thinking or "",
-            "tokens": result.completion_tokens,
-            "prompt_tokens": result.prompt_tokens,
-            "tok_per_sec": result.tok_per_sec,
-        }
-        # Dedup guard: skip persisting an "⏹ Stopped." reply when the previous
-        # assistant message in this thread is ALSO "⏹ Stopped.". Without this,
-        # rapid double-aborts (WS disconnect + server shutdown firing the same
-        # abort_event within the same second) save two identical assistant
-        # rows, which then show up as the duplicate "Stopped./Stopped." pile
-        # the user reported.
-        if not _is_duplicate_stop_reply(result.reply, tid):
-            db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
-
-        stats = loop_result["stats"]
-        logger.event("turn_complete", duration_ms=turn_ms, rounds=stats.turns,
-                     tools_used=result.tool_calls_made, reply_len=len(result.reply),
-                     est_tokens=result.completion_tokens, context_hits=result.auto_context_hits,
-                     thread=tid or "active")
-        # Telemetry — same metrics as the structured log line above, but
-        # with tool *categories* instead of names so custom-skill names
-        # never leave the machine. No-op unless user has opted in.
-        try:
-            _emit_turn_complete_telemetry(
-                duration_ms=turn_ms,
-                rounds=int(stats.turns),
-                tool_calls_made=result.tool_calls_made or [],
-                tool_errors_count=int(getattr(stats, "total_errors", 0)),
-                input_tokens=int(result.prompt_tokens or 0),
-                output_tokens=int(result.completion_tokens or 0),
-                context_hits=int(result.auto_context_hits or 0),
-                source=source,
-            )
-        except Exception as e:
-            _log.debug(f"telemetry turn_complete (v2): {e}")
-
-        if result.tool_calls_made and user_input:
-            _save_experience(user_input, result, stats.turns, stats.total_errors)
-
-        return result
-
-    # Inject system_note as an additional system message at the top of the
-    # message list (after the soul system prompt). Applied once per turn —
-    # _build_messages() already added the soul prompt as messages[0].
-    if system_note:
-        messages.insert(1, {"role": "system", "content": system_note})
-
-    # ── Legacy agent loop (v1) ──
-    rounds = 0
-    last_failed_tool = None
-    fail_count = 0
-    total_tool_errors = 0
-    _injected_instructions: set[str] = set()
-
-    max_tool_rounds = config.get("max_tool_rounds") or 999
-    _log.info(f"entering tool loop: rounds={rounds}, max={max_tool_rounds}, msgs={len(messages)}")
-    _nudge_cleanup = False
-    while rounds < max_tool_rounds:
-        # Clean up nudge messages from previous round (don't let them persist in history)
-        if _nudge_cleanup:
-            # Remove last 2 messages (assistant hedge + user nudge)
-            if len(messages) >= 2 and messages[-1].get("content", "").startswith("[system]"):
-                messages.pop()  # remove nudge
-                messages.pop()  # remove hedge
-            _nudge_cleanup = False
-
-        # Check abort
-        if abort_event is not None and abort_event.is_set():
-            result.reply = "⏹ Stopped."
-            break
-
-        # Warn model when approaching round limit
-        if rounds == max_tool_rounds - 2:
-            messages.append({"role": "user", "content": "[system] You have 2 tool rounds left. Wrap up and give your final answer NOW."})
-        elif rounds == max_tool_rounds - 1:
-            messages.append({"role": "user", "content": "[system] LAST round. Answer with what you have."})
-
-        all_tools = tools.get_all_tools(compact=True)
-
-        # Ensure model is loaded (auto-load for local providers)
-        providers.ensure_model_loaded()
-
-        # Stream the response
-        # Note: enable_thinking via extra_body is not reliably supported across providers.
-        # Thinking is triggered via system prompt injection in _build_messages() instead.
-        # The reasoning_content handler below still catches native thinking if a provider sends it.
-        presence_penalty = config.get("presence_penalty")
-        extra = {}
-        if providers.get_active_name() == "ollama":
-            extra["extra_body"] = {"options": {"num_ctx": config.get("ollama_num_ctx")}}
-
-        # Log prompt size for debugging
-        _prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
-        _tools_count = len(all_tools)
-        _log.info(f"API call: {len(messages)} msgs, ~{_prompt_chars} chars, {_tools_count} tools, model={_model}")
-
-        def _create_stream(msgs, **kw):
-            try:
-                return client.chat.completions.create(
-                    model=_model, messages=msgs, tools=all_tools,
-                    tool_choice="auto", temperature=soul.get_temperature(),
-                    presence_penalty=presence_penalty, max_tokens=2048,
-                    stream=True, stream_options={"include_usage": True},
-                    **extra, **kw,
-                )
-            except Exception:
-                return client.chat.completions.create(
-                    model=_model, messages=msgs, tools=all_tools,
-                    tool_choice="auto", temperature=soul.get_temperature(),
-                    presence_penalty=presence_penalty, max_tokens=2048,
-                    stream=True, **extra, **kw,
-                )
-
-        try:
-            stream = _create_stream(messages)
-        except Exception as e:
-            # If image not supported, strip images and retry
-            if "image" in str(e).lower() or "mmproj" in str(e).lower():
-                _log.warning(f"vision not supported, retrying without image: {e}")
-                _emit_status("Model doesn't support images, retrying as text...")
-                for m in messages:
-                    if isinstance(m.get("content"), list):
-                        # Convert multimodal content to text-only
-                        text_parts = [p["text"] for p in m["content"] if p.get("type") == "text"]
-                        m["content"] = " ".join(text_parts) + "\n(An image was attached but this model doesn't support vision.)"
-                stream = _create_stream(messages)
-            else:
-                raise
-
-        # Collect streamed response
-        full_content = ""
-        reasoning_content = ""  # for models that use separate reasoning_content field
-        tool_calls_data: dict[int, dict] = {}  # index -> {id, name, arguments}
-        in_think = False
-        think_shown = False
-        finish_reason = None
-        _stream_usage = None  # usage from last stream chunk
-        _stream_start = time.time()
-
-        for chunk in stream:
-            # Capture usage from final chunk (empty choices)
-            if hasattr(chunk, 'usage') and chunk.usage:
-                _stream_usage = chunk.usage
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if not delta:
-                continue
-
-            finish_reason = chunk.choices[0].finish_reason
-
-            # Handle reasoning/reasoning_content (Ollama uses "reasoning", others use "reasoning_content")
-            rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-            if rc:
-                reasoning_content += rc
-                if not think_shown:
-                    _console.print("  [dim]💭 thinking...[/]")
-                    _emit_status("💭 thinking...")
-                    think_shown = True
-                    in_think = True
-                _console.print(f"  [dim]{rc}[/]", end="")
-                _emit_thinking(rc)
-
-            # Stream content (text)
-            if delta.content:
-                # If we were in reasoning_content mode, transition out
-                if in_think and reasoning_content:
-                    _console.print()  # newline after thinking block
-                    in_think = False
-                    _emit_status("✍️ writing reply...")
-
-                full_content += delta.content
-                text = delta.content
-
-                # Track thinking state (for models that put <think> in content)
-                # Check full_content to handle tags split across chunks
-                if not in_think and "<think>" in full_content and not think_shown:
-                    in_think = True
-                    think_shown = True
-                    _console.print("  [dim]💭 thinking...[/]")
-                    _emit_status("💭 thinking...")
-                    # Emit any content after <think> tag
-                    after_tag = full_content.split("<think>", 1)[1]
-                    if after_tag:
-                        _console.print(f"  [dim]{after_tag}[/]", end="")
-                        _emit_thinking(after_tag)
-                elif in_think and "</think>" in full_content:
-                    # Emit remaining thinking before </think>
-                    before_tag = text.split("</think>", 1)[0] if "</think>" in text else ""
-                    if before_tag:
-                        _console.print(f"  [dim]{before_tag}[/]", end="")
-                        _emit_thinking(before_tag)
-                    _console.print()  # newline after thinking block
-                    in_think = False
-                    _emit_status("✍️ writing reply...")
-                    # Emit any reply content after </think> in same chunk
-                    after_close = text.split("</think>", 1)[1] if "</think>" in text else ""
-                    if after_close:
-                        _emit_content(after_close)
-                elif in_think:
-                    # Stream thinking chunk (skip partial tag fragments)
-                    if text and not text.startswith("<"):
-                        _console.print(f"  [dim]{text}[/]", end="")
-                        _emit_thinking(text)
-                else:
-                    # Gemma thinking: <|channel>thought ... detect and redirect
-                    if "<|channel>" in full_content and not in_think:
-                        in_think = True
-                        think_shown = True
-                        _console.print("  [dim]💭 thinking...[/]")
-                        _emit_status("💭 thinking...")
-                        # Don't emit any of this as content
-                    elif in_think:
-                        _emit_thinking(text)  # stream as thinking, not content
-                    elif "<|" in text:
-                        pass  # skip special tokens from content stream
-                    else:
-                        # Normal reply content — stream to clients
-                        _emit_content(text)
-
-            # Stream tool calls
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tool_calls_data:
-                        tool_calls_data[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc_delta.id:
-                        tool_calls_data[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_calls_data[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_calls_data[idx]["arguments"] += tc_delta.function.arguments
-
-        # Log finish state for debugging
-        _log.info(f"LLM response: finish={finish_reason}, content_len={len(full_content)}, tool_calls={len(tool_calls_data)}, content_preview={full_content[:200]!r}")
-
-        # Process tool calls
-        if tool_calls_data:
-            # `arguments` is normalized to valid JSON before persistence
-            # — streaming can leave us with `""` (no args streamed) and
-            # strict providers (Alibaba DashScope) 400 with
-            # "InternalError.Algo.InvalidParameter" on the next turn
-            # when this is replayed as history. See
-            # `agent_loop.normalize_args_for_api`.
-            from agent_loop import normalize_args_for_api
-            assistant_msg = {"role": "assistant", "content": full_content}
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": tc["name"],
-                        "arguments": normalize_args_for_api(tc["arguments"]),
-                    },
-                }
-                for tc in tool_calls_data.values()
-            ]
-            messages.append(assistant_msg)
-
-            for tc in tool_calls_data.values():
-                result.tool_calls_made.append(tc["name"])
-                db.kv_inc("stats:tool_calls_total")
-
-                # Parse tool call arguments (with repair + retry for small models)
-                args = None
-                try:
-                    args = json.loads(tc["arguments"])
-                except Exception:
-                    # Stage 1: aggressive string-level repair (fences, leading text, etc.)
-                    repaired_str = _repair_tool_json(tc["arguments"])
-                    if repaired_str is not None:
-                        args = json.loads(repaired_str)
-                        result.json_repairs += 1
-                        db.kv_inc("stats:json_repairs")
-                        _log.info(f"_repair_tool_json succeeded for {tc['name']}")
-
-                if args is None:
-                    # Stage 2: structural JSON repair (unclosed brackets, comments, etc.)
-                    _log.warning(f"json parse failed, attempting repair: {tc['arguments'][:200]}")
-                    args = _repair_json(tc["arguments"])
-                    if args:
-                        result.json_repairs += 1
-                        db.kv_inc("stats:json_repairs")
-                        _log.info(f"json repair succeeded for {tc['name']}")
-                    else:
-                        # Stage 3: retry — ask model to regenerate the JSON
-                        retry_max = config.get("tool_retry_max")
-                        if retry_max > 0:
-                            _console.print(f"  [yellow]🔄 retrying {tc['name']} (broken JSON)...[/]")
-                            _emit_status(f"🔄 retrying {tc['name']}...")
-                            retried = _retry_tool_call(
-                                client, _model,
-                                tc["name"], tc["arguments"], max_retries=retry_max
-                            )
-                            if retried:
-                                args = retried
-                                result.retry_successes += 1
-                                db.kv_inc("stats:retry_successes")
-                                _console.print(f"  [green]✓ retry succeeded[/]")
-                            else:
-                                args = {}
-                                _console.print(f"  [red]✗ retry failed, using empty args[/]")
-                        else:
-                            args = {}
-
-                # Self-check for critical tools (shell, write_file)
-                if args and tc["name"] in _SELF_CHECK_TOOLS and config.get("self_check_enabled"):
-                    ok, fixed = _self_check_tool_call(
-                        client, _model, tc["name"], args
-                    )
-                    if not ok and fixed:
-                        args = fixed
-                        result.self_check_fixes += 1
-                        db.kv_inc("stats:self_check_fixes")
-                        _console.print(f"  [yellow]🔍 self-check corrected args[/]")
-
-                # Consensus self-verification for dangerous operations
-                _verify_rejected = False
-                if args and config.get("self_check_enabled") and _needs_self_check(tc["name"], args):
-                    _v_ok, _v_reason = _self_verify(
-                        client, _model, tc["name"], args, user_input
-                    )
-                    if not _v_ok:
-                        _log.warning(f"self-verify REJECTED {tc['name']}: {_v_reason}")
-                        _console.print(f"  [red]🛑 self-verify rejected: {_v_reason}[/]")
-                        result.self_check_rejections += 1
-                        db.kv_inc("stats:self_check_rejections")
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": f"Self-check rejected this action: {_v_reason}",
-                        })
-                        _verify_rejected = True
-                    else:
-                        _log.info(f"self-verify approved {tc['name']}: {_v_reason}")
-
-                if _verify_rejected:
-                    continue
-
-                try:
-                    args_short = json.dumps(args, ensure_ascii=False)
-                    if len(args_short) > 80:
-                        args_short = args_short[:80] + "..."
-                except Exception:
-                    args_short = str(args)[:80]
-
-                _console.print(f"  [cyan]🔧 {tc['name']}[/]([dim]{args_short}[/])")
-                _emit_status(f"🔧 {tc['name']}")
-
-                # Lazy skill instruction injection (append to system msg, not insert new one)
-                import skills
-                instruction = skills.get_instruction(tc["name"])
-                if instruction and tc["name"] not in _injected_instructions:
-                    _injected_instructions.add(tc["name"])
-                    messages[0]["content"] += f"\n\n[Skill: {tc['name']}]\n{instruction}"
-                    _log.info(f"lazy-injected instruction for skill tool: {tc['name']}")
-
-                tool_start = time.time()
-                # Propagate per-request abort event + ctx into the tool via
-                # threading.local — mirrors agent_loop._run_tool.
-                try:
-                    tools._set_abort_event(abort_event)
-                    tools._set_turn_ctx(ctx)
-                except Exception:
-                    pass
-                try:
-                    tool_result = tools.execute(tc["name"], args)
-                finally:
-                    try:
-                        tools._set_abort_event(None)
-                        tools._set_turn_ctx(None)
-                    except Exception:
-                        pass
-                tool_ms = int((time.time() - tool_start) * 1000)
-
-                # Emit tool call with result to UI (Claude Code style)
-                result_short = tool_result.replace("\n", " ")[:150] if tool_result else ""
-                _emit_tool_call(tc['name'], args_short, result_short)
-
-                # Smart output management: summarize large outputs, truncate if needed
-                budget = config.get("context_budget")
-                current_tokens = _estimate_tokens(messages)
-                result_tokens = len(tool_result) // 4
-                headroom = budget - current_tokens - 500  # reserve 500 for response
-
-                # Large output? Summarize instead of dumb truncation
-                if len(tool_result) > TOOL_OUTPUT_SUMMARIZE_THRESHOLD and headroom > 200:
-                    tool_result = _summarize_tool_output(tc["name"], tool_result, headroom * 4)
-
-                result_tokens = len(tool_result) // 4
-                if result_tokens > headroom and headroom > 0:
-                    max_chars = headroom * 4
-                    original_len = len(tool_result)
-                    tool_result = tool_result[:max_chars] + f"\n\n[truncated {original_len} → {max_chars} chars]"
-                    _log.warning(f"tool result truncated: {original_len} → {max_chars} chars (budget: {budget})")
-                elif headroom <= 0:
-                    tool_result = f"[context full — output dropped ({result_tokens} tokens)]"
-                    _log.warning(f"context full, tool result dropped: {tc['name']}")
-
-                logger.event("tool_call", tool=tc["name"], args_preview=args_short,
-                             result_len=len(tool_result), duration_ms=tool_ms)
-
-                # Detect repeated failures
-                if tool_result.startswith("Error"):
-                    db.kv_inc("stats:tool_errors")
-                    total_tool_errors += 1
-                    _log.warning(f"tool error: {tc['name']} → {tool_result[:200]}")
-                    if tc["name"] == last_failed_tool:
-                        fail_count += 1
-                    else:
-                        last_failed_tool = tc["name"]
-                        fail_count = 1
-
-                    # Broader stuck detection: too many total errors = model is lost
-                    if total_tool_errors >= 5:
-                        tool_result += f"\n\nWARNING: You have made {total_tool_errors} tool errors this turn. Stop retrying and answer with what you have, or try a completely different approach."
-
-                    if fail_count >= 2:
-                        _log.error(f"tool {tc['name']} failed 2x, stopping retries")
-                        tool_result += "\n\nSTOP: This tool failed twice. Do NOT retry. Answer with what you have or try a different approach."
-
-                        # Auto-escalate to fallback model if configured
-                        fb_client = providers.get_fallback_client()
-                        fb_model = providers.get_fallback_model()
-                        if fb_client and fb_model:
-                            _log.info(f"auto-escalating to fallback: {fb_model}")
-                            _console.print(f"  [yellow]⚡ Escalating to {fb_model}...[/]")
-                            _emit_status(f"⚡ escalating to {fb_model}...")
-                            try:
-                                fb_resp = fb_client.chat.completions.create(
-                                    model=fb_model, messages=messages,
-                                    tools=all_tools, tool_choice="auto",
-                                    temperature=0.3, max_tokens=2048, stream=False,
-                                )
-                                fb_msg = fb_resp.choices[0].message
-                                if fb_msg.content:
-                                    result.reply = _clean_response(_strip_thinking(fb_msg.content))
-                                    result.model = fb_model
-                                    db.kv_inc("stats:fallback_used")
-                                    db.save_message("assistant", result.reply, thread_id=tid,
-                                                    meta={"tools": result.tool_calls_made,
-                                                          "fallback_model": fb_model})
-                                    _console.print(f"  [green]⚡ Answered via {fb_model}[/]")
-                                    return result
-                            except Exception as e:
-                                _log.warning(f"fallback escalation failed: {e}")
-                else:
-                    last_failed_tool = None
-                    fail_count = 0
-
-                # Show tool result preview
-                preview = tool_result.replace("\n", " ")[:100]
-                _console.print(f"  [dim]   → {preview}[/]")
-
-                tool_msg = {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_result,
-                }
-                messages.append(tool_msg)
-
-            rounds += 1
-
-            # Some model templates (Qwen) require messages to end with user role
-            # after tool results, otherwise jinja template fails with "No user query found"
-            if messages[-1]["role"] == "tool":
-                messages.append({"role": "user", "content": "Continue based on the tool results above."})
-
-            # Trim context if too large (4 chars ≈ 1 token, keep under ~6k tokens)
-            total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-            if total_chars > 24000:
-                system = messages[0]
-                tail = messages[-6:]
-                # Ensure we don't start with orphaned tool results
-                while tail and tail[0].get("role") == "tool":
-                    tail.pop(0)
-                # Ensure we don't start with assistant tool_calls without tool responses
-                if tail and tail[0].get("role") == "assistant" and tail[0].get("tool_calls"):
-                    tail.pop(0)
-                messages = [system] + tail
-
-            continue
-
-        # No tool calls — final response
-        _emit_status("✍️ writing reply...")
-        # Use reasoning_content if available (Qwen3/DeepSeek native thinking),
-        # otherwise extract from <think> tags in content
-        result.thinking = reasoning_content.strip() or _extract_thinking(full_content) or ""
-        raw_reply = _strip_thinking(full_content)
-
-        # Retry: if model hedges instead of acting (no tool calls)
-        # Nudge messages are TEMPORARY — removed after retry so they don't poison history
-        _hedge_phrases = ("попробу", "let me", "i'll try", "i will", "давай", "поищу", "посмотрю", "let me search", "let me check")
-        _reply_looks_like_hedge = any(p in raw_reply.lower() for p in _hedge_phrases)
-        _reply_is_empty = len(raw_reply.strip()) == 0 and len(full_content) > 0  # thought but no reply
-        if (not tool_calls_data
-                and (_reply_is_empty
-                     or (len(raw_reply) > 20 and len(raw_reply) < 3000
-                         and (rounds == 0 and len((user_input or "").strip()) > 40 or _reply_looks_like_hedge)))):
-            # Add temporary nudge (will be removed after this round)
-            nudge_text = raw_reply if raw_reply.strip() else "I need to think about this..."
-            messages.append({"role": "assistant", "content": nudge_text})
-            messages.append({"role": "user", "content": "[system] Don't just say what you'll do — actually call the tool NOW. Reply with actual content."})
-            _console.print(f"  [dim]🔄 nudging to use tools...[/]")
-            _emit_status("🔄 nudging to act...")
-            rounds += 1
-            # After retry, remove the nudge messages so they don't stay in history
-            _nudge_cleanup = True
-            continue
-
-        result.reply = _clean_response(raw_reply)
-
-        # Offer fallback for short/empty responses on non-trivial questions
-        fb_config = providers.get_fallback_config()
-        if (fb_config and rounds == 0 and not result.tool_calls_made
-                and len(result.reply.strip()) < 50 and len(user_input) > 30):
-            _, fb_model = fb_config
-            result.reply += f"\n\n---\n_Ответ короткий. Отправить на {fb_model}?_"
-
-        # Track tokens — use real usage if available, else estimate
-        if _stream_usage:
-            est_tokens = _stream_usage.completion_tokens
-            prompt_tokens = _stream_usage.prompt_tokens
-        else:
-            est_tokens = len(full_content) // 4
-            prompt_tokens = 0
-        turn_ms = int((time.time() - turn_start) * 1000)
-        stream_ms = int((time.time() - _stream_start) * 1000)
-        tok_per_sec = round(est_tokens / (stream_ms / 1000), 1) if stream_ms > 0 else 0
-
-        # Store token stats in result for server to forward
-        result.completion_tokens = est_tokens
-        result.prompt_tokens = prompt_tokens
-        result.tok_per_sec = tok_per_sec
-
-        # Save with metadata for history restore
-        msg_meta = {
-            "tools": result.tool_calls_made,
-            "duration_ms": turn_ms,
-            "context_hits": result.auto_context_hits,
-            "thinking": result.thinking or "",
-            "tokens": est_tokens,
-            "prompt_tokens": prompt_tokens,
-            "tok_per_sec": tok_per_sec,
-        }
-        if not _is_duplicate_stop_reply(result.reply, tid):
-            db.save_message("assistant", result.reply, thread_id=tid, meta=msg_meta)
-        prev = int(db.kv_get("session_completion_tokens") or "0")
-        db.kv_set("session_completion_tokens", str(prev + est_tokens))
-        prev = int(db.kv_get("session_turns") or "0")
-        db.kv_set("session_turns", str(prev + 1))
-
-        logger.event("turn_complete", duration_ms=turn_ms, rounds=rounds,
-                     tools_used=result.tool_calls_made, reply_len=len(result.reply),
-                     est_tokens=est_tokens, context_hits=result.auto_context_hits,
-                     json_repairs=result.json_repairs, retries=result.retry_successes,
-                     self_checks=result.self_check_fixes,
-                     self_check_rejections=result.self_check_rejections,
-                     thread=tid or "active")
-        # Telemetry — see comment in v2 path above for privacy contract.
-        try:
-            _emit_turn_complete_telemetry(
-                duration_ms=turn_ms,
-                rounds=int(rounds),
-                tool_calls_made=result.tool_calls_made or [],
-                tool_errors_count=int(total_tool_errors),
-                input_tokens=int(prompt_tokens or 0),
-                output_tokens=int(est_tokens or 0),
-                context_hits=int(result.auto_context_hits or 0),
-                source=source,
-            )
-        except Exception as e:
-            _log.debug(f"telemetry turn_complete (v1): {e}")
-
-        if result.tool_calls_made and user_input:
-            _save_experience(user_input, result, rounds, total_tool_errors)
-
-        return result
-
-    _log.warning(f"max tool rounds ({max_tool_rounds}) exhausted")
-    result.reply = "I've used all my tool rounds for this turn."
-    db.save_message("assistant", result.reply, thread_id=tid)
     return result
 
 

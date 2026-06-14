@@ -299,13 +299,10 @@ EDITABLE_SETTINGS = {
     "compaction_threshold": ("setting:compaction_threshold",  int, 20, "Auto-compact after N messages", 3, None),
     "context_budget":       ("setting:context_budget",        int, 24000, "Token budget for context", 1000, None),
     "tool_retry_max":       ("setting:tool_retry_max",        int, 3,     "Max retries for broken tool calls", 0, None),
-    "self_check_enabled":   ("setting:self_check_enabled",    int, 1,     "Self-check before shell/write_file (0=off, 1=on)", 0, 1),
     "heartbeat_interval_min": ("setting:heartbeat_interval_min", int, 30, "Heartbeat interval in minutes", 1, None),
     "experience_learning":  ("setting:experience_learning",   int, 1,     "Learn from past task executions (0=off, 1=on)", 0, 1),
     "presence_penalty":     ("setting:presence_penalty",      float, 1.5,  "Presence penalty (Qwen3.5 recommends 1.5)", 0.0, None),
     "rag_chunk_size":       ("setting:rag_chunk_size",        int, 800,    "RAG chunk size in chars (re-index after change)", 200, 4000),
-    # ── Agent Loop ──
-    "agent_loop_v2":        ("setting:agent_loop_v2",         int, 1,      "Use new agent loop v2 (0=legacy, 1=new)", 0, 1),
     # ── Knowledge Graph Synthesis ──
     "synthesis_enabled":    ("setting:synthesis_enabled",     int, 1,      "Enable night synthesis (0=off, 1=on)", 0, 1),
     "synthesis_time":       ("setting:synthesis_time",        str, "03:00", "Night synthesis time (HH:MM)", "", ""),

@@ -1802,19 +1802,17 @@ def doctor():
             return "⚠ tts module not available"
     check("TTS", _check_tts)
 
-    # ── Agent Loop v2 ──
+    # ── Agent Loop ──
     console.print("  [dim]── Agent Loop ──[/]")
     def _check_loop_v2():
         try:
             from agent_loop import run_loop  # noqa: F401 — availability check
             from agent_events import EventEmitter  # noqa: F401 — availability check
             from agent_budget import BudgetLimits  # noqa: F401 — availability check
-            enabled = config.get("agent_loop_v2")
             max_turns = config.get("max_tool_rounds")
-            status = "ON" if enabled else "OFF (legacy)"
-            return f"✓ v2 {status}, max_turns={max_turns}"
+            return f"✓ loaded, max_turns={max_turns}"
         except ImportError as e:
-            return f"⚠ v2 modules missing: {e}"
+            return f"⚠ loop modules missing: {e}"
     check("Agent Loop", _check_loop_v2)
 
     # ── MCP ──

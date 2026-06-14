@@ -39,15 +39,6 @@ def test_repair_json_empty(agent_mod):
     assert result == {}
 
 
-# ── Tests for _SELF_CHECK_TOOLS ──
-
-def test_self_check_tools_list(agent_mod):
-    assert "shell" in agent_mod._SELF_CHECK_TOOLS
-    assert "write_file" in agent_mod._SELF_CHECK_TOOLS
-    assert "memory_search" not in agent_mod._SELF_CHECK_TOOLS
-    assert "read_file" not in agent_mod._SELF_CHECK_TOOLS
-
-
 # ── Tests for TurnResult new fields ──
 
 def test_turn_result_has_reliability_fields(agent_mod):
