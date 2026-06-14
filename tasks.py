@@ -293,11 +293,6 @@ def pending_count() -> int:
     return _task_queue.qsize() + running
 
 
-def completed_count() -> int:
-    with _lock:
-        return sum(1 for r in _results if r.get("status") != "running")
-
-
 def get_running() -> list[dict]:
     """Get list of currently running tasks (for system prompt injection)."""
     with _lock:

@@ -6,7 +6,10 @@ Skills are loaded from two directories:
 """
 
 import hashlib
-import importlib, importlib.util, json, re, sys
+import importlib
+import importlib.util
+import json
+import re
 from pathlib import Path
 from types import ModuleType
 import db
@@ -20,8 +23,6 @@ _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent
 USER_SKILLS_DIR = config.USER_SKILLS_DIR
-# For backward compat — code that references SKILLS_DIR
-SKILLS_DIR = BUILTIN_SKILLS_DIR
 
 
 # Hidden skills — require secret activation via self_config
@@ -320,7 +321,7 @@ def validate_skill(skill_path: str) -> tuple[bool, list[str]]:
     Checks: syntax, required attributes, execute() signature, db API usage.
     Returns (is_valid, errors_list).
     """
-    import ast, inspect
+    import ast
 
     errors = []
     path = Path(skill_path)

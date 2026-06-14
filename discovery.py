@@ -47,9 +47,3 @@ def discover(timeout: float = 1.5) -> list[dict]:
             pass
 
     return found
-
-
-def discover_first(timeout: float = 1.5) -> dict | None:
-    """Return first found LLM server, or None."""
-    results = discover(timeout=timeout)
-    return results[0] if results else None

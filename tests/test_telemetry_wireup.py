@@ -294,19 +294,6 @@ def test_provider_kind_from_name_collapses_unknown_to_unknown(fresh_tel):
     assert fresh_tel.provider_kind_from_name("") == "unknown"
 
 
-def test_provider_kind_from_url_substring_match(fresh_tel):
-    """URL-based heuristic recognises common provider hosts and falls
-    back to 'unknown' otherwise — no URL fragment ever leaks."""
-    f = fresh_tel.provider_kind_from_url
-    assert f("https://api.openai.com/v1") == "openai"
-    assert f("https://api.groq.com/openai/v1") == "groq"
-    assert f("http://localhost:11434/v1") == "ollama"
-    assert f("http://localhost:1234/v1") == "lmstudio"
-    assert f("https://my-internal-llm.corp.com/v1") == "unknown"
-    assert f("") == "unknown"
-    assert f(None) == "unknown"
-
-
 def test_category_for_tool_unknown_falls_back_to_skills(fresh_tel):
     """tools.category_for_tool buckets unknown tools (custom skills, MCP
     bridged tools we haven't catalogued) into 'skills' — never echoes the

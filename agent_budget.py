@@ -8,9 +8,6 @@ import config
 class BudgetLimits:
     """Configurable budget limits. 0 = unlimited."""
     max_turns: int = 0   # 0 = unlimited — rely on loop detection instead
-    max_tool_calls: int = 0  # 0 = unlimited — per-tool frequency limit handles loops
-    max_input_tokens: int = 0
-    max_output_tokens: int = 0
 
     @classmethod
     def from_config(cls) -> "BudgetLimits":
@@ -53,12 +50,6 @@ def check_budget(limits: BudgetLimits, stats: BudgetStats) -> BudgetDecision:
     """Check if any budget limit is exceeded."""
     if limits.max_turns and stats.turns >= limits.max_turns:
         return BudgetDecision(True, f"max turns ({limits.max_turns}) reached")
-    if limits.max_tool_calls and stats.tool_calls >= limits.max_tool_calls:
-        return BudgetDecision(True, f"max tool calls ({limits.max_tool_calls}) reached")
-    if limits.max_input_tokens and stats.input_tokens >= limits.max_input_tokens:
-        return BudgetDecision(True, f"input token budget ({limits.max_input_tokens}) exceeded")
-    if limits.max_output_tokens and stats.output_tokens >= limits.max_output_tokens:
-        return BudgetDecision(True, f"output token budget ({limits.max_output_tokens}) exceeded")
     return BudgetDecision(False)
 
 
@@ -67,6 +58,4 @@ def warning_check(limits: BudgetLimits, stats: BudgetStats) -> str | None:
     if limits.max_turns and stats.turns >= limits.max_turns - 2:
         remaining = limits.max_turns - stats.turns
         return f"{remaining} turns left — wrap up soon"
-    if limits.max_tool_calls and stats.tool_calls >= limits.max_tool_calls * 0.8:
-        return f"approaching tool call limit ({stats.tool_calls}/{limits.max_tool_calls})"
     return None

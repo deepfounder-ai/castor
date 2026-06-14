@@ -691,14 +691,6 @@ UPLOADS_DIR = config.UPLOADS_DIR
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 
-# ── File text extraction ──
-
-_TEXT_EXTENSIONS = {
-    ".txt", ".py", ".js", ".ts", ".md", ".json", ".csv", ".log",
-    ".html", ".css", ".yaml", ".yml", ".toml", ".ini", ".cfg",
-    ".sh", ".bat", ".sql", ".xml", ".env", ".gitignore",
-}
-
 from dataclasses import dataclass as _dataclass
 
 
@@ -799,29 +791,6 @@ async def _stage_upload(request: Request, subdir: str, default_name: str = "file
             await form.close()
         except Exception:
             pass
-
-
-def _extract_file_text(filepath: Path, max_chars: int = 8000) -> str:
-    """Extract text content from a file. Supports text files and PDFs."""
-    ext = filepath.suffix.lower()
-    try:
-        if ext == ".pdf":
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(str(filepath))
-                text = "\n".join(page.extract_text() or "" for page in reader.pages)
-            except ImportError:
-                return "[PDF reading requires pypdf: pip install pypdf]"
-        elif ext in _TEXT_EXTENSIONS:
-            text = filepath.read_text(encoding="utf-8", errors="replace")
-        else:
-            return f"[Unsupported file type: {ext}]"
-
-        if len(text) > max_chars:
-            text = text[:max_chars] + f"\n...(truncated from {len(text)} chars)"
-        return text
-    except Exception as e:
-        return f"[Error reading file: {e}]"
 
 
 # ── Routes ──

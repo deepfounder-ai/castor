@@ -956,36 +956,18 @@ def _log_run(cron_id: int, *, scheduled_at: float, started_at: float | None,
       missed   — server was offline at the scheduled time; never executed
       skipped  — per-thread fire lock held (concurrent fire in flight)
     """
+    if status not in ("missed", "skipped"):
+        # ok/err rows are written by agent_loop's instrumentation with full
+        # token data — this helper is only for missed/skipped rows.
+        _log.debug(f"_log_run ignoring unexpected status {status!r} for #{cron_id}")
+        return None
     try:
-        if status in ("missed", "skipped"):
-            return db.insert_skipped_run(
-                cron_id=cron_id,
-                thread_id=thread_id or "",
-                scheduled_at=scheduled_at,
-                reason=status,
-            )
-        # For any other status (e.g. legacy call paths), insert+finalize through
-        # the universal helpers so behaviour is preserved.
-        rid = db.insert_agent_run(
-            thread_id=thread_id or "",
+        return db.insert_skipped_run(
             cron_id=cron_id,
-            source="routine",
+            thread_id=thread_id or "",
             scheduled_at=scheduled_at,
-            started_at=started_at if started_at is not None else scheduled_at,
-            status="running",
+            reason=status,
         )
-        db.finalize_agent_run(
-            rid,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            status=status,
-            error=error,
-            result_preview=(result_preview or "")[:500],
-            input_tokens=0,
-            output_tokens=0,
-            cost_usd=None,
-        )
-        return rid
     except Exception as e:
         _log.debug(f"agent_runs insert failed for #{cron_id}: {e}")
         return None
