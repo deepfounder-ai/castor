@@ -51,12 +51,6 @@ LOGO = """[bold yellow]
    ╚══▀▀═╝  ╚══╝╚══╝ ╚══════╝     ╚══▀▀═╝  ╚══╝╚══╝ ╚══════╝[/]"""
 
 
-def _soul_bar_text() -> str:
-    s = soul.load()
-    traits = " ".join(f"{k}:{v}" for k, v in s.items() if k not in ("name", "language"))
-    return f"⚡ {s['name']} | {s['language']} | {traits}"
-
-
 def _status_line() -> str:
     s = soul.load()
     s_prompt = int(db.kv_get("session_prompt_tokens") or "0")
@@ -122,12 +116,6 @@ def show_stats():
         border_style="cyan",
         padding=(0, 2),
     ))
-
-
-def _render_slider(value: int, width: int = 20) -> str:
-    pos = int(value / 10 * (width - 1))
-    bar = "─" * pos + "[bold yellow]●[/]" + "─" * (width - 1 - pos)
-    return bar
 
 
 def handle_soul_command(args: str):

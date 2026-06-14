@@ -19,11 +19,7 @@ EVT_CONTENT_DELTA = "content_delta"      # text chunk from LLM
 EVT_THINKING_DELTA = "thinking_delta"    # thinking/reasoning chunk
 EVT_STATUS = "status"                    # status message (e.g. "thinking...")
 EVT_TOOL_START = "tool_start"            # tool execution started
-EVT_TOOL_DELTA = "tool_delta"            # tool output streaming
 EVT_TOOL_END = "tool_end"               # tool execution finished
-EVT_ERROR = "error"                      # error occurred
-EVT_TURN_START = "turn_start"            # new turn in agent loop
-EVT_TURN_END = "turn_end"               # turn completed
 EVT_BUDGET_WARNING = "budget_warning"    # approaching budget limit
 
 
@@ -55,11 +51,6 @@ class EventEmitter:
             except Exception as e:
                 _log.debug(f"event handler error ({event.type}): {e}")
 
-    def clear(self):
-        """Remove all handlers."""
-        self._handlers.clear()
-        self._global_handlers.clear()
-
     # Convenience methods
     def content(self, text: str):
         self.emit(AgentEvent(EVT_CONTENT_DELTA, {"text": text}))
@@ -75,6 +66,3 @@ class EventEmitter:
 
     def tool_end(self, name: str, result: str, duration_ms: int = 0):
         self.emit(AgentEvent(EVT_TOOL_END, {"name": name, "result": result, "duration_ms": duration_ms}))
-
-    def error(self, message: str):
-        self.emit(AgentEvent(EVT_ERROR, {"message": message}))
