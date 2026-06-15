@@ -1,14 +1,22 @@
 services:
   castor:
-    build: .
+    # Ready-to-run: pull the prebuilt image published by CI on every push to
+    # main. To build from local source instead, comment `image:` and uncomment
+    # `build: .` (then `docker compose up -d --build`).
+    image: ghcr.io/deepfounder-ai/castor:latest
+    # build: .
+    container_name: castor
     ports:
       - "7860:7860"
     volumes:
-      - qwe-data:/data
-    environment:
-      - CASTOR_LLM_URL=http://host.docker.internal:1234/v1
-      - CASTOR_DATA_DIR=/data
+      # Persistent memory: bind-mount a host folder onto the container's data
+      # dir. Everything that must survive restarts/upgrades lives here —
+      # castor.db (SQLite), memory/ (Qdrant vectors), wiki/, skills/, uploads/,
+      # presets/, logs/. Back it up by copying ./castor-data.
+      - ./castor-data:/data
+    env_file:
+      - .env
     restart: unless-stopped
-
-volumes:
-  qwe-data:
+    # Browser tools (Playwright/Chromium) need a bigger /dev/shm than Docker's
+    # 64MB default, or pages crash with "Target closed".
+    shm_size: "1gb"

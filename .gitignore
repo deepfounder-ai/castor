@@ -19,6 +19,7 @@ memory/
 .vault_key
 .env
 .env.*
+!.env.example
 .idea/
 .vscode/
 *.log
