@@ -228,6 +228,18 @@ def _get_conn() -> sqlite3.Connection:
                 check_and_restore()
                 _integrity_checked = True
     conn = getattr(_local, "conn", None)
+    # Reconnect when CASTOR_DATA_DIR / DB_PATH changed since this thread last
+    # connected. Without this, a connection cached against an old path (e.g. a
+    # test fixture's now-deleted tempdir) gets reused — SQLite happily reopens
+    # an empty file at the vanished path and every query hits "no such table".
+    # Harmless in production where the path never changes.
+    if conn is not None and getattr(_local, "path", None) != config.DB_PATH:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        conn = None
+        _migrated = False  # new DB file → must (re-)apply migrations
     if conn is None:
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -236,7 +248,10 @@ def _get_conn() -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")  # clean up any leftover WAL on startup
         _local.conn = conn
-        # Migrate once across all threads
+        _local.path = config.DB_PATH
+        # Migrate once across all threads. _apply_migrations is idempotent
+        # (applies only versions > current schema_version), so a re-run after a
+        # path change is cheap.
         with _migrate_lock:
             if not _migrated:
                 _apply_migrations(conn)
