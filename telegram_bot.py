@@ -2257,7 +2257,11 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
         try:
             response = _on_message(chat_id, text, user_id, username, thread_id,
                                     image_b64=image_b64)
-            if response:
+            # Never go silent: send if EITHER the agent reply OR the streamed
+            # buffer has content. A turn that ended on a tool call with no
+            # closing summary leaves response empty — the old `if response:`
+            # gate then dropped the whole message and the bot looked dead.
+            if response or (_stream_buf or "").strip():
                 typing_active.clear()
 
                 # Get tool info from agent result (thinking text buffered but not shown)
@@ -2359,6 +2363,15 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
                             _log.warning(f"TTS not available for voice mode in {chat_id}")
                     except Exception as e:
                         _log.error(f"TTS failed: {e}")
+            else:
+                # Truly empty turn (no reply, no streamed text). Never leave the
+                # user staring at a dead "typing…" — acknowledge so they know it
+                # finished. Tool names (if any) hint at what ran.
+                typing_active.clear()
+                tool_names = getattr(agent, '_last_tools', []) or []
+                hint = ("\n\n🔧 " + ", ".join(f"`{t}`" for t in tool_names)) if tool_names else ""
+                send_message(chat_id, "✅ Готово." + hint, token,
+                             reply_to=message_id, topic_id=topic_id)
         except Exception as e:
             _log.error(f"handler error: {e}", exc_info=True)
             typing_active.clear()

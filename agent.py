@@ -1513,6 +1513,10 @@ def _run_inner_body(user_input: "str | None", thread_id: str | None,
             ctx=ctx,
             thread_id=tid,
             system_note=system_note,
+            # Recognise text-emitted calls for ANY known tool (MiniMax-M2 calls
+            # extended tools without a prior tool_search) and auto-activate them.
+            extraction_tool_names=tools.all_tool_names(),
+            on_extended_tool=tools.activate_extended_tool,
         )
     except BaseException as e:
         # Finalise the trajectory with the error before propagating, so the

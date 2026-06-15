@@ -430,6 +430,8 @@ def run_loop(
     thread_id: str | None = None,
     system_note: str | None = None,
     allowed_tools: set[str] | None = None,
+    extraction_tool_names: set[str] | None = None,
+    on_extended_tool=None,
 ) -> dict:
     """Run the agent loop.
 
@@ -523,6 +525,12 @@ def run_loop(
     _force_finish = False  # Layer 4: force finish after loop detection
     _text_extraction_count = 0  # Fix 13: text-to-tool extraction counter
     _tool_names = _get_tool_names(tools) if tools else set()
+    # Names used to RECOGNISE a text-emitted tool call. Defaults to the active
+    # set, but the main chat agent passes the FULL known-tool set so a model
+    # that calls an extended tool (browser_wait_for, schedule, …) without a
+    # prior tool_search still gets it executed + auto-activated. Subagents do
+    # NOT pass this, so their restricted whitelist stays the extraction gate.
+    _extraction_names = (extraction_tool_names or _tool_names) if tools else set()
 
 
     # Aggregated generation time across all turns — time from FIRST content
@@ -931,10 +939,18 @@ def run_loop(
             thinking_content = reasoning_content or _extract_thinking(full_content)
 
             # Layer 2: Try to extract tool call from text (model described it but didn't call it)
-            if not _force_finish and tools and raw_reply:
-                extracted = _extract_tool_from_text(full_content, _tool_names)
+            if not _force_finish and tools and full_content:
+                extracted = _extract_tool_from_text(full_content, _extraction_names)
                 if extracted:
                     _text_extraction_count += 1
+                    # Auto-activate a model-called tool that wasn't in the active
+                    # set yet (e.g. MiniMax calling browser_wait_for without a
+                    # prior tool_search) so it's executable now + on later turns.
+                    if extracted[0] not in _tool_names and on_extended_tool:
+                        try:
+                            on_extended_tool(extracted[0])
+                        except Exception as _e:
+                            _log.debug(f"on_extended_tool({extracted[0]}) failed: {_e}")
                     _log.info(f"extracted tool from text (count={_text_extraction_count}): {extracted[0]}({str(extracted[1])[:60]})")
                     # Don't add the hedge text as final reply — execute the tool
                     # instead. Route through the pre-dispatch safety gate so a

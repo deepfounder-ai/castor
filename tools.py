@@ -790,6 +790,38 @@ def get_thread_extended_tools(thread_id: str | None = None) -> list[str]:
     return []
 
 
+def all_tool_names() -> set[str]:
+    """Every tool name castor can execute (core + extended + skills + MCP).
+
+    Used by the agent loop to recognise a model-emitted tool call (via
+    text-extraction) for a real tool that hasn't been ``tool_search``-activated
+    yet — MiniMax-M2 / Anthropic-style models call extended tools (browser_*,
+    schedule, …) straight from training knowledge without a tool_search first.
+    """
+    names: set[str] = set()
+    for t in _get_all_tools_full():
+        fn = t.get("function") if isinstance(t, dict) else None
+        if fn and fn.get("name"):
+            names.add(fn["name"])
+    return names
+
+
+def activate_extended_tool(name: str) -> bool:
+    """Auto-activate a single extended tool for the active thread (idempotent).
+
+    Returns True if ``name`` is a known executable tool. Lets the loop unlock a
+    tool the model explicitly called so it stays in the LLM tools array on the
+    next turn (cache-stable) instead of being re-discovered every turn.
+    """
+    if name not in all_tool_names():
+        return False
+    if name not in _active_extra_tools:
+        _active_extra_tools.add(name)
+        _persist_active_tools()
+        _log.info(f"auto-activated extended tool '{name}' (model called it via text)")
+    return True
+
+
 def _persist_active_tools(thread_id: str | None = None) -> None:
     """Write the current ``_active_extra_tools`` set back to DB for this thread."""
     tid = thread_id
