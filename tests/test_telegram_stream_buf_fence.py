@@ -28,18 +28,22 @@ import telegram_bot
 def test_handle_message_uses_stream_buf_in_final_parts():
     """``parts.append`` must take the streamed buffer when available."""
     src = inspect.getsource(telegram_bot)
-    # Look for the new conditional pattern. Allow whitespace variations.
+    # `streamed` is derived from `_stream_buf` (now also run through the
+    # tool-call-markup strip), `reply_text` falls back streamed -> response,
+    # and the appended value prefers `reply_text`. Whitespace-tolerant.
     pat = re.compile(
-        r"streamed\s*=\s*\(?_stream_buf.*?\)?\.strip\(\)"
+        r"streamed\s*=\s*_strip_tc\(\(?_stream_buf"
         r".*?"
-        r"parts\.append\(\s*streamed\s+if\s+streamed\s+else\s+response\s*\)",
+        r"reply_text\s*=\s*streamed\s+or\s+"
+        r".*?"
+        r"parts\.append\(\s*reply_text\s+if\s+reply_text",
         re.DOTALL,
     )
     assert pat.search(src), (
-        "telegram_bot._handle_message must compute `streamed = _stream_buf.strip()` "
-        "and append `streamed if streamed else response` so direct skill "
-        "emit_content() output isn't overwritten by the LLM-only reply text. "
-        "See issue #11. If you refactored this block, keep the same semantic."
+        "telegram_bot._handle_message must derive `streamed` from `_stream_buf`, "
+        "fall back `reply_text = streamed or <stripped response>`, and append "
+        "`reply_text if reply_text else ...` so direct skill emit_content() "
+        "output isn't overwritten by the LLM-only reply text. See issue #11."
     )
 
 

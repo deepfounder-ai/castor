@@ -2253,6 +2253,30 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
     )
     _push_active_ctx(tg_ctx)
 
+    # Stream keepalive: the rich draft / placeholder is only refreshed from the
+    # content/thinking/status callbacks, so during long gaps (a slow LLM round,
+    # a multi-second browser tool) nothing fires and the ephemeral draft expires
+    # — the user sees the thinking block "disappear" mid-task. This timer
+    # re-pushes the current buffers every few seconds so the live view survives
+    # multi-minute tool runs. No-op until there's something to show.
+    def _stream_keepalive():
+        while typing_active.is_set():
+            typing_active.wait(8)
+            if not typing_active.is_set():
+                break
+            # Only refresh during a GAP — if a callback updated the stream in
+            # the last few seconds, leave it alone (avoid racing the live send).
+            if time.time() - _last_update_ts[0] < 6:
+                continue
+            try:
+                _update_stream()
+                _last_update_ts[0] = time.time()
+            except Exception:
+                pass
+
+    if streaming_on:
+        threading.Thread(target=_stream_keepalive, daemon=True).start()
+
     if _on_message:
         try:
             response = _on_message(chat_id, text, user_id, username, thread_id,
