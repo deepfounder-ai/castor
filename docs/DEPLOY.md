@@ -86,6 +86,38 @@ Castor also writes periodic db snapshots to `castor-data/backups/`.
 
 ---
 
+## Terminal access (CLI)
+
+Castor has a full terminal chat mode (`castor` with no args) with slash commands
+(`/help`, `/model`, `/provider`, `/soul`, `/skills`, `/thread`, `/memory`,
+`/cron`, `/doctor`, …). It works great natively, but mixing it with the Docker
+web container needs care.
+
+> **One process per data dir.** Qdrant runs in **disk mode** and refuses a second
+> opener of the `memory/` folder (`Storage folder is already accessed by another
+> instance`). The running `--web` container already holds that lock, so you
+> **cannot** run the CLI against the same `/data` at the same time.
+
+Options:
+
+- **In Docker → use the web UI.** Don't try to run the CLI alongside the live
+  web server on the same volume.
+- **Run the CLI in its own container, with the web stopped:**
+  ```bash
+  docker compose stop                     # release the Qdrant lock
+  docker compose run --rm castor castor   # interactive terminal chat
+  # ...exit, then bring the web server back:
+  docker compose up -d
+  ```
+- **Quick one-off, non-interactive** (also needs web stopped):
+  ```bash
+  docker compose run --rm castor castor --doctor
+  ```
+- **Want both at once?** Run a native terminal install on a *different* machine
+  or a *separate* `CASTOR_DATA_DIR`, or switch Qdrant to server mode
+  (`CASTOR_QDRANT_MODE=server` + a Qdrant container) so multiple processes can
+  share the vector store.
+
 ## Notes
 
 - **Web auth:** set `CASTOR_PASSWORD` in `.env` whenever the port is reachable
