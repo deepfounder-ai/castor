@@ -227,3 +227,56 @@ def test_normalize_used_when_building_assistant_msg_tool_calls():
         "normalize_args_for_api. This re-opens the Alibaba 400 "
         "\"function.arguments must be in JSON format\" bug."
     )
+
+
+# ── Pattern 6: Anthropic / MiniMax-M2 <invoke><parameter> XML dialect ──
+# MiniMax-M2.7 emits tool calls in this XML format instead of native
+# delta.tool_calls. Without extraction they leaked to the user as raw text
+# and the tool never ran ("castor broke on a browser request").
+
+_TOOLS6 = {"browser_open", "secret_get", "shell", "write_file"}
+
+
+def test_pattern6_invoke_single_param():
+    text = '<invoke name="secret_get"><parameter name="key">pennygood_login</parameter></invoke>'
+    assert _extract_tool_from_text(text, _TOOLS6) == ("secret_get", {"key": "pennygood_login"})
+
+
+def test_pattern6_invoke_real_minimax_spacing_and_envelope():
+    # The exact shape seen in the bug: extra whitespace + a wrapper envelope
+    # + trailing truncated junk after the close tag.
+    text = ('<minimax:tool_call> <invoke name="secret_get"> '
+            '<parameter name="key">pennygood_login</parameter> </invoke> </minim')
+    assert _extract_tool_from_text(text, _TOOLS6) == ("secret_get", {"key": "pennygood_login"})
+
+
+def test_pattern6_invoke_multiple_params():
+    text = ('<invoke name="browser_open">'
+            '<parameter name="url">https://threads.com</parameter>'
+            '<parameter name="visible">true</parameter></invoke>')
+    assert _extract_tool_from_text(text, _TOOLS6) == (
+        "browser_open", {"url": "https://threads.com", "visible": True})
+
+
+def test_pattern6_url_value_not_mangled():
+    text = '<invoke name="browser_open"><parameter name="url">https://a.com/x?y=1&z=2</parameter></invoke>'
+    name, args = _extract_tool_from_text(text, _TOOLS6)
+    assert name == "browser_open"
+    assert args["url"] == "https://a.com/x?y=1&z=2"
+
+
+def test_pattern6_numeric_and_json_value_coercion():
+    text = ('<invoke name="shell"><parameter name="command">echo hi</parameter>'
+            '<parameter name="timeout">30</parameter></invoke>')
+    assert _extract_tool_from_text(text, _TOOLS6) == (
+        "shell", {"command": "echo hi", "timeout": 30})
+
+
+def test_pattern6_unknown_tool_returns_none():
+    text = '<invoke name="not_a_tool"><parameter name="x">1</parameter></invoke>'
+    assert _extract_tool_from_text(text, _TOOLS6) is None
+
+
+def test_pattern6_single_quoted_attrs():
+    text = "<invoke name='shell'><parameter name='command'>ls</parameter></invoke>"
+    assert _extract_tool_from_text(text, _TOOLS6) == ("shell", {"command": "ls"})

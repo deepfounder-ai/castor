@@ -130,6 +130,33 @@ def _extract_tool_from_text(text: str, tool_names: set[str]) -> tuple[str, dict]
         except json.JSONDecodeError:
             pass
 
+    # Pattern 1b: Anthropic / MiniMax-M2 XML tool-call dialect —
+    #   <invoke name="tool"><parameter name="k">v</parameter>...</invoke>
+    # MiniMax-M2.x (and some Anthropic-compatible servers) emit tool calls in
+    # this XML format instead of native delta.tool_calls, often wrapped in a
+    # <minimax:tool_call> / <function_calls> envelope we ignore. Without this
+    # the call leaks to the user as raw text and never executes — observed as
+    # "castor broke on a browser request": the <invoke> tags showed up in chat
+    # and the browser tool never ran. Runs BEFORE the fuzzy prose heuristics
+    # (Patterns 2-4) — the structured tags are unambiguous, whereas Pattern 4's
+    # `https?://\S+` would otherwise swallow the trailing </parameter></invoke>.
+    m = re.search(r'<invoke\s+name=["\']([^"\']+)["\']\s*>(.*?)</invoke>', text, re.DOTALL)
+    if m and m.group(1) in tool_names:
+        name = m.group(1)
+        args: dict = {}
+        for pm in re.finditer(
+                r'<parameter\s+name=["\']([^"\']+)["\']\s*>(.*?)</parameter>',
+                m.group(2), re.DOTALL):
+            key = pm.group(1)
+            val = pm.group(2).strip()
+            # Coerce JSON-ish values (numbers, bools, nested objects/arrays);
+            # keep bare strings as-is so a URL / password isn't mangled.
+            try:
+                args[key] = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                args[key] = val
+        return (name, args)
+
     # Pattern 2: function_name({"key": "value"}) in text
     for name in tool_names:
         pat = re.search(rf'{re.escape(name)}\s*\(\s*(\{{[^)]*\}})\s*\)', text)
