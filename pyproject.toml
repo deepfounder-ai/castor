@@ -40,7 +40,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "mammoth>=1.8",
     "markdownify>=1.2.2",
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.15.0",
     "pdfminer.six>=20240706",
     # YouTube transcript fallback: youtube-transcript-api (bundled with markitdown)
     # is frequently broken by YouTube's bot-detection. yt-dlp has the JS-based
