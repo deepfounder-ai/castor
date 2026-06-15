@@ -148,15 +148,17 @@ def qwe_temp_data_dir(monkeypatch):
 
     # Reload in dependency order.
     #
-    # ``goal_runner`` / ``orchestrator`` / ``subagent`` are reloaded because
-    # they keep module-level references to ``db`` (e.g. ``import db`` at
-    # top). When ``db`` is reloaded above, those references still point at
-    # the OLD module — so a test that exercises ``goal_runner.run`` and
-    # then asserts via ``db.get_goal(...)`` was reading from two
-    # different DB instances. Pollution surfaced on CI Python 3.12 as
-    # ``test_skill_import`` hitting "no such table: skill_imports" right
-    # after a test_provider_error_classification test ran.
-    for mod_name in ("config", "db", "soul", "presets",
+    # NOTE: ``db`` is deliberately NOT reloaded — only its state is reset
+    # (above). 21 modules hold a top-level ``import db`` (telegram_bot,
+    # telemetry, tools, threads, …); reloading ``db`` would swap in a NEW
+    # module object while all those consumers keep pointing at the OLD one,
+    # whose thread-local connection is stale/closed → intermittent
+    # "no such table: kv / skill_imports" depending on which consumer the
+    # current test happens to touch. Keeping a single ``db`` instance and
+    # resetting its connection + ``_migrated`` flag makes every consumer pick
+    # up the fresh temp DB. ``db`` reads ``config.DB_PATH`` dynamically on
+    # connect, so reloading ``config`` (for the new path) is enough.
+    for mod_name in ("config", "soul", "presets",
                      "goal_validators", "subagent", "orchestrator", "goal_runner",
                      "memory_store", "memory"):
         if mod_name in sys.modules:
@@ -202,7 +204,7 @@ def qwe_temp_data_dir(monkeypatch):
         if tmp_root.exists():
             time.sleep(0.05)
             shutil.rmtree(tmp_root, ignore_errors=True)
-        for mod_name in ("config", "db", "soul", "presets",
+        for mod_name in ("config", "soul", "presets",
                          "goal_validators", "subagent", "orchestrator", "goal_runner",
                          "memory_store", "memory"):
             if mod_name in sys.modules:
