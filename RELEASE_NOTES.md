@@ -1,41 +1,52 @@
-## v0.24.0 — Telegram Rich Messages (Bot API 10.1) + MiniMax provider
+## v0.25.0 — MiniMax tool-calling, reliable Telegram streaming, Docker server package
 
-Feature release. The headline is end-to-end Telegram **Rich Messages** — Castor now renders the full Bot API 10.1 formatting dialect — plus a new **MiniMax** provider, a quieter Telegram chat, and test-suite hygiene fixes. No schema migrations. No breaking changes. Drop-in upgrade.
+Reliability + deploy release. The headline is end-to-end **MiniMax-M2 tool use** (it now actually runs browser/secret/extended tools instead of leaking XML to the chat), a **rewritten Telegram streaming path** that no longer goes silent or loses the reasoning block, a knowledge-graph **de-duplicator**, an **Inspector** pass, and a **production-ready Docker package** with a persistent-memory volume. No schema migrations. No breaking changes. Drop-in upgrade.
 
-### Telegram: full Bot API 10.1 Rich Messages
+### MiniMax-M2 (and Anthropic-style) tool calls now execute
 
-Telegram's Bot API 10.1 (2026-06-11) added `sendRichMessage` / `editMessageText(rich_message=)`, taking an `InputRichMessage` with a `markdown` or `html` string that Telegram parses server-side. Castor now ships the agent's reply through that as the PRIMARY send path, so the agent's Markdown renders as actual rich content:
+MiniMax-M2.7 emits tool calls as Anthropic-style XML (`<invoke name="…"><parameter name="…">`) in the content stream, not as native `delta.tool_calls`. Castor mishandled this end-to-end — the tags leaked into the chat as raw text and the tools never ran ("castor broke on a browser request"). Fixed across the loop:
 
-- **Headings** (`#`…`######`), **tables**, inline + display **math** (`$x^2$`, `$$E=mc^2$$`), ordered / unordered / **task lists** (real checkboxes), dividers, block + pull **quotations**, **footnotes**, **marked** text (`==x==`), sub/superscript.
-- **Spoilers** (`||x||`), **underline**, **custom emoji**, and inline **media embeds** (`![](url "caption")` → photo / audio / video / GIF).
-- **Live `<tg-thinking>` streaming** — private chats now stream the agent's reasoning in an ephemeral "Thinking…" block (via `sendRichMessageDraft`, which also fixes the long-broken draft path that always failed with `RANDOM_ID_INVALID`). The final message stays clean; reasoning lives only in the transient preview.
-- The classic MarkdownV2 / HTML converters remain as the graceful fallback for deployments whose Bot API predates 10.1, with capability detection cached per process.
+- **Text-to-tool extraction** learned the `<invoke>`/`<minimax:tool_call>` dialect (new Pattern 1b), ordered ahead of the fuzzy prose heuristics so a `browser_open` call with a URL isn't mangled.
+- **Tool-call XML is suppressed from the streamed reply** — the markup is executed, not shown. The final message is clean instead of `document.querySelector(…) </minimax:tool_call>` + a bare tools list.
+- **Extended tools auto-activate.** MiniMax calls `browser_wait_for`, `schedule`, etc. straight from training without a prior `tool_search`. The main chat agent now recognises a text-emitted call to ANY known tool, executes it, and activates it for later turns. Subagents keep their restricted whitelist as the gate.
+- **The bot is never silent.** A turn that ended on a tool call with no closing summary used to drop the whole Telegram message (`if response:`); it now sends when either the reply or the streamed buffer has content, with a "done" acknowledgement fallback.
 
-Along the way: agent-emitted raw HTML now renders instead of showing literal `<b>` tags; the blockquote MarkdownV2/HTML divergence was fixed (consecutive quote lines group into one block); and a terse Telegram-only capability hint tells the agent the surface supports rich Markdown + inline media so it uses them when helpful (the shared soul stays clean for web / CLI).
+### Telegram streaming: thinking that stays put
 
-### Telegram: inbound non-text message types
+- **No more truncated replies.** Inline-thinking models split `</think>answer` across one delta; the answer text riding alongside the closing tag was dropped. The loop now splits on the tag boundary and emits both sides — losslessly, for web streaming too.
+- **Reasoning no longer vanishes mid-task.** On a long multi-round turn the ephemeral rich draft could expire (or get rejected when oversized), latching the render to a placeholder path that dropped the thinking block. The placeholder now shows a `💭` reasoning block too, a keepalive thread refreshes the live view during long gaps (slow LLM rounds, multi-second browser tools), and both draft and placeholder cap the partial answer so a long turn can't produce an oversized draft.
 
-Inbound parsing covered only text, caption, photo, document, and voice/audio — every other type (location, venue, contact, poll, dice, sticker, video, video_note, animation) hit a silent-drop gate and the user got no reply. `_describe_nontext_message` now maps each to a short bracketed text injection so the agent actually sees them.
+### Knowledge graph: duplicate entity de-dup
 
-### Telegram: system cron tasks no longer DM the owner
+Night synthesis spawned a fresh entity node every run instead of updating the existing one (a fuzzy `search(limit=1)` missed the exact match when a near-name out-ranked it), so the graph filled with up to 14× `Drayage` / `LinkedIn` nodes. Now:
 
-The owner was getting a `⏰ __synthesis_continuous__ — No pending items` DM every 15 minutes, plus similar noise from synthesis / coach / trajectory-prune. Cron notifications are now gated to user-created routines only; `__name__` system tasks stay silent.
+- `synthesis._upsert_entity` looks the node up by **exact name**, merges every copy into one, and drops the extras — it stops spawning duplicates and self-heals touched entities.
+- New **"merge duplicates"** button in the graph toolbar + `POST /api/knowledge/graph/dedupe` collapse same-named nodes (relations + observation counts preserved; identity is by name so links stay intact).
+- The graph endpoint also merges by name at render time, so the view is clean immediately.
 
-### New provider: MiniMax
+### Inspector
 
-MiniMax (international) drops in as an OpenAI-compatible preset at `https://api.minimax.io/v1` (China: `https://api.minimaxi.com/v1`) — Bearer auth, no GroupId, sold as a token subscription. Default model suggestions for the M2 family (M2.5 / M2.1 / M2 / M1 / Text-01), editable in the UI; key-hint links straight to the MiniMax interface-key page.
+A pass over the right-side Inspector:
 
-### Test-suite hygiene
+- **Context-window gauge** now refreshes on a settings save (was stuck showing the pre-save value), shows `1M` instead of `1000k`, and falls back to the real settings dump instead of a dead `state.settings` reference. `model_context` is now settable in **Settings → Inference** (the gauge tooltip already pointed there).
+- **Recalled memories** — removed a dead KB-preview fallback that left the "RECALLED · this session" counter stuck and could imply recall the agent never made; the live WS path is authoritative. The `live` badge no longer shows on an empty turn.
+- **Active tools** now includes the `tool_search`-activated extended tools for the thread (dashed chips), and the header count matches the deduped chips.
+- **Latency** — the decode row is labelled `tok/s` (it's a rate).
 
-- `qwe_temp_data_dir` fixture leaked `castor_pytest_*` tempdirs on locked-Qdrant / crash teardown — one dev tree hit 8157 dirs / 24 GB. Now self-heals: startup sweep of stale dirs, a `pytest_sessionfinish` cleanup of this run's dirs, and Qdrant-close-before-rmtree.
-- Migration tests moved off `tempfile.mkdtemp()` (which leaked) to pytest's `tmp_path`, and their sqlite connections close via `contextlib.closing`.
+### Docker: production server package with persistent memory
 
-### Dependencies
+The shipped Docker setup is now actually deployable:
 
-9 Dependabot bumps merged: rich ≥15, Pillow ≥12.2, pyyaml ≥6.0.3, python-docx ≥1.2, markitdown ≥0.1.6, and four docker GitHub Actions (metadata/setup-buildx/login/build-push).
+- **Dockerfile fixes** — the old `CMD` ran a non-existent `qwe-qwe` command (the console script is `castor`), and it never copied `prompts/` or `schemas/`, so goals and presets crashed. Added a `/data` `VOLUME`, sane env defaults, and a `/api/status` `HEALTHCHECK`.
+- **`docker-compose.yml`** pulls the prebuilt GHCR image, **bind-mounts `./castor-data:/data`** so all state (SQLite, Qdrant vectors, wiki, skills, uploads, presets, logs) survives restarts and upgrades, reads config from `.env`, and sets `shm_size: 1gb` so Chromium doesn't crash.
+- New **`.env.example`** (provider URL/model/key, `CASTOR_PASSWORD` web auth) and **`docs/DEPLOY.md`** with quick-start, build-from-source, update, backup, and terminal-access (with the Qdrant disk-lock caveat) instructions.
 
-### Upgrading
+### Internal: legacy cleanup (~1150 lines removed)
 
-`git pull` + restart. No config or schema changes.
+- Removed the **legacy v1 agent loop** and the `agent_loop_v2` flag — v2 has been the only path in production. With it went the v1-only self-check cluster and the `self_check_enabled` setting.
+- **Wired trajectory recording** into the live loop (opt-in via `trajectory_enabled`) — it existed but was never attached.
+- Dropped a batch of dead symbols (`discover_first`, `completed_count`, `provider_kind_from_url`, server file-text helpers, unused `agent_budget` limit fields, a dead `scheduler._log_run` branch, the `SKILLS_DIR` alias, and stale agent-event constants/methods).
 
-To use the live Telegram rich formatting, just chat with the bot — replies render rich automatically. To use MiniMax, pick it in Settings → Provider, paste your token-subscription key, and choose a model.
+---
+
+Full diff: `v0.24.0...v0.25.0`.
