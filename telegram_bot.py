@@ -1671,7 +1671,10 @@ def _build_thinking_draft_body(thinking: str, content: str) -> str:
         parts.append(f"<tg-thinking>{th[-600:]}</tg-thinking>")
     c = (content or "").strip()
     if c:
-        parts.append(c)
+        # Cap the partial answer too — a long multi-round turn accumulates a
+        # large _stream_buf, and an oversized draft gets rejected by Telegram
+        # (which then latches the rich path off for the rest of the turn).
+        parts.append(c[-3000:])
     return "\n\n".join(parts)
 
 
@@ -2191,10 +2194,15 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
             # Unsupported (older Bot API) → fall through to placeholder path.
             _use_rich_draft[0] = False
 
-        # Fallback: sendMessage placeholder + editMessageText (no thinking).
-        if not content:
+        # Fallback: sendMessage placeholder + editMessageText. Show the live
+        # reasoning here TOO — once the rich draft latches off (a transient
+        # failure flips _use_rich_draft), this is the only live view, and the
+        # old version dropped thinking entirely so the user saw it "disappear".
+        think_block = (f"💭 {thinking[-280:]}\n\n" if thinking else "")
+        body_txt = (think_block + content[-2500:]).strip()
+        if not body_txt:
             return
-        display = content + (f"\n\n_{status}_" if status else "") + " ▍"
+        display = body_txt + (f"\n\n_{status}_" if status else "") + " ▍"
         if _stream_msg_id[0] is None:
             kwargs = {"chat_id": chat_id, "text": display}
             if topic_id:
