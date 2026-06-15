@@ -239,7 +239,6 @@ def _get_conn() -> sqlite3.Connection:
         except Exception:
             pass
         conn = None
-        _migrated = False  # new DB file → must (re-)apply migrations
     if conn is None:
         conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -249,14 +248,18 @@ def _get_conn() -> sqlite3.Connection:
         conn.execute("PRAGMA wal_checkpoint(PASSIVE)")  # clean up any leftover WAL on startup
         _local.conn = conn
         _local.path = config.DB_PATH
-        # Migrate once across all threads. _apply_migrations is idempotent
-        # (applies only versions > current schema_version), so a re-run after a
-        # path change is cheap.
+        # ALWAYS migrate on a fresh connection — do NOT gate on the process
+        # global _migrated. _apply_migrations is idempotent (applies only
+        # versions > current schema_version → a single schema_version read when
+        # the db is already current), so running it unconditionally guarantees
+        # a connection to a freshly-pointed DB_PATH always lands on a migrated
+        # schema. Gating on _migrated was the test-isolation bug: a True value
+        # left over from another test's db made the next fresh connection skip
+        # migration → "no such table" on an empty file.
         with _migrate_lock:
-            if not _migrated:
-                _apply_migrations(conn)
-                _migrated = True
-                _log.info(f"database connected: {config.DB_PATH}")
+            _apply_migrations(conn)
+            _migrated = True
+            _log.info(f"database connected: {config.DB_PATH}")
     return conn
 
 
