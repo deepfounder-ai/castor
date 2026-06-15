@@ -2270,9 +2270,18 @@ def _process_message(chat_id: int, text: str, user_id: int, username: str,
                 # using it as the final message overwrites skill emissions
                 # that the user already saw. Falls back to response when the
                 # buffer is empty (no streaming happened). Closes #11.
-                streamed = (_stream_buf or "").strip()
+                # Strip any tool-call XML that slipped into the streamed buffer
+                # (MiniMax-M2 emits <invoke>/<minimax:tool_call> as content; the
+                # live suppression in agent_loop is best-effort across stream
+                # chunks, this guarantees the final message is clean).
+                from utils import strip_tool_call_markup as _strip_tc
+                streamed = _strip_tc((_stream_buf or "").strip())
+                reply_text = streamed or _strip_tc((response or "").strip())
                 parts = []
-                parts.append(streamed if streamed else response)
+                # When the model ended on a tool call with no closing summary,
+                # the cleaned reply is empty — show a checkmark instead of a bare
+                # tools list so the message doesn't read as "broken".
+                parts.append(reply_text if reply_text else "✅")
                 if tool_names:
                     tools_str = ", ".join(f"`{t}`" for t in tool_names)
                     parts.append(f"\n🔧 {tools_str}")

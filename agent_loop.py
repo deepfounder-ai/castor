@@ -649,6 +649,9 @@ def run_loop(
             # ── Process stream ──
             in_think = False
             _think_detected = False
+            _tool_xml_started = False  # once a tool-call XML marker appears in
+            #   the content stream, suppress the remainder from emitter.content
+            #   (it's executed via text-extraction, must not show to the user)
             for chunk in stream:
                 # Abort mid-stream
                 if abort_event and abort_event.is_set():
@@ -690,13 +693,30 @@ def run_loop(
                     full_content += delta.content
                     text = delta.content
 
+                    # Suppress tool-call XML from the streamed content. MiniMax-M2
+                    # / Anthropic-style models emit <invoke>/<minimax:tool_call>/
+                    # <function_calls> as CONTENT tokens; text-extraction (below)
+                    # executes them from full_content, but if they reach
+                    # emitter.content they pollute the Telegram/web reply with raw
+                    # tags (`document.querySelector(...) </minimax:tool_call>`).
+                    # Truncate at the first marker; suppress the rest of the message.
+                    if _tool_xml_started:
+                        text = ""
+                    else:
+                        _cut = _tool_marker_index(text)
+                        if _cut is not None:
+                            text = text[:_cut]
+                            _tool_xml_started = True
+
                     # Detect <think> tags in content (check only new text, not
                     # full_content). When a tag shares a delta with real text we
                     # must split and emit BOTH sides — otherwise the answer text
                     # that rides alongside the closing </think> (common for
                     # inline-thinking models) is silently dropped from the
                     # streamed content, truncating the start of the reply.
-                    if not _think_detected and "<think>" in text:
+                    if not text:
+                        pass  # nothing visible (pure tool-call markup) — suppress
+                    elif not _think_detected and "<think>" in text:
                         before, _, after = text.partition("<think>")
                         if before and not in_think:
                             emitter.content(before)
@@ -907,7 +927,7 @@ def run_loop(
                 _nudge_cleanup = False
 
             # Strip thinking tags from content
-            raw_reply = _strip_thinking(full_content)
+            raw_reply = _strip_tool_call_markup(_strip_thinking(full_content))
             thinking_content = reasoning_content or _extract_thinking(full_content)
 
             # Layer 2: Try to extract tool call from text (model described it but didn't call it)
@@ -1089,4 +1109,19 @@ def normalize_args_for_api(raw: str, repair_fn=None) -> str:
         return "{}"
 
 
-from utils import strip_thinking as _strip_thinking, extract_thinking as _extract_thinking
+from utils import (strip_thinking as _strip_thinking,
+                   extract_thinking as _extract_thinking,
+                   strip_tool_call_markup as _strip_tool_call_markup)
+
+# Substrings that mark the start (or stray remnant) of a tool-call XML block in
+# streamed content — used to truncate the live content stream at the first one.
+_TOOL_CALL_MARKERS = (
+    "<minimax:tool_call", "</minimax:tool_call", "<invoke", "</invoke",
+    "<function_calls", "<tool_call>", "<tool_call ", "!<function_call", "<parameter",
+)
+
+
+def _tool_marker_index(text: str) -> int | None:
+    """Earliest index of any tool-call XML marker in ``text``, else None."""
+    idxs = [i for i in (text.find(m) for m in _TOOL_CALL_MARKERS) if i != -1]
+    return min(idxs) if idxs else None
