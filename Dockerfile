@@ -43,9 +43,11 @@ VOLUME ["/data"]
 
 EXPOSE 7860
 
-# Liveness: the web server answers /api/status once booted.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -fsS http://localhost:7860/api/status || exit 1
+# Liveness: hit the login page (/), not /api/status — the latter returns 401
+# when CASTOR_PASSWORD is set, which would mark a perfectly healthy, auth-
+# protected server as "unhealthy". `/` returns 200 whether or not auth is on.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS http://localhost:7860/ || exit 1
 
 # `castor` is the console script declared in pyproject [project.scripts].
 CMD ["castor", "--web", "--host", "0.0.0.0", "--port", "7860"]
