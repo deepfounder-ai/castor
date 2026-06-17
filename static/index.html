@@ -7378,7 +7378,14 @@ async function loadGoalDetail(goalId, opts) {
     state.goalOutputs = outR.value.outputs || [];
   }
   if (state.view === 'goals' && state.activeGoalId === goalId) {
-    render();
+    // Only re-render when the goal data actually changed. A full innerHTML
+    // rebuild on every 2s poll tick — even with identical data — flickers the
+    // whole page. User-initiated loads (non-silent) always render.
+    const sig = JSON.stringify([state.goalDetail, state.goalEvents, state.goalFacts, state.goalOutputs]);
+    if (!opts.silent || sig !== state._goalRenderSig) {
+      state._goalRenderSig = sig;
+      render();
+    }
   }
 }
 
@@ -7405,6 +7412,7 @@ function stopGoalPolling() {
     clearTimeout(state._goalPollTimer);
     state._goalPollTimer = null;
   }
+  state._goalRenderSig = null;  // next goal's first poll renders fresh
 }
 
 function openGoalDetail(goalId) {
