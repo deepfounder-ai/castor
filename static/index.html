@@ -2023,6 +2023,7 @@ function openLoginModal() {
     '</div>';
   openModal({
     title: 'Sign in', body,
+    mandatory: true,  // auth gate — no ×, no ESC, no backdrop dismiss
     actions: [
       { label: 'Sign in', primary: true, onClick: async () => {
           const pwd = (document.getElementById('lg-pwd') || {}).value || '';
@@ -8123,7 +8124,7 @@ function renderModal() {
   return '<div class="modal-overlay">' +
     '<div class="modal-panel' + (m.wide ? ' wide' : '') + '" data-stop>' +
       '<div class="modal-head"><h2>' + esc(m.title || '') + '</h2>' +
-        '<button class="icon-btn modal-close" data-modal-close>' + ico('close', 14) + '</button>' +
+        (m.mandatory ? '' : '<button class="icon-btn modal-close" data-modal-close>' + ico('close', 14) + '</button>') +
       '</div>' +
       '<div class="modal-body">' + (m.body || '') + '</div>' +
       (actionsHtml ? '<div class="modal-foot">' + actionsHtml + '</div>' : '') +
@@ -9937,7 +9938,7 @@ document.addEventListener('keydown', (e) => {
   // Close palette / modal
   if (e.key === 'Escape') {
     if (state.paletteOpen) { closePalette(); return; }
-    if (state.modal) { closeModal(); return; }
+    if (state.modal) { if (!state.modal.mandatory) closeModal(); return; }
   }
   // Navigation: Alt+letter (safe on Mac + Windows, unused by browser)
   if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
