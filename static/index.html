@@ -2288,8 +2288,14 @@ const wsConnect = () => {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(proto + '://' + location.host + '/ws');
   state.ws = ws;
-  ws.onopen = () => { state.wsReady = true; render(); };
-  ws.onclose = () => { state.wsReady = false; setTimeout(wsConnect, 2000); render(); };
+  // Render ONLY on the first successful connect. Reconnects must NOT call
+  // render() — wsReady only drives a tiny status badge, but a full innerHTML
+  // rebuild on every reconnect flickers the whole page. On a flaky link the WS
+  // can drop+reconnect every few seconds; rendering each time made the page
+  // appear to refresh once a second on every view. The send-gate reads
+  // state.wsReady live, so no render is needed for functionality.
+  ws.onopen = () => { state.wsReady = true; if (!state._wsEverOpen) { state._wsEverOpen = true; render(); } };
+  ws.onclose = () => { state.wsReady = false; setTimeout(wsConnect, 2000); };
   ws.onerror = () => { state.wsReady = false; };
   ws.onmessage = (e) => { try { handleWsMessage(JSON.parse(e.data)); } catch {} };
 };
