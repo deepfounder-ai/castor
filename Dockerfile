@@ -38,7 +38,13 @@ RUN pip install --no-cache-dir -e . && \
 ENV CASTOR_DATA_DIR=/data \
     CASTOR_QDRANT_MODE=disk \
     PYTHONUNBUFFERED=1
-RUN mkdir -p /data
+# Alias the conventional ~/.castor (== /root/.castor for the root user) to the
+# real data dir. Models — and the goal acceptance-gate shell validators — emit
+# the trained ``~/.castor/workspace/...`` path; without this it expands to
+# /root/.castor (which doesn't exist), so writes fail the path whitelist and
+# `wc ~/.castor/workspace/x.csv` reports "No such file". The symlink makes
+# write_file, shell, and validators all resolve ~/.castor to /data.
+RUN mkdir -p /data && ln -sfn /data /root/.castor
 VOLUME ["/data"]
 
 EXPOSE 7860
