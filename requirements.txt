@@ -1,6 +1,6 @@
 # Core dependencies — keep in sync with pyproject.toml
 cryptography
-openai>=1.0.0
+openai>=1.109.1
 qdrant-client>=1.18.0
 fastembed>=0.8.0
 rich>=15.0.0
