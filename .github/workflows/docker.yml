@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  # Manual escape hatch. Release tags are pushed by release.yml with
+  # GITHUB_TOKEN, and GitHub suppresses workflows triggered by GITHUB_TOKEN
+  # pushes — so the tag push never fires this workflow and the semver image
+  # tags (0.25.0, 0.25) don't get built. Run this manually with the tag as
+  # the ref (gh workflow run Docker --ref v0.25.0) to build them.
+  workflow_dispatch:
 
 permissions:
   contents: read
